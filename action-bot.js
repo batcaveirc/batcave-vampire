@@ -24,7 +24,11 @@ const config = {
     groqKey: process.env.GROQ_API_KEY || '',
     // Free Groq tiers rate-limit fast; a second key keeps moderation alive.
     groqKey2: process.env.GROQ_API_KEY_2 || process.env.GROQ_API_KEY1 || '',
-    groqModel: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
+    // llama-3.1-8b-instant was decommissioned 2026-08-16. Models get retired,
+    // so keep a fallback: a dead model would otherwise silently disable all AI
+    // moderation with nothing in the channel to show for it.
+    groqModel: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+    groqModelFallback: process.env.GROQ_MODEL_FALLBACK || 'openai/gpt-oss-20b',
     linkFilter: onOff(process.env.LINK_FILTER),
     warnLimit: parseInt(process.env.WARN_LIMIT || '3', 10),            // whitelisted
     warnLimitRegistered: parseInt(process.env.WARN_LIMIT_REGISTERED || '1', 10),
@@ -294,21 +298,32 @@ function aiRateOk() {
 // One place that talks to Groq, so both callers get key failover for free.
 async function groqChat(body) {
     const keys = [config.groqKey, config.groqKey2].filter(Boolean);
+    const models = [...new Set([body.model || config.groqModel, config.groqModelFallback])];
     let lastErr = null;
-    for (const key of keys) {
-        try {
-            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            });
-            // 401 = bad key, 429 = rate-limited → try the backup instead of giving up
-            if ((res.status === 401 || res.status === 429) && keys.length > 1) {
-                lastErr = new Error(`key rejected (${res.status})`);
-                continue;
-            }
-            return await res.json();
-        } catch (e) { lastErr = e; }
+    for (const model of models) {
+        for (const key of keys) {
+            try {
+                const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ...body, model }),
+                });
+                // 401 bad key / 429 rate-limited → try the other key
+                if ((res.status === 401 || res.status === 429) && keys.length > 1) {
+                    lastErr = new Error(`key rejected (${res.status})`);
+                    continue;
+                }
+                // 400/404 usually means the model is gone or renamed → next model
+                if (res.status === 400 || res.status === 404) {
+                    lastErr = new Error(`model "${model}" rejected (${res.status})`);
+                    log('AI', `Model "${model}" refused (${res.status}) — trying the fallback.`);
+                    break;
+                }
+                if (!res.ok) { lastErr = new Error(`HTTP ${res.status}`); continue; }
+                if (model !== models[0]) log('AI', `Serving from fallback model "${model}".`);
+                return await res.json();
+            } catch (e) { lastErr = e; }
+        }
     }
     if (lastErr) throw lastErr;
     return null;
