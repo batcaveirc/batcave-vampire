@@ -90,6 +90,11 @@ let lastRx = Date.now();           // last byte received — drives the health c
 let pingProbeSent = false;
 const connectTime = Date.now();
 
+// Hosts protected from being kicked by other moderators, independent of nick
+// (e.g. *!*@ku0.6ol.235.110.IP). The WHITELIST is protected automatically.
+const protectMasks = new Set(list(process.env.PROTECT_MASKS));
+const rescueLog = new Map();       // nick(lower) -> [timestamps of rescues]
+
 // Persistent auto-ban masks, enforced on every join (glob, e.g. *!*@1.2.3.*).
 const autobanMasks = new Set(list(process.env.AUTOBAN_MASKS));
 // Strict mode: kick joiners whose NICK itself contains filtered words.
@@ -263,6 +268,49 @@ function requireOps(chan, what) {
         send(`PRIVMSG ChanServ :OP ${chan} ${currentNick}`);
     }
     return true;
+}
+
+// Protected from OTHER moderators' kicks: the whitelist, plus any host mask in
+// PROTECT_MASKS (so protection survives a nick change).
+function isProtectedFromKick(nick) {
+    const n = nick.toLowerCase();
+    if (whitelist.has(n) || isAdmin(nick)) return true;
+    const uh = hostOf.get(n);
+    if (uh) { for (const m of protectMasks) if (globToRe(m).test(`${nick}!${uh}`)) return true; }
+    return false;
+}
+
+// A KICK cannot be blocked — it is instantaneous and server-side, and this
+// network has no channel rank above @ that ChanServ could grant to make someone
+// immune (PREFIX=(Yov)!@+). So the only real defence is to undo it quickly:
+// invite them straight back and strip any ban the kick left behind.
+// NOTE: INVITE only waives +i. It does NOT rejoin anyone — their client has to
+// act on it, so the victim needs auto-join-on-invite for this to be seamless.
+function rescueFromKick(chan, victim, kicker, reason) {
+    const k = victim.toLowerCase();
+    const now = Date.now();
+    const hist = (rescueLog.get(k) || []).filter((t) => now - t < 60000);
+
+    // Never get into an invite/kick loop with a determined human — that would
+    // flood the channel and help nobody.
+    if (hist.length >= 5) {
+        if (hist.length === 5) {
+            rescueLog.set(k, [...hist, now]);
+            say(chan, `\x0304[MOD]\x03 ${victim} has been kicked ${hist.length}x — standing down to `
+                + `avoid a loop. ${config.owners[0] || 'An owner'} should step in.`);
+        }
+        return;
+    }
+    hist.push(now); rescueLog.set(k, hist);
+
+    const mask = banMask(victim);
+    send(`INVITE ${victim} ${chan}`);
+    send(`MODE ${chan} -b ${mask}`);                        // clear a direct ban
+    send(`PRIVMSG ChanServ :UNBAN ${chan} ${mask}`);        // and any ChanServ one
+    send(`PRIVMSG ChanServ :UNBAN ${chan} ${victim}`);
+    say(chan, `\x0304[MOD]\x03 ${victim} is protected — kicked by ${kicker}`
+        + `${reason ? ` (${reason})` : ''}. Invited back and bans cleared. 🦇`);
+    log('MOD', `Rescued ${victim} after kick by ${kicker} in ${chan}`);
 }
 
 // --- Scripted moderation (ALWAYS on): severe, badwords, links, caps, flood, repeat ---
@@ -488,7 +536,8 @@ function handleCommand(chan, nick, message) {
             say(chan, 'Everyone: !!seen <nick>, !!status, !!info [nick], !!rules. '
                 + 'Mods: !!join/!!part #room, !!rooms, !!mass kick|ban|voice|devoice, '
                 + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
-                + '!!raidguard on|off, !!sentient on|off, !!badword add|remove <w>, '
+                + '!!raidguard on|off, !!protect add|remove <nick|mask>, '
+                + '!!sentient on|off, !!badword add|remove <w>, '
                 + '!!whitelist add|remove <nick>, !!announce <msg>.');
             break;
         case 'seen': {
@@ -579,6 +628,21 @@ function handleCommand(chan, nick, message) {
         }
 
         // ── Persistent mask rules, enforced on every join ────────────────
+        case 'protect':
+            if (!admin) break;
+            if (args[0] === 'add' && args[1]) {
+                protectMasks.add(toMask(args[1]));
+                say(chan, `Protected from other mods' kicks: ${toMask(args[1])} (${protectMasks.size} masks + the whitelist).`);
+            } else if (args[0] === 'remove' && args[1]) {
+                const m = protectMasks.has(args[1]) ? args[1] : toMask(args[1]);
+                protectMasks.delete(m);
+                say(chan, `Removed ${m} (${protectMasks.size} left).`);
+            } else {
+                say(chan, `Kick-protected: all ${whitelist.size} whitelisted users`
+                    + `${protectMasks.size ? ' + masks: ' + [...protectMasks].join(', ') : ''}. `
+                    + 'Use !!protect add|remove <nick|mask>.');
+            }
+            break;
         case 'autoban':
             if (!admin) break;
             if (args[0] === 'add' && args[1]) {
@@ -875,9 +939,18 @@ function handleLine(line) {
             }
         }
     }
-    if (command === 'KICK' && params[1] && params[1].toLowerCase() === config.nick.toLowerCase()) {
-        opped.delete(chanKey(tgt));
-        setTimeout(() => send(`JOIN ${tgt}`), 3000);
+    if (command === 'KICK' && params[1] && isOurChannel(tgt)) {
+        const victim = params[1];
+        if (victim.toLowerCase() === config.nick.toLowerCase()) {
+            opped.delete(chanKey(tgt));
+            setTimeout(() => send(`JOIN ${tgt}`), 3000);
+        } else if (ready && nick && nick.toLowerCase() !== currentNick.toLowerCase()
+                   && isProtectedFromKick(victim)) {
+            // Someone else kicked a protected user. (Our own kicks are excluded
+            // above, or we would undo our own moderation.)
+            rescueFromKick(tgt, victim, nick, params.slice(2).join(' ').replace(/^:/, ''));
+        }
+        (members.get(chanKey(tgt)) || new Set()).delete(victim);
     }
 
     if (command === 'PRIVMSG' && isOurChannel(tgt) && nick) {
