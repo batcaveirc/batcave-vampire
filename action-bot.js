@@ -26,7 +26,10 @@ const config = {
     groqKey2: process.env.GROQ_API_KEY_2 || process.env.GROQ_API_KEY1 || '',
     groqModel: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
     linkFilter: onOff(process.env.LINK_FILTER),
-    warnLimit: parseInt(process.env.WARN_LIMIT || '3', 10),
+    warnLimit: parseInt(process.env.WARN_LIMIT || '3', 10),            // whitelisted
+    warnLimitRegistered: parseInt(process.env.WARN_LIMIT_REGISTERED || '1', 10),
+    kickUnregistered: onOff(process.env.KICK_UNREGISTERED || 'on'),   // no warnings
+    autoVoice: onOff(process.env.AUTO_VOICE || 'on'),
 };
 
 // Default moderation vocab (EN + Hinglish). Extend at runtime with !!badword, or
@@ -34,7 +37,13 @@ const config = {
 // on purpose — add slurs there via the SEVERE_WORDS secret.
 const DEFAULT_BADWORDS = ['fuck', 'shit', 'bitch', 'bastard', 'asshole', 'dick', 'cunt',
     'slut', 'whore', 'retard', 'stupid', 'idiot', 'moron', 'dumbass', 'loser', 'scum',
-    'kutta', 'kutte', 'chutiya', 'madarchod', 'bhenchod', 'gandu', 'harami', 'kamina', 'kaminey'];
+    'pussy',
+    // Hinglish. The first pass only had a handful and real abuse walked straight
+    // through it — "randi", "chut", "bhanchod" and friends were all missed live.
+    'kutta', 'kutte', 'kutti', 'chutiya', 'chutiye', 'chutia', 'madarchod', 'madarchod',
+    'bhenchod', 'bhanchod', 'behenchod', 'bhosdi', 'bhosdike', 'bhosadike',
+    'randi', 'raand', 'rand', 'chut', 'chudai', 'chod', 'chodu', 'lund', 'gaand',
+    'gandu', 'harami', 'kamina', 'kaminey', 'suwar', 'suar', 'jhaat', 'tatti', 'lodu'];
 const badwords = new Set([...DEFAULT_BADWORDS, ...list(process.env.BADWORDS)]);
 const severeWords = new Set(list(process.env.SEVERE_WORDS));
 const whitelist = new Set(list(process.env.WHITELIST));
@@ -53,7 +62,7 @@ let connecting = false;
 let reconnectAttempts = 0;
 let hasJoined = false;
 let ready = false;                 // replay guard: ignore backlog on (re)join
-let sentientMode = onOff(process.env.SENTIENT_ON);
+let sentientMode = onOff(process.env.SENTIENT_ON || 'on');
 const seenUsers = {};
 const warns = new Map();           // nick(lower) -> strike count
 const floodLog = new Map();        // nick(lower) -> [timestamps]
@@ -64,6 +73,8 @@ const opped = new Set();           // channel(lower) we currently hold +o in
 const joinLog = new Map();         // channel(lower) -> [join timestamps] (raid detect)
 const lockedByRaid = new Set();    // channels auto-locked, so we can auto-unlock
 const members = new Map();         // channel(lower) -> Set(nick) for !!mass
+const accountOf = new Map();       // nick(lower) -> NickServ account ('' = unregistered)
+const prefixOf = new Map();        // "chan|nick" (lower) -> "@" / "+" / "" etc.
 let aiCalls = [];                  // recent Groq call timestamps (rate limit)
 let reconnectTimer = null;
 let lastRx = Date.now();           // last byte received — drives the health check
@@ -98,9 +109,14 @@ function ago(ts) {
 
 function isOwner(nick) { return config.owners.includes(nick.toLowerCase()); }
 function isAdmin(nick) { const n = nick.toLowerCase(); return config.owners.includes(n) || config.admins.includes(n); }
-function isExempt(nick) {
+function isExempt(nick, chan) {
     const n = nick.toLowerCase();
-    return n === config.nick.toLowerCase() || isAdmin(nick) || whitelist.has(n);
+    if (n === config.nick.toLowerCase() || isAdmin(nick)) return true;
+    // Channel operators are the moderators — never police them.
+    if (chan && isChannelMod(chan, nick)) return true;
+    // Whitelisted users are NOT exempt any more: they get a warning quota
+    // instead, so genuine abuse from a trusted account is still caught.
+    return false;
 }
 
 // Normalize leet/obfuscation so "st00pid" and "f-u-c-k" still match a whole word.
@@ -136,6 +152,30 @@ function matchesAnyMask(nick, userHost) {
     return null;
 }
 
+// ── Hierarchy ────────────────────────────────────────────────────────────
+// Trust ladder, most trusted first:
+//   1. owners/admins            — never moderated
+//   2. channel operators (@ ~ & %) — they ARE the mods; never moderated
+//   3. whitelisted              — full warn quota
+//   4. registered (NickServ)    — short quota, they have an identity at stake
+//   5. unregistered strangers   — removed on first offence
+function prefixIn(chan, nick) { return prefixOf.get(`${chanKey(chan)}|${nick.toLowerCase()}`) || ''; }
+function isChannelMod(chan, nick) { return /[~&@%]/.test(prefixIn(chan, nick)); }
+function isRegistered(nick) { return !!accountOf.get(nick.toLowerCase()); }
+
+function tierOf(chan, nick) {
+    if (isAdmin(nick) || nick.toLowerCase() === config.nick.toLowerCase()) return 'staff';
+    if (isChannelMod(chan, nick)) return 'mod';
+    if (whitelist.has(nick.toLowerCase())) return 'trusted';
+    if (isRegistered(nick)) return 'registered';
+    return 'stranger';
+}
+function warnQuotaFor(tier) {
+    if (tier === 'trusted') return config.warnLimit;
+    if (tier === 'registered') return config.warnLimitRegistered;
+    return 0;                       // strangers get none
+}
+
 // Nick screening is different from message screening: wordHit() matches whole
 // words so ordinary chat isn't over-flagged, but a nick is a single token —
 // "stupidbot" would never match "stupid". Use substring matching here, with a
@@ -149,15 +189,27 @@ function badNick(nick) {
 
 // --- Punishment / escalation ---
 function warnUser(chan, nick, reason) {
+    const tier = tierOf(chan, nick);
+    const quota = warnQuotaFor(tier);
+
+    // Strangers (no NickServ account, not whitelisted) don't get a runway.
+    if (quota === 0) {
+        if (config.kickUnregistered) {
+            kickUser(chan, nick, `${reason} — unregistered guests get no warnings`);
+        } else {
+            say(chan, `\x0304[MOD]\x03 ${nick}: ${reason}. Register your nick to earn some leeway.`);
+        }
+        return;
+    }
+
     const k = nick.toLowerCase();
     const n = (warns.get(k) || 0) + 1;
     warns.set(k, n);
-    if (n >= config.warnLimit) {
+    if (n >= quota) {
         warns.set(k, 0);
-        send(`KICK ${chan} ${nick} :${config.warnLimit} strikes — ${reason}`);
-        say(chan, `\x0304[MOD]\x03 ${nick} banished after ${config.warnLimit} warnings (${reason}). 🦇`);
+        kickUser(chan, nick, `${quota} strike${quota > 1 ? 's' : ''} — ${reason}`);
     } else {
-        say(chan, `\x0304[MOD]\x03 ${nick} warned (${n}/${config.warnLimit}) — ${reason}.`);
+        say(chan, `\x0304[MOD]\x03 ${nick} warned (${n}/${quota}) — ${reason}.`);
     }
 }
 function kickUser(chan, nick, reason) {
@@ -196,7 +248,7 @@ function requireOps(chan, what) {
 
 // --- Scripted moderation (ALWAYS on): severe, badwords, links, caps, flood, repeat ---
 function scriptedModeration(chan, nick, message) {
-    if (isExempt(nick)) return false;
+    if (isExempt(nick, chan)) return false;
 
     const severe = wordHit(severeWords, message);
     if (severe) { banUser(chan, nick, 'severe language'); return true; }
@@ -261,13 +313,24 @@ async function groqChat(body) {
 }
 
 async function sentientModeration(chan, nick, message) {
-    if (isExempt(nick) || !config.groqKey || message.length < 4) return;
+    if (isExempt(nick, chan) || !config.groqKey || message.length < 4) return;
     if (!aiRateOk()) return;                        // busy → scripted filter still covers it
     try {
         const data = await groqChat(({
                 model: config.groqModel, temperature: 0, max_tokens: 60,
                 messages: [
-                    { role: 'system', content: 'You are a strict but fair IRC moderator. Decide if the user message is abusive, harassing, hateful, or threatening. Reply with ONLY compact JSON: {"action":"none|warn|kick","reason":"few words"}. Use "kick" only for severe abuse, slurs, threats or hate; "warn" for insults or mild toxicity; otherwise "none".' },
+                    { role: 'system', content:
+                        'You moderate a friendly IRC room. A word filter already handles ordinary '
+                        + 'profanity, so you exist ONLY to catch SERIOUS harm that a word list misses: '
+                        + 'targeted harassment, threats of violence, sexual harassment, slurs and hate '
+                        + 'toward a person or group, doxxing, and sustained demeaning abuse of someone.\n'
+                        + 'Be permissive about everything else. Friends swearing, teasing, dark jokes, '
+                        + 'crude banter, arguments, Hinglish slang and single rude words are NOT your '
+                        + 'business — answer "none" for those.\n'
+                        + 'Messages may be Hinglish/Hindi in Latin script; judge meaning, not spelling.\n'
+                        + 'Reply with ONLY compact JSON: {"action":"none|warn|kick|ban","reason":"few words"}. '
+                        + '"ban" = slurs, hate or threats. "kick" = serious targeted harassment. '
+                        + '"warn" = borderline but clearly demeaning. Everything else "none".' },
                     { role: 'user', content: message },
                 ],
         }));
@@ -277,8 +340,9 @@ async function sentientModeration(chan, nick, message) {
         let verdict;
         try { verdict = JSON.parse(m[0]); } catch (e) { return; }   // fail-safe: never act on unparseable output
         const reason = `AI: ${String(verdict.reason || 'abuse').slice(0, 40)}`;
-        if (verdict.action === 'kick') kickUser(chan, nick, reason);
-        else if (verdict.action === 'warn') warnUser(chan, nick, reason);
+        if (verdict.action === 'ban') banUser(chan, nick, reason);
+        else if (verdict.action === 'kick') kickUser(chan, nick, reason);
+        else if (verdict.action === 'warn') warnUser(chan, nick, reason);   // tier-aware
     } catch (e) {
         log('AI', 'moderation error: ' + e.message);
     }
@@ -359,7 +423,7 @@ function handleCommand(chan, nick, message) {
             config.channels.push(room);
             send(`JOIN ${room}`);
             send(`PRIVMSG ChanServ :OP ${room} ${currentNick}`);
-            send(`WHO ${room}`);
+            send(`WHO ${room} %cuhnar,152`);
             send(`NAMES ${room}`);
             say(chan, `Drifting into ${room}. 🦇`);
             break;
@@ -484,6 +548,11 @@ function connect() {
         connecting = false;
         lastRx = Date.now();
         log('TCP', `Connected${config.tls ? ' over TLS' : ''} — registering...`);
+        // Ask for the IRCv3 bits the trust hierarchy depends on:
+        //   extended-join  -> the JOIN line carries the NickServ account
+        //   account-notify -> we hear about later logins/logouts
+        //   multi-prefix   -> NAMES shows all prefixes (@+nick), not just one
+        send('CAP REQ :extended-join account-notify multi-prefix');
         send(`NICK ${config.nick}`);
         send(`USER ${config.nick} 0 * :${config.realname}`);
         setTimeout(() => { if (!hasJoined) config.channels.forEach((c) => send(`JOIN ${c}`)); }, 5000);
@@ -536,6 +605,10 @@ function handleLine(line) {
         currentNick = (params[0] || '').replace(/^:/, '') || currentNick;
     }
 
+    if (command === 'CAP') {
+        const sub = (params[1] || '').toUpperCase();
+        if (sub === 'ACK' || sub === 'NAK') { send('CAP END'); log('CAP', line.slice(0, 120)); }
+    }
     if (command === '001') {
         reconnectAttempts = 0;
         log('OK', `Registered as ${currentNick}.`);
@@ -582,12 +655,36 @@ function handleLine(line) {
             if (ch === '-') { adding = false; continue; }
             if ('ovhbeIkl'.includes(ch)) {
                 const who = targets[ti++] || '';
+                if ('ovhq'.includes(ch) && who) {          // track everyone's status
+                    const key = `${chanKey(tgt)}|${who.toLowerCase()}`;
+                    const sym = { o: '@', v: '+', h: '%', q: '~' }[ch];
+                    const cur = prefixOf.get(key) || '';
+                    prefixOf.set(key, adding ? (cur.includes(sym) ? cur : cur + sym)
+                                             : cur.split(sym).join(''));
+                }
                 if (ch === 'o' && who.toLowerCase() === currentNick.toLowerCase()) {
                     if (adding) { opped.add(chanKey(tgt)); log('OK', `Got ops in ${tgt}.`); }
                     else { opped.delete(chanKey(tgt)); log('WARN', `Lost ops in ${tgt}.`); }
                 }
             }
         }
+    }
+
+    // extended-join: ":nick!u@h JOIN #chan account :realname"  ('*' = none)
+    if (command === 'JOIN' && params.length >= 2 && nick) {
+        const acct = (params[1] || '').replace(/^:/, '');
+        accountOf.set(nick.toLowerCase(), acct === '*' ? '' : acct);
+    }
+    if (command === 'ACCOUNT' && nick) {                 // logged in/out later
+        const acct = (params[0] || '').replace(/^:/, '');
+        accountOf.set(nick.toLowerCase(), acct === '*' ? '' : acct);
+    }
+    if (command === '354' && params[1]) {                // WHOX reply: account
+        const [, , , , n, acct] = params;                // %cuhnar -> chan user host nick account
+        if (n) accountOf.set(n.toLowerCase(), (acct && acct !== '0') ? acct : '');
+    }
+    if (command === '330' && params[1] && params[2]) {   // WHOIS "is logged in as"
+        accountOf.set(params[1].toLowerCase(), params[2]);
     }
 
     if (command === '353') {                       // NAMES reply -> membership + our own status
@@ -598,6 +695,7 @@ function handleLine(line) {
             const n = raw.replace(/^[~&@%+]+/, '');
             if (!n) continue;
             set.add(n);
+            prefixOf.set(`${ch}|${n.toLowerCase()}`, pfx);
             // ~ owner, & admin, @ op, % halfop all carry kick rights here.
             if (n.toLowerCase() === currentNick.toLowerCase() && /[~&@%]/.test(pfx)) {
                 if (!opped.has(ch)) log('OK', `Already opped in ${ch} (seen as "${pfx}" in NAMES).`);
@@ -619,13 +717,20 @@ function handleLine(line) {
         const c = (tgt || msg).replace(/^:/, '');
         log('OK', `Joined ${c}`);
         send(`PRIVMSG ChanServ :OP ${c} ${currentNick}`);   // claim ops up front
-        send(`WHO ${c}`);                                   // learn hosts for real bans
+        send(`WHO ${c} %cuhnar,152`);                       // WHOX: hosts AND accounts
         send(`NAMES ${c}`);                                 // and our own op status
         say(c, '🦇 Dracula stirs. The night watch begins — !!help.');
     } else if (command === 'JOIN' && nick) {
         const c = chanKey((tgt || msg).replace(/^:/, ''));
         if (!isOurChannel(c)) return;
         (members.get(c) || members.set(c, new Set()).get(c)).add(nick);
+
+        // Trusted regulars get voice automatically — a visible mark of standing
+        // and it keeps them speaking if the room is ever moderated (+m).
+        if (ready && config.autoVoice && whitelist.has(nick.toLowerCase())
+            && opped.has(c) && !/[~&@%+]/.test(prefixIn(c, nick))) {
+            send(`MODE ${c} +v ${nick}`);
+        }
 
         // Persistent auto-ban masks — enforced the moment they walk in.
         if (ready && !isExempt(nick) && userHost) {

@@ -52,8 +52,12 @@ jobs:
 
           # ── Moderation tuning ────────────────────────────────────────────
           GROQ_MODEL: ${{ secrets.GROQ_MODEL || 'llama-3.1-8b-instant' }}
-          SENTIENT_ON: ${{ secrets.SENTIENT_ON || 'off' }}
+          SENTIENT_ON: ${{ secrets.SENTIENT_ON || 'on' }}
+          # Trust ladder: staff/ops > whitelisted > registered > stranger
           WARN_LIMIT: ${{ secrets.WARN_LIMIT || '3' }}
+          WARN_LIMIT_REGISTERED: ${{ secrets.WARN_LIMIT_REGISTERED || '1' }}
+          KICK_UNREGISTERED: ${{ secrets.KICK_UNREGISTERED || 'on' }}
+          AUTO_VOICE: ${{ secrets.AUTO_VOICE || 'on' }}
           LINK_FILTER: ${{ secrets.LINK_FILTER || 'off' }}
           BADWORDS: ${{ secrets.BADWORDS }}
           SEVERE_WORDS: ${{ secrets.SEVERE_WORDS }}
