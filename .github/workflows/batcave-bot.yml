@@ -72,4 +72,15 @@ jobs:
           # protected automatically). Comma-separated globs.
           PROTECT_MASKS: ${{ secrets.PROTECT_MASKS }}
           CHANNEL_RULES: ${{ secrets.CHANNEL_RULES }}
+          MOD_ENABLED: ${{ secrets.MOD_ENABLED || 'on' }}
+
+          # ── Findit game pacing (seconds unless noted) ────────────────────
+          FINDIT_LOBBY_SECS: ${{ secrets.FINDIT_LOBBY_SECS || '90' }}
+          FINDIT_GRACE_SECS: ${{ secrets.FINDIT_GRACE_SECS || '60' }}
+          FINDIT_KILL_CD: ${{ secrets.FINDIT_KILL_CD || '45' }}
+          FINDIT_BREAK_CD: ${{ secrets.FINDIT_BREAK_CD || '90' }}
+          FINDIT_CRITICAL_SECS: ${{ secrets.FINDIT_CRITICAL_SECS || '90' }}
+          FINDIT_DISCUSS_SECS: ${{ secrets.FINDIT_DISCUSS_SECS || '90' }}
+          FINDIT_VOTE_SECS: ${{ secrets.FINDIT_VOTE_SECS || '45' }}
+          FINDIT_GAME_CD_MIN: ${{ secrets.FINDIT_GAME_CD_MIN || '10' }}
         run: node action-bot.js

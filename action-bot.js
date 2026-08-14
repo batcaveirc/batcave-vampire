@@ -1,5 +1,6 @@
 const net = require('net');
 const tls = require('tls');
+const { FindIt } = require('./findit');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
@@ -60,7 +61,7 @@ const whitelist = new Set(list(process.env.WHITELIST));
 // drops every message in the room, which looks exactly like the bot "hanging".
 const chanKey = (c) => (c || '').toLowerCase();
 const channelSet = new Set(config.channels.map(chanKey));
-const isOurChannel = (c) => channelSet.has(chanKey(c));
+const isOurChannel = (c) => channelSet.has(chanKey(c)) || game.isGameChannel(c);
 
 // --- State (in-memory; resets each restart — fine for an ephemeral host) ---
 let socket = null;
@@ -107,10 +108,40 @@ const raidWindowMs = parseInt(process.env.RAID_WINDOW_SEC || '10', 10) * 1000;
 const raidLockSec = parseInt(process.env.RAID_LOCK_SEC || '60', 10);
 let raidGuard = onOff(process.env.RAID_GUARD || 'on');
 
+// The game. `bot` is the small surface findit.js needs.
+const bot = { send, say, notice, get nick() { return currentNick; } };
+const game = new FindIt(bot);
+// Master moderation switch, independent of the game.
+let modEnabled = onOff(process.env.MOD_ENABLED || 'on');
+// No auto-moderation inside a running game: nobody should be kicked mid-round
+// for a word, and a compartment filling up is not a raid.
+function moderationOff(chan) { return !modEnabled || game.isGameChannel(chan); }
+
 // --- Helpers ---
 function log(type, msg) { console.log(`[${type}] ${msg}`); }
-function send(data) { if (socket && socket.writable) socket.write(data + '\r\n'); }
+// Outbound pacing. A game start sends a dozen role notices, three dozen task
+// lines and a pile of invites at once; InspIRCd drops a client that floods.
+// Token bucket: a small burst is fine, sustained traffic is spread out.
+const outQueue = [];
+let tokens = 10;
+setInterval(() => {
+    if (tokens < 10) tokens += 1;
+    while (outQueue.length && tokens > 0) {
+        tokens -= 1;
+        const line = outQueue.shift();
+        if (socket && socket.writable) socket.write(line + '\r\n');
+    }
+}, 200);
+
+function send(data) {
+    if (!socket || !socket.writable) return;
+    // Protocol keepalives must never sit in a queue.
+    if (/^(PONG|PING|QUIT)/.test(data)) { socket.write(data + '\r\n'); return; }
+    if (tokens > 0 && !outQueue.length) { tokens -= 1; socket.write(data + '\r\n'); return; }
+    if (outQueue.length < 400) outQueue.push(data);
+}
 function say(chan, msg) { send(`PRIVMSG ${chan} :${msg}`); }
+function notice(nick, msg) { send(`NOTICE ${nick} :${msg}`); }
 // Store an absolute timestamp and render it as "12m ago". A clock reading is
 // useless here: the runner is UTC and every user is in a different zone.
 function ago(ts) {
@@ -317,8 +348,12 @@ function rescueFromKick(chan, victim, kicker, reason) {
 function scriptedModeration(chan, nick, message) {
     if (isExempt(nick, chan)) return false;
 
+    // Severe language is always actioned — including inside a game. Switching
+    // moderation off is about avoiding accidental kicks, not tolerating slurs.
     const severe = wordHit(severeWords, message);
     if (severe) { banUser(chan, nick, 'severe language'); return true; }
+
+    if (moderationOff(chan)) return false;
 
     const bad = wordHit(badwords, message);
     if (bad) { warnUser(chan, nick, 'watch your language'); return true; }
@@ -391,7 +426,7 @@ async function groqChat(body) {
 }
 
 async function sentientModeration(chan, nick, message) {
-    if (isExempt(nick, chan) || !config.groqKey || message.length < 4) return;
+    if (isExempt(nick, chan) || moderationOff(chan) || !config.groqKey || message.length < 4) return;
     if (!aiRateOk()) return;                        // busy → scripted filter still covers it
     try {
         const data = await groqChat(({
@@ -530,6 +565,10 @@ function handleCommand(chan, nick, message) {
     const target = args[0];
     const owner = isOwner(nick), admin = isAdmin(nick);
     log('CMD', `${nick} !!${cmd}`);
+
+    // The game claims its own commands first. !!join with no argument joins a
+    // lobby; !!join #room stays the admin channel command underneath.
+    if (game.handle(nick, chan, cmd, args, hostOf.get(nick.toLowerCase()))) return;
 
     switch (cmd) {
         case 'help':
@@ -672,6 +711,17 @@ function handleCommand(chan, nick, message) {
             else if (args[0] === 'off') { strictNicks = false; say(chan, 'Strict mode OFF.'); }
             else say(chan, `Strict mode is ${strictNicks ? 'ON' : 'OFF'}. Use !!strict on|off.`);
             break;
+        case 'mod':
+            if (!admin) break;
+            if (args[0] === 'on') { modEnabled = true; say(chan, '\x0304[MOD]\x03 Auto-moderation ON.'); }
+            else if (args[0] === 'off') { modEnabled = false; say(chan, '\x0304[MOD]\x03 Auto-moderation OFF — only severe words and kick-protection remain.'); }
+            else say(chan, `Auto-moderation is ${modEnabled ? 'ON' : 'OFF'}. Use !!mod on|off.`);
+            break;
+        case 'unquiet':
+            if (!admin || !target) break;
+            send(`MODE ${chan} -q ${target}!*@*`);
+            say(chan, `Cleared any quiet on ${target}.`);
+            break;
         case 'linkfilter':
             if (!admin) break;
             if (args[0] === 'on') { config.linkFilter = true; say(chan, 'Link filter ON.'); }
@@ -748,7 +798,7 @@ function connect() {
         lines.forEach(handleLine);
     });
     socket.on('error', (err) => { connecting = false; log('ERROR', err.message); });
-    socket.on('close', () => { connecting = false; opped.clear(); log('INFO', 'Connection closed.'); scheduleReconnect(); });
+    socket.on('close', () => { connecting = false; opped.clear(); game.onDisconnect(); log('INFO', 'Connection closed.'); scheduleReconnect(); });
 }
 function scheduleReconnect() {
     if (reconnectTimer) return;
@@ -777,8 +827,15 @@ function handleLine(line) {
         log('WARN', `Nick in use — trying ${currentNick}`);
         send(`NICK ${currentNick}`);
     }
-    if (command === 'NICK' && nick && nick.toLowerCase() === currentNick.toLowerCase()) {
-        currentNick = (params[0] || '').replace(/^:/, '') || currentNick;
+    if (command === 'NICK' && nick) {
+        const newNick = (params[0] || '').replace(/^:/, '');
+        if (nick.toLowerCase() === currentNick.toLowerCase()) {
+            currentNick = newNick || currentNick;
+        } else if (newNick) {
+            const h = hostOf.get(nick.toLowerCase());
+            if (h) hostOf.set(newNick.toLowerCase(), h);
+            game.onNick(nick, newNick);
+        }
     }
 
     if (command === 'CAP') {
@@ -800,6 +857,13 @@ function handleLine(line) {
                 send(`NICK ${config.nick}`);
             }
             config.channels.forEach((c) => send(`JOIN ${c}`));
+            if (game.active) {
+                game.onReconnect();           // same process: the round survives
+            } else {
+                // Fresh process: a round cannot be recovered, but a crash may
+                // have left players quieted. Clear anything shaped like ours.
+                game.coldStart(config.channels[0]);
+            }
             ready = true;
             log('OK', 'Identified, joined — moderation live.');
         }, 2500);
@@ -863,6 +927,9 @@ function handleLine(line) {
         accountOf.set(params[1].toLowerCase(), params[2]);
     }
 
+    if (command === '728' && params[3]) game.onQuietEntry(params[1], params[3]);
+    if (command === '729') game.endQuietSweep();
+
     if (command === '353') {                       // NAMES reply -> membership + our own status
         const ch = chanKey(params[2] || '');
         const set = members.get(ch) || new Set();
@@ -885,8 +952,14 @@ function handleLine(line) {
     if (command === '352' && params[5] && params[2] && params[3]) {
         hostOf.set(params[5].toLowerCase(), `${params[2]}@${params[3]}`);
     }
-    if (command === 'PART' && nick) (members.get(chanKey(tgt)) || new Set()).delete(nick);
-    if (command === 'QUIT' && nick) for (const set of members.values()) set.delete(nick);
+    if (command === 'PART' && nick) {
+        (members.get(chanKey(tgt)) || new Set()).delete(nick);
+        game.onPart(nick, tgt);
+    }
+    if (command === 'QUIT' && nick) {
+        for (const set of members.values()) set.delete(nick);
+        game.onQuit(nick);
+    }
 
     if (command === 'JOIN' && nick.toLowerCase() === config.nick.toLowerCase()) {
         hasJoined = true;
@@ -900,16 +973,17 @@ function handleLine(line) {
         const c = chanKey((tgt || msg).replace(/^:/, ''));
         if (!isOurChannel(c)) return;
         (members.get(c) || members.set(c, new Set()).get(c)).add(nick);
+        game.onJoin(nick, c);
 
         // Trusted regulars get voice automatically — a visible mark of standing
         // and it keeps them speaking if the room is ever moderated (+m).
-        if (ready && config.autoVoice && whitelist.has(nick.toLowerCase())
+        if (ready && !game.isGameChannel(c) && config.autoVoice && whitelist.has(nick.toLowerCase())
             && opped.has(c) && !/[~&@%+]/.test(prefixIn(c, nick))) {
             send(`MODE ${c} +v ${nick}`);
         }
 
         // Persistent auto-ban masks — enforced the moment they walk in.
-        if (ready && !isExempt(nick) && userHost) {
+        if (ready && !moderationOff(c) && !isExempt(nick) && userHost) {
             const hit = matchesAnyMask(nick, userHost);
             if (hit) {
                 log('MOD', `Auto-ban mask ${hit} matched ${nick}!${userHost}`);
@@ -918,10 +992,10 @@ function handleLine(line) {
             }
         }
         // Strict mode: the NICK itself is screened - word list first, then AI.
-        if (ready && strictNicks) { screenNick(c, nick); }
+        if (ready && strictNicks && !moderationOff(c)) { screenNick(c, nick); }
 
         // Raid guard: a burst of joins in a few seconds is a raid, not traffic.
-        if (ready && raidGuard) {
+        if (ready && raidGuard && !game.isGameChannel(c)) {
             const now = Date.now();
             const hist = (joinLog.get(c) || []).filter((t) => now - t < raidWindowMs);
             hist.push(now); joinLog.set(c, hist);
@@ -974,6 +1048,14 @@ function handleLine(line) {
 // --- Graceful shutdown (GitHub Actions sends SIGTERM at the 6h timeout) ---
 function shutdown(sig) {
     log('INFO', `${sig} — leaving cleanly.`);
+    // The 6-hour job handoff arrives here. Ending the round properly is the
+    // difference between "the game stopped" and "why am I still muted?".
+    try {
+        if (game.active) {
+            game.say('\x0304The bot is being restarted — this round is void.\x03');
+            game.end(null, 'bot restart');
+        }
+    } catch (e) { /* never block the quit */ }
     try { send('QUIT :The bats scatter into the night... 🦇'); } catch (e) { /* noop */ }
     setTimeout(() => process.exit(0), 800);
 }
