@@ -295,11 +295,10 @@ function handleCommand(chan, nick, message) {
     switch (cmd) {
         case 'help':
             say(chan, 'Everyone: !!seen <nick>, !!status, !!info [nick], !!rules. '
-                + 'Mods: !!tempmute/!!tempban <nick> [mins], '
-                + '!!mass kick|ban|voice|devoice, !!autoban add|remove|list <mask>, '
-                + '!!clearbans, !!strict on|off, !!linkfilter on|off, !!raidguard on|off, '
-                + '!!sentient on|off, !!badword add|remove <w>, !!whitelist add|remove <nick>, '
-                + '!!announce <msg>.');
+                + 'Mods: !!join/!!part #room, !!rooms, !!mass kick|ban|voice|devoice, '
+                + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
+                + '!!raidguard on|off, !!sentient on|off, !!badword add|remove <w>, '
+                + '!!whitelist add|remove <nick>, !!announce <msg>.');
             break;
         case 'seen': {
             if (!target) { say(chan, 'Usage: !!seen <nick>'); break; }
@@ -332,30 +331,40 @@ function handleCommand(chan, nick, message) {
             say(chan, channelRules || 'Be civil, no slurs, no spam, no unsolicited links. I am always watching. 🦇');
             break;
 
-        // ── Timed actions: the thing a plain IRC client cannot do ─────────
-        case 'tempmute': {
-            if (!admin || !target) break;
-            if (!requireOps(chan, `mute ${target}`)) break;
-            const mins = Math.min(parseInt(args[1] || '5', 10) || 5, 1440);
-            const mask = banMask(target);
-            send(`MODE ${chan} +q ${mask}`);
-            say(chan, `\x0304[MOD]\x03 ${target} muted for ${mins}m. 🦇`);
-            setTimeout(() => { send(`MODE ${chan} -q ${mask}`); say(chan, `${target} may speak again.`); },
-                mins * 60000);
+
+        // ── Room control ─────────────────────────────────────────────────
+        // Joining is not just a JOIN line: the room must also be added to the
+        // watched set, or the bot sits there moderating nothing (isOurChannel
+        // gates every handler).
+        case 'join': {
+            if (!admin || !target) { if (admin) say(chan, 'Usage: !!join #room'); break; }
+            const room = target.startsWith('#') ? target : '#' + target;
+            if (isOurChannel(room)) { say(chan, `Already in ${room}.`); break; }
+            channelSet.add(chanKey(room));
+            config.channels.push(room);
+            send(`JOIN ${room}`);
+            send(`PRIVMSG ChanServ :OP ${room} ${currentNick}`);
+            send(`WHO ${room}`);
+            send(`NAMES ${room}`);
+            say(chan, `Drifting into ${room}. 🦇`);
             break;
         }
-        case 'tempban': {
-            if (!admin || !target) break;
-            if (!requireOps(chan, `ban ${target}`)) break;
-            const mins = Math.min(parseInt(args[1] || '10', 10) || 10, 1440);
-            const mask = banMask(target);
-            send(`MODE ${chan} +b ${mask}`);
-            send(`KICK ${chan} ${target} :banned ${mins}m`);
-            say(chan, `\x0304[MOD]\x03 ${target} banned for ${mins}m (${mask}). 🦇`);
-            setTimeout(() => { send(`MODE ${chan} -b ${mask}`); say(chan, `${target}'s ban has expired.`); },
-                mins * 60000);
+        case 'part': {
+            if (!admin) break;
+            const room = target ? (target.startsWith('#') ? target : '#' + target) : chan;
+            if (!isOurChannel(room)) { say(chan, `I'm not in ${room}.`); break; }
+            send(`PART ${room} :Called away`);
+            channelSet.delete(chanKey(room));
+            config.channels = config.channels.filter((c) => chanKey(c) !== chanKey(room));
+            opped.delete(chanKey(room));
+            members.delete(chanKey(room));
+            if (chanKey(room) !== chanKey(chan)) say(chan, `Left ${room}.`);
             break;
         }
+        case 'rooms':
+            if (!admin) break;
+            say(chan, `Watching: ${config.channels.map((c) => `${c}${opped.has(chanKey(c)) ? '(op)' : ''}`).join(', ')}`);
+            break;
 
         // ── Mass tools for a raid in progress. Owners, admins, whitelisted
         //    users and the bot itself are never targeted. ─────────────────
@@ -385,8 +394,6 @@ function handleCommand(chan, nick, message) {
             else if (args[0] === 'remove' && args[1]) { autobanMasks.delete(args[1]); say(chan, `Removed ${args[1]} (${autobanMasks.size} left).`); }
             else say(chan, `Auto-ban masks (${autobanMasks.size}): ${[...autobanMasks].join(', ') || '(none)'}. Use !!autoban add|remove <mask>.`);
             break;
-        case 'clearbans':
-            if (!admin) break;
             send(`PRIVMSG ChanServ :CLEAR ${chan} BANS`);
             say(chan, '\x0304[MOD]\x03 Clearing every ban via ChanServ.');
             break;
