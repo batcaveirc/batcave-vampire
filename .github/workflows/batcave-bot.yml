@@ -65,7 +65,7 @@ jobs:
           RAID_JOINS: ${{ secrets.RAID_JOINS || '7' }}
           RAID_WINDOW_SEC: ${{ secrets.RAID_WINDOW_SEC || '10' }}
           RAID_LOCK_SEC: ${{ secrets.RAID_LOCK_SEC || '60' }}
-          STRICT_NICKS: ${{ secrets.STRICT_NICKS || 'off' }}
+          STRICT_NICKS: ${{ secrets.STRICT_NICKS || 'on' }}
           AUTOBAN_MASKS: ${{ secrets.AUTOBAN_MASKS }}
           CHANNEL_RULES: ${{ secrets.CHANNEL_RULES }}
         run: node action-bot.js

@@ -75,6 +75,8 @@ const lockedByRaid = new Set();    // channels auto-locked, so we can auto-unloc
 const members = new Map();         // channel(lower) -> Set(nick) for !!mass
 const accountOf = new Map();       // nick(lower) -> NickServ account ('' = unregistered)
 const prefixOf = new Map();        // "chan|nick" (lower) -> "@" / "+" / "" etc.
+const nickVerdict = new Map();     // nick(lower) -> true/false (AI screened, cached)
+const nickOffences = new Map();    // nick(lower) -> times removed for the nick itself
 let aiCalls = [];                  // recent Groq call timestamps (rate limit)
 let reconnectTimer = null;
 let lastRx = Date.now();           // last byte received — drives the health check
@@ -84,7 +86,7 @@ const connectTime = Date.now();
 // Persistent auto-ban masks, enforced on every join (glob, e.g. *!*@1.2.3.*).
 const autobanMasks = new Set(list(process.env.AUTOBAN_MASKS));
 // Strict mode: kick joiners whose NICK itself contains filtered words.
-let strictNicks = onOff(process.env.STRICT_NICKS);
+let strictNicks = onOff(process.env.STRICT_NICKS || 'on');
 const channelRules = process.env.CHANNEL_RULES || '';
 
 // Raid protection: N joins inside the window trips a temporary invite-lock.
@@ -346,6 +348,62 @@ async function sentientModeration(chan, nick, message) {
     } catch (e) {
         log('AI', 'moderation error: ' + e.message);
     }
+}
+
+// --- AI nickname screening ---------------------------------------------
+// A word list only catches spellings someone already thought of. Nicknames are
+// where people get creative: "BULL4UR_RAND", slurs in other languages, sexual
+// phrases split by separators. Groq reads the nick as a phrase instead.
+// Verdicts are cached per nick so a join flood costs one call each, and the
+// cheap badNick() check runs first so obvious cases never reach the API.
+async function aiNickIsOffensive(nick) {
+    const k = nick.toLowerCase();
+    if (nickVerdict.has(k)) return nickVerdict.get(k);
+    if (!config.groqKey || !aiRateOk()) return null;      // unknown -> caller falls back
+    try {
+        const data = await groqChat({
+            model: config.groqModel, temperature: 0, max_tokens: 40,
+            messages: [
+                { role: 'system', content:
+                    'You screen IRC nicknames for a general-audience chat room. Decide if the '
+                    + 'NICKNAME ITSELF is unacceptable: sexual or pornographic, a slur, hateful, '
+                    + 'harassing, or naming a person as an insult. Leetspeak, digits and '
+                    + 'separators are used to disguise words - read it phonetically and joined '
+                    + 'up (e.g. "BULL4UR_RAND" reads as "bull 4 ur rand"). Hindi/Hinglish written '
+                    + 'in Latin script counts.\n'
+                    + 'Ordinary names, gamer tags, brands, random letters and harmless foreign '
+                    + 'words are FINE - do not flag them. When unsure, say ok.\n'
+                    + 'Reply with ONLY compact JSON: {"bad":true|false,"why":"few words"}.' },
+                { role: 'user', content: `Nickname: ${nick}` },
+            ],
+        });
+        const txt = data?.choices?.[0]?.message?.content || '';
+        const m = txt.match(/\{[\s\S]*\}/);
+        if (!m) return null;
+        const v = JSON.parse(m[0]);
+        const bad = v.bad === true;
+        nickVerdict.set(k, bad);
+        if (bad) log('MOD', `AI flagged nick "${nick}": ${String(v.why || '').slice(0, 40)}`);
+        return bad;
+    } catch (e) { return null; }
+}
+
+// Screen a joiner's nickname: cheap list check first, AI second. First offence
+// is a kick (they can just change nick); returning with the same nick is a ban.
+async function screenNick(chan, nick) {
+    if (isExempt(nick, chan)) return;
+    let bad = badNick(nick) ? 'filtered word in nick' : null;
+    if (!bad) {
+        const verdict = await aiNickIsOffensive(nick);
+        if (verdict === true) bad = 'offensive nickname';
+    }
+    if (!bad) return;
+
+    const k = nick.toLowerCase();
+    const n = (nickOffences.get(k) || 0) + 1;
+    nickOffences.set(k, n);
+    if (n === 1) kickUser(chan, nick, `${bad} - pick a cleaner nick and come back`);
+    else banUser(chan, nick, `${bad} (returned with it)`);
 }
 
 // --- Witty AI reply (for mentions when sentient mode is off) ---
@@ -741,12 +799,8 @@ function handleLine(line) {
                 return;
             }
         }
-        // Strict mode: an offensive NICK is itself a violation.
-        if (ready && strictNicks && !isExempt(nick) && badNick(nick)) {
-            log('MOD', `Strict mode: offensive nick ${nick}`);
-            kickUser(c, nick, 'offensive nickname');
-            return;
-        }
+        // Strict mode: the NICK itself is screened - word list first, then AI.
+        if (ready && strictNicks) { screenNick(c, nick); }
 
         // Raid guard: a burst of joins in a few seconds is a raid, not traffic.
         if (ready && raidGuard) {
