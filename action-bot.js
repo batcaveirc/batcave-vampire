@@ -96,6 +96,7 @@ const connectTime = Date.now();
 const protectMasks = new Set(list(process.env.PROTECT_MASKS));
 const rescueLog = new Map();       // nick(lower) -> [timestamps of rescues]
 let massPending = null;            // a bulk kick/ban awaiting confirmation
+const recentlyActioned = new Map(); // nick(lower) -> ts of last kick/ban
 
 // Persistent auto-ban masks, enforced on every join (glob, e.g. *!*@1.2.3.*).
 const autobanMasks = new Set(list(process.env.AUTOBAN_MASKS));
@@ -175,6 +176,20 @@ function normalize(t) {
         .replace(/[^a-zऀ-ॿ ]/g, ' ')     // keep latin + devanagari
         .replace(/(.)\1{2,}/g, '$1$1');
 }
+/** Every distinct filtered word in a message, for judging severity by volume. */
+function distinctHits(wordSet, msg) {
+    if (!wordSet.size) return [];
+    const norm = normalize(msg);
+    const words = new Set((' ' + norm + ' ').split(/\s+/));
+    const joined = norm.replace(/\s+/g, '');
+    const found = new Set();
+    for (const w of wordSet) {
+        if (!w) continue;
+        if (words.has(w) || (w.length >= 6 && joined.includes(w))) found.add(w);
+    }
+    return [...found];
+}
+
 function wordHit(wordSet, msg) {
     if (!wordSet.size) return null;
     const norm = normalize(msg);
@@ -268,7 +283,23 @@ function warnUser(chan, nick, reason) {
         say(chan, `\x0304[MOD]\x03 ${nick} warned (${n}/${quota}) — ${reason}.`);
     }
 }
+// A pasted wall of text arrives as several PRIVMSGs, and each one trips the
+// filter independently — which is why one offender was kicked three times with
+// three identical announcements. They are already gone after the first.
+// Keyed by channel AND action on purpose: a kick in one room must not silence
+// moderation in another, and a deliberate escalation (kick, then ban when they
+// come back with the same nick) is a different action, not a duplicate.
+function actionKey(chan, nick, action) { return `${chanKey(chan)}|${nick.toLowerCase()}|${action}`; }
+function actedRecently(chan, nick, action) {
+    return Date.now() - (recentlyActioned.get(actionKey(chan, nick, action)) || 0) < 10000;
+}
+function markActioned(chan, nick, action) {
+    recentlyActioned.set(actionKey(chan, nick, action), Date.now());
+}
+
 function kickUser(chan, nick, reason) {
+    if (actedRecently(chan, nick, 'kick')) return;
+    markActioned(chan, nick, 'kick');
     if (!requireOps(chan, `kick ${nick}`)) return;
     send(`KICK ${chan} ${nick} :${reason}`);
     say(chan, `\x0304[MOD]\x03 ${nick} banished — ${reason}. 🦇`);
@@ -277,11 +308,31 @@ function kickUser(chan, nick, reason) {
 // A "nick!*@*" ban stops nobody — they rejoin under any other nick two seconds
 // later. Ban the HOST when we know it (learned from their messages/joins) and
 // fall back to the nick mask only when we don't.
-function banMask(nick) {
-    const host = hostOf.get(nick.toLowerCase());
-    return host ? `*!*@${host.split('@')[1]}` : `${nick}!*@*`;
+/**
+ * HybridIRC cloaks look like "59oca5.fqsv.s1ur.6ea0.2a02.IP". The LEADING groups
+ * are randomised per session; the trailing two encode the network and stay put.
+ * So a ban on the full cloak lasts exactly until the offender reconnects — two
+ * observed nicks from one person differed in every leading group and matched on
+ * "6ea0.2a02.IP".
+ *
+ * wide=false → this session only (safe, evadable)
+ * wide=true  → "*!*@*.6ea0.2a02.IP", which follows them across reconnects but
+ *              also covers everyone else on that network block.
+ */
+function banMask(nick, wide) {
+    const uh = hostOf.get(nick.toLowerCase());
+    if (!uh) return `${nick}!*@*`;
+    const host = uh.split('@')[1] || '';
+    if (!wide) return `*!*@${host}`;
+    const parts = host.split('.');
+    if (parts.length >= 3 && /^ip$/i.test(parts[parts.length - 1])) {
+        return `*!*@*.${parts.slice(-3).join('.')}`;
+    }
+    return `*!*@${host}`;
 }
 function banUser(chan, nick, reason) {
+    if (actedRecently(chan, nick, 'ban')) return;
+    markActioned(chan, nick, 'ban');
     if (!requireOps(chan, `ban ${nick}`)) return;
     const mask = banMask(nick);
     send(`MODE ${chan} +b ${mask}`);
@@ -356,8 +407,16 @@ function scriptedModeration(chan, nick, message) {
 
     if (moderationOff(chan)) return false;
 
-    const bad = wordHit(badwords, message);
-    if (bad) { warnUser(chan, nick, 'watch your language'); return true; }
+    // Count DISTINCT filtered words. One swear is someone being rude; a message
+    // carrying several is a tirade, and treating it as "watch your language"
+    // under-reacts badly — that is what happened to a threat-laden wall of abuse
+    // which earned a kick when it warranted a ban.
+    const hits = distinctHits(badwords, message);
+    if (hits.length >= 3) {
+        banUser(chan, nick, `sustained abuse (${hits.length} slurs in one message)`);
+        return true;
+    }
+    if (hits.length) { warnUser(chan, nick, 'watch your language'); return true; }
 
     if (config.linkFilter && /(https?:\/\/|www\.)\S+/i.test(message)) {
         warnUser(chan, nick, 'no links'); return true;
@@ -576,7 +635,7 @@ function handleCommand(chan, nick, message) {
             say(chan, 'Everyone: !!seen <nick>, !!status, !!info [nick], !!rules. '
                 + 'Mods: !!join/!!part #room, !!rooms, !!mass kick|ban|voice|devoice, '
                 + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
-                + '!!raidguard on|off, !!protect add|remove <nick|mask>, '
+                + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, '
                 + '!!sentient on|off, !!badword add|remove <w>, '
                 + '!!whitelist add|remove <nick>, !!announce <msg>.');
             break;
@@ -707,6 +766,26 @@ function handleCommand(chan, nick, message) {
                     + 'Use !!protect add|remove <nick|mask>.');
             }
             break;
+        // A normal ban dies the moment they reconnect with a fresh cloak. This
+        // one targets the stable network part, so it follows them — at the cost
+        // of also covering others on that block, which is why it is deliberate
+        // and separate rather than the default.
+        case 'hardban': {
+            if (!admin || !target) { if (admin) say(chan, 'Usage: !!hardban <nick>'); break; }
+            const wide = banMask(target, true);
+            const seen = banMask(target, false);
+            if (wide === seen) {
+                say(chan, `No cloak known for ${target} yet — plain ban applied.`);
+            }
+            if (!requireOps(chan, `hardban ${target}`)) break;
+            send(`MODE ${chan} +b ${wide}`);
+            send(`KICK ${chan} ${target} :banned`);
+            autobanMasks.add(wide);
+            say(chan, `\x0304[MOD]\x03 ${target} hard-banned as \x02${wide}\x02 — this survives a `
+                + 'reconnect, and covers others on the same network block. '
+                + `\x02!!autoban remove ${wide}\x02 to lift it.`);
+            break;
+        }
         case 'autoban':
             if (!admin) break;
             if (args[0] === 'add' && args[1]) {
