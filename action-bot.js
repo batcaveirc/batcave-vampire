@@ -95,6 +95,7 @@ const connectTime = Date.now();
 // (e.g. *!*@ku0.6ol.235.110.IP). The WHITELIST is protected automatically.
 const protectMasks = new Set(list(process.env.PROTECT_MASKS));
 const rescueLog = new Map();       // nick(lower) -> [timestamps of rescues]
+let massPending = null;            // a bulk kick/ban awaiting confirmation
 
 // Persistent auto-ban masks, enforced on every join (glob, e.g. *!*@1.2.3.*).
 const autobanMasks = new Set(list(process.env.AUTOBAN_MASKS));
@@ -645,8 +646,9 @@ function handleCommand(chan, nick, message) {
             say(chan, `Watching: ${config.channels.map((c) => `${c}${opped.has(chanKey(c)) ? '(op)' : ''}`).join(', ')}`);
             break;
 
-        // ── Mass tools for a raid in progress. Owners, admins, whitelisted
-        //    users and the bot itself are never targeted. ─────────────────
+        // ── Mass tools for a raid in progress. Owners, admins, channel ops,
+        //    whitelisted regulars, protected masks and the bot are never
+        //    targeted, and kick/ban need an explicit confirmation. ──────────
         case 'mass': {
             if (!admin) break;
             const action = (args[0] || '').toLowerCase();
@@ -654,8 +656,31 @@ function handleCommand(chan, nick, message) {
                 say(chan, 'Usage: !!mass kick|ban|voice|devoice'); break;
             }
             if (!requireOps(chan, `mass ${action}`)) break;
-            const targets = [...members.get(chanKey(chan)) || []].filter((n) => !isExempt(n));
+            // isExempt() alone is NOT enough here: whitelisted users were removed
+            // from it on purpose so their MESSAGES still carry a warning quota.
+            // Mass actions must additionally spare everyone protected from kicks,
+            // or a single command clears the regulars out of the room.
+            const targets = [...members.get(chanKey(chan)) || []]
+                .filter((n) => !isExempt(n, chan) && !isProtectedFromKick(n));
             if (!targets.length) { say(chan, 'Nobody eligible — everyone here is protected.'); break; }
+
+            // Kicking and banning in bulk is not undoable. Show the damage first
+            // and require a second, explicit command.
+            const destructive = action === 'kick' || action === 'ban';
+            if (destructive && args[1] !== 'confirm') {
+                massPending = { chan: chanKey(chan), action, at: Date.now(), n: targets.length };
+                const preview = targets.slice(0, 8).join(', ') + (targets.length > 8 ? `, +${targets.length - 8} more` : '');
+                say(chan, `\x0304[MOD]\x03 mass ${action} would remove \x02${targets.length}\x02 user(s): ${preview}. `
+                    + `Protected and skipped: ${[...members.get(chanKey(chan)) || []].length - targets.length}. `
+                    + `Type \x02!!mass ${action} confirm\x02 within 30s to go ahead.`);
+                break;
+            }
+            if (destructive) {
+                const ok = massPending && massPending.chan === chanKey(chan)
+                    && massPending.action === action && Date.now() - massPending.at < 30000;
+                massPending = null;
+                if (!ok) { say(chan, `Nothing pending — run \x02!!mass ${action}\x02 first.`); break; }
+            }
             say(chan, `\x0304[MOD]\x03 mass ${action} on ${targets.length} user(s). 🦇`);
             targets.forEach((n, i) => setTimeout(() => {
                 if (action === 'kick') send(`KICK ${chan} ${n} :mass kick`);

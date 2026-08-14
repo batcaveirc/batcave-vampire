@@ -95,6 +95,25 @@ class FindIt {
         return this.living().filter((x) => x.room === roomKey);
     }
 
+    /** The rules, and the full ship — compartments are +s so you only see the
+     *  ones you have been invited into, which makes listing them necessary. */
+    help(chan) {
+        const say = (m) => this.bot.say(chan, m);
+        say('\x0304🚀 FINDIT\x03 — one of you is an alien. Crew finish tasks; the alien kills quietly.');
+        say(`\x02The ship (${ROOMS.length} compartments):\x03 ${ROOMS.join(' · ')} `
+            + `— plus a ghost room for the dead. Rooms are invite-only, so you only see `
+            + `the one you are in.`);
+        say('\x02Everyone:\x02 !!join (lobby) · !!go <room> move · !!fix work a task · '
+            + '!!tasks yours · !!players who is alive · !!report a body · !!meeting call everyone · '
+            + '!!vote <nick|skip>');
+        say('\x02Alien only:\x02 !!kill <nick> — only when you are ALONE with them · '
+            + '!!break <room> — sabotage it; Reactor and Oxygen start a countdown.');
+        say('\x02Winning:\x02 crew win by finishing every task or ejecting the alien. '
+            + 'The alien wins by equalling the crew, or by a sabotage running out.');
+        say('\x02Rule we cannot enforce:\x02 no private messages during a round — the bot '
+            + 'cannot see them, so that one is on your honour.');
+    }
+
     // ── lobby ────────────────────────────────────────────────────────────
     open(nick, chan) {
         if (this.active) { this.say('A game is already running. !!endgame to stop it.'); return; }
@@ -121,8 +140,10 @@ class FindIt {
         this.say(`\x0304🚀 FINDIT\x03 — the ship \x02${this.id}\x02 is boarding. `
             + `Type \x02!!join\x02 to come aboard (${LOBBY_SECS}s). `
             + `${MIN_PLAYERS}-${MAX_PLAYERS} crew. One of you will not be crew.`);
+        this.say(`\x02Compartments:\x02 ${ROOMS.join(' · ')} — move with \x02!!go <room>\x02. `
+            + 'They are invite-only, so you will only ever see the room you are in.');
         this.say('House rule: \x02no private messages until the round ends\x02 — '
-            + 'the bot cannot see them, so this one is on your honour.');
+            + 'the bot cannot see them. \x02!!findit help\x02 for the full rules.');
         this.later(() => { if (this.phase === 'lobby') this.start(nick); }, LOBBY_SECS * 1000);
     }
 
@@ -180,6 +201,7 @@ class FindIt {
             + `No kills for the first ${GRACE_SECS}s. `
             + 'Move \x02!!go <room>\x02 · work \x02!!fix\x02 · \x02!!report\x02 a body · '
             + '\x02!!meeting\x02 to call everyone back.');
+        this.say(`\x02Compartments:\x02 ${ROOMS.join(' · ')}`);
         this.updateBoard();
 
         for (const p of all) {
@@ -212,7 +234,7 @@ class FindIt {
         if (!p || !p.alive || this.phase !== 'running') return;
         const key = (arg || '').toLowerCase();
         if (!ROOMS.some((r) => r.toLowerCase() === key)) {
-            this.tell(nick, `Rooms: ${ROOMS.join(', ')}`);
+            this.tell(nick, `Compartments: ${ROOMS.join(' · ')} — \x02!!go <room>\x02`);
             return;
         }
         if (p.room === key) { this.tell(nick, 'You are already there.'); return; }
@@ -614,7 +636,12 @@ class FindIt {
     /** Returns true when the command belonged to the game. */
     handle(nick, chan, cmd, args, host) {
         // These two must work before a game exists, or nothing can ever start.
-        if (cmd === 'findit') { this.open(nick, chan); return true; }
+        if (cmd === 'findit') {
+            const sub = (args[0] || '').toLowerCase();
+            if (sub === 'help' || sub === 'rules') { this.help(chan); return true; }
+            this.open(nick, chan);
+            return true;
+        }
         if (cmd === 'endgame') {
             if (this.active) { this.end(null, 'stopped'); this.bot.say(chan, 'Game stopped.'); }
             return true;
