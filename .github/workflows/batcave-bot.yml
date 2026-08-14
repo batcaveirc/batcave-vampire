@@ -29,17 +29,36 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Run the Vampire
         env:
-          IRC_SERVER: ${{ secrets.IRC_SERVER }}
-          IRC_PORT: ${{ secrets.IRC_PORT }}
-          IRC_NICK: ${{ secrets.IRC_NICK }}
-          IRC_CHANNEL: ${{ secrets.IRC_CHANNEL }}
-          IRC_TLS: ${{ secrets.IRC_TLS }}
+          # ── Secrets: only these three actually need to be secret ──────────
           NICKSERV_PASS: ${{ secrets.NICKSERV_PASS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_API_KEY_2: ${{ secrets.GROQ_API_KEY_2 || secrets.GROQ_API_KEY1 }}
+
+          # ── Config: plain defaults, so a missing secret can never stop the
+          #    bot. Set the matching repo secret only to override one. ───────
+          IRC_SERVER: ${{ secrets.IRC_SERVER || 'irc.hybridirc.com' }}
+          IRC_PORT: ${{ secrets.IRC_PORT || '6697' }}
+          IRC_TLS: ${{ secrets.IRC_TLS || 'on' }}
+          IRC_NICK: ${{ secrets.IRC_NICK || 'Dracula' }}
+          IRC_CHANNEL: ${{ secrets.IRC_CHANNEL || '#batcave' }}
+          IRC_REALNAME: ${{ secrets.IRC_REALNAME || 'BatCave Vampire Bot' }}
           NICKSERV_ACCOUNT: ${{ secrets.NICKSERV_ACCOUNT }}
-          NICKSERV_GHOST_ON_CONNECT: ${{ secrets.NICKSERV_GHOST_ON_CONNECT }}
+
+          # Owners get every command. Admins get the moderation subset; leaving
+          # ADMINS empty is fine when everyone is listed in OWNERS.
           OWNERS: ${{ secrets.OWNERS }}
           ADMINS: ${{ secrets.ADMINS }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
+          WHITELIST: ${{ secrets.WHITELIST }}
+
+          # ── Moderation tuning ────────────────────────────────────────────
+          GROQ_MODEL: ${{ secrets.GROQ_MODEL || 'llama-3.1-8b-instant' }}
+          SENTIENT_ON: ${{ secrets.SENTIENT_ON || 'off' }}
+          WARN_LIMIT: ${{ secrets.WARN_LIMIT || '3' }}
+          LINK_FILTER: ${{ secrets.LINK_FILTER || 'off' }}
           BADWORDS: ${{ secrets.BADWORDS }}
+          SEVERE_WORDS: ${{ secrets.SEVERE_WORDS }}
+          RAID_GUARD: ${{ secrets.RAID_GUARD || 'on' }}
+          RAID_JOINS: ${{ secrets.RAID_JOINS || '7' }}
+          RAID_WINDOW_SEC: ${{ secrets.RAID_WINDOW_SEC || '10' }}
+          RAID_LOCK_SEC: ${{ secrets.RAID_LOCK_SEC || '60' }}
         run: node action-bot.js

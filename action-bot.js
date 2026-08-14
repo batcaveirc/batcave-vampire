@@ -1,13 +1,19 @@
 const net = require('net');
+const tls = require('tls');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
 const onOff = (s) => /^(1|true|yes|on)$/i.test(s || '');
 const channels = (process.env.IRC_CHANNEL || '#batcave').split(',').map((s) => s.trim()).filter(Boolean);
 
+// TLS matters here: without it the NickServ password is sent in cleartext over
+// the wire. IRC_TLS was previously accepted in config but never honoured.
+const useTls = onOff(process.env.IRC_TLS);
+
 const config = {
     host: process.env.IRC_SERVER || 'irc.hybridirc.com',
-    port: parseInt(process.env.IRC_PORT || '6667', 10),
+    port: parseInt(process.env.IRC_PORT || (useTls ? '6697' : '6667'), 10),
+    tls: useTls,
     nick: process.env.IRC_NICK || 'Dracula',
     realname: process.env.IRC_REALNAME || 'BatCave Vampire Bot',
     password: process.env.NICKSERV_PASS || '',
@@ -16,6 +22,8 @@ const config = {
     owners: list(process.env.OWNERS),
     admins: list(process.env.ADMINS),
     groqKey: process.env.GROQ_API_KEY || '',
+    // Free Groq tiers rate-limit fast; a second key keeps moderation alive.
+    groqKey2: process.env.GROQ_API_KEY_2 || process.env.GROQ_API_KEY1 || '',
     groqModel: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
     linkFilter: onOff(process.env.LINK_FILTER),
     warnLimit: parseInt(process.env.WARN_LIMIT || '3', 10),
@@ -181,23 +189,41 @@ function aiRateOk() {
     aiCalls.push(now);
     return true;
 }
+// One place that talks to Groq, so both callers get key failover for free.
+async function groqChat(body) {
+    const keys = [config.groqKey, config.groqKey2].filter(Boolean);
+    let lastErr = null;
+    for (const key of keys) {
+        try {
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            // 401 = bad key, 429 = rate-limited → try the backup instead of giving up
+            if ((res.status === 401 || res.status === 429) && keys.length > 1) {
+                lastErr = new Error(`key rejected (${res.status})`);
+                continue;
+            }
+            return await res.json();
+        } catch (e) { lastErr = e; }
+    }
+    if (lastErr) throw lastErr;
+    return null;
+}
+
 async function sentientModeration(chan, nick, message) {
     if (isExempt(nick) || !config.groqKey || message.length < 4) return;
     if (!aiRateOk()) return;                        // busy → scripted filter still covers it
     try {
-        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${config.groqKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+        const data = await groqChat(({
                 model: config.groqModel, temperature: 0, max_tokens: 60,
                 messages: [
                     { role: 'system', content: 'You are a strict but fair IRC moderator. Decide if the user message is abusive, harassing, hateful, or threatening. Reply with ONLY compact JSON: {"action":"none|warn|kick","reason":"few words"}. Use "kick" only for severe abuse, slurs, threats or hate; "warn" for insults or mild toxicity; otherwise "none".' },
                     { role: 'user', content: message },
                 ],
-            }),
-        });
-        const data = await res.json();
-        const txt = data.choices?.[0]?.message?.content || '';
+        }));
+        const txt = data?.choices?.[0]?.message?.content || '';
         const m = txt.match(/\{[\s\S]*\}/);
         if (!m) return;
         let verdict;
@@ -214,19 +240,14 @@ async function sentientModeration(chan, nick, message) {
 async function getAIResponse(prompt, who) {
     if (!config.groqKey) return null;
     try {
-        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${config.groqKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model: config.groqModel, temperature: 0.9, max_tokens: 120,
-                messages: [
-                    { role: 'system', content: 'You are Dracula, a witty gothic vampire haunting an IRC channel. Never admit to being a bot. Keep replies to 1-2 sharp sentences.' },
-                    { role: 'user', content: `${who} says: ${prompt}` },
-                ],
-            }),
+        const data = await groqChat({
+            model: config.groqModel, temperature: 0.9, max_tokens: 120,
+            messages: [
+                { role: 'system', content: 'You are Dracula, a witty gothic vampire haunting an IRC channel. Never admit to being a bot. Keep replies to 1-2 sharp sentences.' },
+                { role: 'user', content: `${who} says: ${prompt}` },
+            ],
         });
-        const data = await res.json();
-        return (data.choices?.[0]?.message?.content || '').replace(/\s+/g, ' ').trim().slice(0, 380) || null;
+        return (data?.choices?.[0]?.message?.content || '').replace(/\s+/g, ' ').trim().slice(0, 380) || null;
     } catch (e) { return null; }
 }
 
@@ -356,19 +377,23 @@ function handleCommand(chan, nick, message) {
 function connect() {
     if (connecting) return;
     connecting = true; hasJoined = false; ready = false; currentNick = config.nick;
-    log('INFO', `Connecting to ${config.host}:${config.port} as ${config.nick}...`);
-    socket = new net.Socket();
-    socket.setKeepAlive(true, 30000);
-    let buf = '';
-    lastRx = Date.now(); pingProbeSent = false;
-    socket.connect(config.port, config.host, () => {
+    log('INFO', `Connecting to ${config.host}:${config.port} (${config.tls ? 'TLS' : 'plaintext'}) as ${config.nick}...`);
+
+    const onReady = () => {
         connecting = false;
         lastRx = Date.now();
-        log('TCP', 'Connected — registering...');
+        log('TCP', `Connected${config.tls ? ' over TLS' : ''} — registering...`);
         send(`NICK ${config.nick}`);
         send(`USER ${config.nick} 0 * :${config.realname}`);
         setTimeout(() => { if (!hasJoined) config.channels.forEach((c) => send(`JOIN ${c}`)); }, 5000);
-    });
+    };
+
+    socket = config.tls
+        ? tls.connect({ host: config.host, port: config.port, servername: config.host }, onReady)
+        : net.createConnection({ host: config.host, port: config.port }, onReady);
+    socket.setKeepAlive(true, 30000);
+    let buf = '';
+    lastRx = Date.now(); pingProbeSent = false;
     socket.on('data', (data) => {
         lastRx = Date.now(); pingProbeSent = false;   // any byte proves the link is alive
         buf += data.toString();
