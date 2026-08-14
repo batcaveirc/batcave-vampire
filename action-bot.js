@@ -47,7 +47,10 @@ const DEFAULT_BADWORDS = ['fuck', 'shit', 'bitch', 'bastard', 'asshole', 'dick',
     'kutta', 'kutte', 'kutti', 'chutiya', 'chutiye', 'chutia', 'madarchod', 'madarchod',
     'bhenchod', 'bhanchod', 'behenchod', 'bhosdi', 'bhosdike', 'bhosadike',
     'randi', 'raand', 'rand', 'chut', 'chudai', 'chod', 'chodu', 'lund', 'gaand',
-    'gandu', 'harami', 'kamina', 'kaminey', 'suwar', 'suar', 'jhaat', 'tatti', 'lodu'];
+    'gandu', 'harami', 'kamina', 'kamine', 'kaminey', 'kaminon',
+    'suwar', 'suar', 'jhaat', 'tatti', 'lodu', 'bsdk', 'bhadwa', 'bhadve',
+    // truncations people actually type
+    'fuc', 'fuk', 'fck', 'phuck', 'azz', 'btch'];
 const badwords = new Set([...DEFAULT_BADWORDS, ...list(process.env.BADWORDS)]);
 const severeWords = new Set(list(process.env.SEVERE_WORDS));
 const whitelist = new Set(list(process.env.WHITELIST));
@@ -128,15 +131,25 @@ function isExempt(nick, chan) {
 // Normalize leet/obfuscation so "st00pid" and "f-u-c-k" still match a whole word.
 function normalize(t) {
     return (t || '').toLowerCase()
-        .replace(/[0@]/g, 'o').replace(/[1!|]/g, 'i').replace(/3/g, 'e')
+        // '@' stands in for 'a' (k@mine -> kamine), NOT 'o'. Getting this wrong
+        // let "k@mine ho" and "h@rami ho" walk straight through the filter.
+        .replace(/@/g, 'a').replace(/0/g, 'o').replace(/[1!|]/g, 'i').replace(/3/g, 'e')
         .replace(/4/g, 'a').replace(/[5$]/g, 's').replace(/7/g, 't')
         .replace(/[^a-zऀ-ॿ ]/g, ' ')     // keep latin + devanagari
         .replace(/(.)\1{2,}/g, '$1$1');
 }
 function wordHit(wordSet, msg) {
     if (!wordSet.size) return null;
-    const words = new Set((' ' + normalize(msg) + ' ').split(/\s+/));
+    const norm = normalize(msg);
+    const words = new Set((' ' + norm + ' ').split(/\s+/));
     for (const w of wordSet) if (w && words.has(w)) return w;
+
+    // Second pass for evasion by spacing/punctuation ("k a m i n e", "ch.utiya").
+    // Only words of 6+ characters, because short ones hide inside innocent words
+    // (e.g. "randi" inside the name "Brandi") and a false kick is worse than a
+    // missed one.
+    const joined = norm.replace(/\s+/g, '');
+    for (const w of wordSet) if (w && w.length >= 6 && joined.includes(w)) return w;
     return null;
 }
 
@@ -848,9 +861,11 @@ function handleLine(line) {
 
         if (msg.startsWith('!!')) { handleCommand(tgt, nick, msg); return; }
         if (scriptedModeration(tgt, nick, msg)) return;       // scripted filter first
-        if (sentientMode) { sentientModeration(tgt, nick, msg); return; }
+        // Sentient screening runs in the background. It must NOT return here:
+        // doing so silenced every reply once sentient mode became the default.
+        if (sentientMode) sentientModeration(tgt, nick, msg);
 
-        // Not moderating → reply if mentioned by name
+        // Reply if mentioned by name
         if (new RegExp(`\\b${config.nick}\\b`, 'i').test(msg)) {
             getAIResponse(msg, nick).then((r) => { if (r) say(tgt, `${nick}: ${r}`); });
         }
