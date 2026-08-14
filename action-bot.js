@@ -393,15 +393,22 @@ async function aiNickIsOffensive(nick) {
             model: config.groqModel, temperature: 0, max_tokens: 40,
             messages: [
                 { role: 'system', content:
-                    'You screen IRC nicknames for a general-audience chat room. Decide if the '
-                    + 'NICKNAME ITSELF is unacceptable: sexual or pornographic, a slur, hateful, '
-                    + 'harassing, or naming a person as an insult. Leetspeak, digits and '
-                    + 'separators are used to disguise words - read it phonetically and joined '
-                    + 'up (e.g. "BULL4UR_RAND" reads as "bull 4 ur rand"). Hindi/Hinglish written '
-                    + 'in Latin script counts.\n'
-                    + 'Ordinary names, gamer tags, brands, random letters and harmless foreign '
-                    + 'words are FINE - do not flag them. When unsure, say ok.\n'
-                    + 'Reply with ONLY compact JSON: {"bad":true|false,"why":"few words"}.' },
+                    'You screen IRC nicknames. Flag a nickname ONLY when it unmistakably '
+                    + 'contains an explicit slur, explicit sexual/pornographic wording, hate '
+                    + 'speech, or an insult aimed at a person. Read leetspeak and separators '
+                    + 'phonetically ("BULL4UR_RAND" = "bull 4 ur rand"); Hinglish in Latin '
+                    + 'script counts.\n\n'
+                    + 'DO NOT flag, these are all fine:\n'
+                    + '- abbreviations and consonant clusters: NgtCht, fwkkr, xyzzy, brb_afk\n'
+                    + '- ordinary or foreign words even if suggestive: erotiqueF, Sensual, Amour\n'
+                    + '- gamer tags, brands, random letters, names in any language\n'
+                    + '- edgy or gothic themes: Lucifer, DeathKnight, Reaper\n\n'
+                    + 'A wrong flag ejects a real person from their community, so the bar is '
+                    + 'high: if you have to reason about it, or it only MIGHT be rude, it is '
+                    + 'fine. Set confident=true only when the offensive reading is the obvious '
+                    + 'one to any reader.\n'
+                    + 'Reply with ONLY compact JSON: '
+                    + '{"bad":true|false,"confident":true|false,"category":"slur|sexual|hate|insult|none","why":"few words"}.' },
                 { role: 'user', content: `Nickname: ${nick}` },
             ],
         });
@@ -409,9 +416,16 @@ async function aiNickIsOffensive(nick) {
         const m = txt.match(/\{[\s\S]*\}/);
         if (!m) return null;
         const v = JSON.parse(m[0]);
-        const bad = v.bad === true;
+        // Two gates: the model must say bad AND say it is confident AND name a
+        // real category. One loose "true" should not remove someone.
+        const bad = v.bad === true && v.confident === true
+            && ['slur', 'sexual', 'hate', 'insult'].includes(String(v.category || '').toLowerCase());
         nickVerdict.set(k, bad);
-        if (bad) log('MOD', `AI flagged nick "${nick}": ${String(v.why || '').slice(0, 40)}`);
+        if (v.bad === true && !bad) {
+            log('MOD', `AI flagged "${nick}" but not confidently (${v.category || '?'}) — leaving it.`);
+        } else if (bad) {
+            log('MOD', `AI flagged nick "${nick}": ${v.category} — ${String(v.why || '').slice(0, 40)}`);
+        }
         return bad;
     } catch (e) { return null; }
 }
@@ -420,7 +434,15 @@ async function aiNickIsOffensive(nick) {
 // is a kick (they can just change nick); returning with the same nick is a ban.
 async function screenNick(chan, nick) {
     if (isExempt(nick, chan)) return;
-    let bad = badNick(nick) ? 'filtered word in nick' : null;
+    // isExempt() deliberately excludes whitelisted users (they get a warn quota
+    // for what they SAY). But a trusted regular's NAME is settled — screening it
+    // banned a user seconds after the owner whitelisted them.
+    if (whitelist.has(nick.toLowerCase())) return;
+    // A registered nick is an identity someone owns; leave those to a human.
+    if (isRegistered(nick)) return;
+    const listHit = badNick(nick);
+    const fromList = !!listHit;
+    let bad = listHit ? 'filtered word in nick' : null;
     if (!bad) {
         const verdict = await aiNickIsOffensive(nick);
         if (verdict === true) bad = 'offensive nickname';
@@ -430,8 +452,12 @@ async function screenNick(chan, nick) {
     const k = nick.toLowerCase();
     const n = (nickOffences.get(k) || 0) + 1;
     nickOffences.set(k, n);
-    if (n === 1) kickUser(chan, nick, `${bad} - pick a cleaner nick and come back`);
-    else banUser(chan, nick, `${bad} (returned with it)`);
+
+    // Only the word list — which the owner controls — may escalate to a ban.
+    // An AI judgement is an opinion, and a wrong ban on a regular costs far
+    // more than asking someone twice to change their nick.
+    if (fromList && n > 1) banUser(chan, nick, `${bad} (returned with it)`);
+    else kickUser(chan, nick, `${bad} - please pick a different nick`);
 }
 
 // --- Witty AI reply (for mentions when sentient mode is off) ---
