@@ -166,14 +166,17 @@ function banUser(chan, nick, reason) {
     say(chan, `\x0304[MOD]\x03 ${nick} banned (${mask}) — ${reason}. 🦇`);
 }
 
-// Ops check. Without this the bot cheerfully announces "X banished" while the
-// server quietly refuses the KICK with a 482 — the "action failed" symptom.
+// Ops handling. We do NOT refuse an action just because our own bookkeeping
+// says we lack ops — that state can be stale (ChanServ can op us at any time,
+// and an op granted before we joined arrives only in the NAMES list). Refusing
+// on stale state blocks a bot that is in fact opped. Instead: always attempt,
+// and let the server's 482 reply report the failure honestly.
 function requireOps(chan, what) {
-    if (opped.has(chanKey(chan))) return true;
-    log('MOD', `No ops in ${chan} — cannot ${what}; asking ChanServ.`);
-    send(`PRIVMSG ChanServ :OP ${chan} ${currentNick}`);
-    say(chan, `\x0304[MOD]\x03 I need ops to ${what}. Asking ChanServ — try again in a moment.`);
-    return false;
+    if (!opped.has(chanKey(chan))) {
+        log('MOD', `No ops recorded for ${chan} — attempting "${what}" anyway; asking ChanServ.`);
+        send(`PRIVMSG ChanServ :OP ${chan} ${currentNick}`);
+    }
+    return true;
 }
 
 // --- Scripted moderation (ALWAYS on): severe, badwords, links, caps, flood, repeat ---
@@ -528,6 +531,7 @@ function handleLine(line) {
         opped.delete(chanKey(c));
         log('MOD', `482 no-ops in ${c} — requesting ops from ChanServ.`);
         send(`PRIVMSG ChanServ :OP ${c} ${currentNick}`);
+        say(c, '\x0304[MOD]\x03 That needs ops and the server refused me. Asking ChanServ — try again in a moment.');
     }
 
     // Track our own +o/-o so we know whether actions will actually land.
@@ -548,14 +552,26 @@ function handleLine(line) {
         }
     }
 
-    if (command === '353') {                       // NAMES reply -> membership
+    if (command === '353') {                       // NAMES reply -> membership + our own status
         const ch = chanKey(params[2] || '');
         const set = members.get(ch) || new Set();
         for (const raw of (params.slice(3).join(' ').replace(/^:/, '')).split(/\s+/)) {
+            const pfx = (raw.match(/^[~&@%+]+/) || [''])[0];
             const n = raw.replace(/^[~&@%+]+/, '');
-            if (n) set.add(n);
+            if (!n) continue;
+            set.add(n);
+            // ~ owner, & admin, @ op, % halfop all carry kick rights here.
+            if (n.toLowerCase() === currentNick.toLowerCase() && /[~&@%]/.test(pfx)) {
+                if (!opped.has(ch)) log('OK', `Already opped in ${ch} (seen as "${pfx}" in NAMES).`);
+                opped.add(ch);
+            }
         }
         members.set(ch, set);
+    }
+    // WHO reply -> learn every user's host, so a ban works even for someone
+    // who has not spoken yet (otherwise we fall back to a weak nick mask).
+    if (command === '352' && params[5] && params[2] && params[3]) {
+        hostOf.set(params[5].toLowerCase(), `${params[2]}@${params[3]}`);
     }
     if (command === 'PART' && nick) (members.get(chanKey(tgt)) || new Set()).delete(nick);
     if (command === 'QUIT' && nick) for (const set of members.values()) set.delete(nick);
@@ -565,6 +581,8 @@ function handleLine(line) {
         const c = (tgt || msg).replace(/^:/, '');
         log('OK', `Joined ${c}`);
         send(`PRIVMSG ChanServ :OP ${c} ${currentNick}`);   // claim ops up front
+        send(`WHO ${c}`);                                   // learn hosts for real bans
+        send(`NAMES ${c}`);                                 // and our own op status
         say(c, '🦇 Dracula stirs. The night watch begins — !!help.');
     } else if (command === 'JOIN' && nick) {
         const c = chanKey((tgt || msg).replace(/^:/, ''));
