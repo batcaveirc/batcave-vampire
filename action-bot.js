@@ -63,11 +63,18 @@ const ignored = new Set();         // nick(lower) -> bot ignores them entirely
 const opped = new Set();           // channel(lower) we currently hold +o in
 const joinLog = new Map();         // channel(lower) -> [join timestamps] (raid detect)
 const lockedByRaid = new Set();    // channels auto-locked, so we can auto-unlock
+const members = new Map();         // channel(lower) -> Set(nick) for !!mass
 let aiCalls = [];                  // recent Groq call timestamps (rate limit)
 let reconnectTimer = null;
 let lastRx = Date.now();           // last byte received — drives the health check
 let pingProbeSent = false;
 const connectTime = Date.now();
+
+// Persistent auto-ban masks, enforced on every join (glob, e.g. *!*@1.2.3.*).
+const autobanMasks = new Set(list(process.env.AUTOBAN_MASKS));
+// Strict mode: kick joiners whose NICK itself contains filtered words.
+let strictNicks = onOff(process.env.STRICT_NICKS);
+const channelRules = process.env.CHANNEL_RULES || '';
 
 // Raid protection: N joins inside the window trips a temporary invite-lock.
 const raidJoins = parseInt(process.env.RAID_JOINS || '7', 10);
@@ -100,6 +107,28 @@ function wordHit(wordSet, msg) {
     if (!wordSet.size) return null;
     const words = new Set((' ' + normalize(msg) + ' ').split(/\s+/));
     for (const w of wordSet) if (w && words.has(w)) return w;
+    return null;
+}
+
+// Glob ("*!*@1.2.3.*") -> RegExp, for auto-ban masks.
+function globToRe(glob) {
+    return new RegExp('^' + glob.split('*').map((x) =>
+        x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$', 'i');
+}
+function matchesAnyMask(nick, userHost) {
+    const full = `${nick}!${userHost}`;
+    for (const m of autobanMasks) { if (globToRe(m).test(full)) return m; }
+    return null;
+}
+
+// Nick screening is different from message screening: wordHit() matches whole
+// words so ordinary chat isn't over-flagged, but a nick is a single token —
+// "stupidbot" would never match "stupid". Use substring matching here, with a
+// minimum length so short words can't cause false hits.
+function badNick(nick) {
+    const n = normalize(nick).replace(/\s+/g, '');
+    for (const w of severeWords) if (w && w.length >= 3 && n.includes(w)) return w;
+    for (const w of badwords) if (w && w.length >= 4 && n.includes(w)) return w;
     return null;
 }
 
@@ -167,6 +196,7 @@ function scriptedModeration(chan, nick, message) {
     }
 
     const k = nick.toLowerCase(), now = Date.now();
+
     const hist = (floodLog.get(k) || []).filter((t) => now - t < 5000);
     hist.push(now); floodLog.set(k, hist);
     if (hist.length > 5) { warnUser(chan, nick, 'flooding'); return true; }
@@ -261,47 +291,133 @@ function handleCommand(chan, nick, message) {
 
     switch (cmd) {
         case 'help':
-            say(chan, 'Everyone: !!seen <nick>, !!status, !!warnings [nick]. '
-                + 'Admins: !!warn !!unwarn !!kick !!ban !!kb !!unban !!mute !!unmute <nick>, '
-                + '!!op !!deop !!voice !!devoice !!invite <nick>, !!topic <text>, !!ops, '
-                + '!!akick/!!unakick <nick>, !!ignore/!!unignore <nick>, !!warnlist, '
-                + '!!lockdown [off], !!raidguard on|off, '
-                + '!!badword add|remove <w>, !!whitelist add|remove <nick>, !!sentient on|off. '
-                + 'Owner: !!say <text>, !!mode <modes>, !!lock/!!unlock, !!moderate/!!unmoderate.');
+            say(chan, 'Everyone: !!seen <nick>, !!status, !!info [nick], !!rules. '
+                + 'Mods: !!tempmute/!!tempban <nick> [mins], '
+                + '!!mass kick|ban|voice|devoice, !!autoban add|remove|list <mask>, '
+                + '!!clearbans, !!strict on|off, !!linkfilter on|off, !!raidguard on|off, '
+                + '!!sentient on|off, !!badword add|remove <w>, !!whitelist add|remove <nick>, '
+                + '!!announce <msg>.');
             break;
         case 'seen': {
             if (!target) { say(chan, 'Usage: !!seen <nick>'); break; }
-            const s = seenUsers[target.toLowerCase()];
-            say(chan, s ? `${target} was last seen at ${s}.` : `I haven't seen ${target} since I rose.`);
+            const st = seenUsers[target.toLowerCase()];
+            say(chan, st ? `${target} was last seen at ${st}.` : `I haven't seen ${target} since I rose.`);
             break;
         }
         case 'status': {
             const up = Math.floor((Date.now() - connectTime) / 1000);
-            say(chan, `Online. Sentient: ${sentientMode ? 'ON' : 'OFF'}. Filter: ${badwords.size} words. `
-                + `Whitelist: ${whitelist.size}. Tracking ${warns.size} warned. Uptime: ${up}s.`);
+            const h = Math.floor(up / 3600), m = Math.floor((up % 3600) / 60);
+            say(chan, `Online ${h}h${m}m. Sentient: ${sentientMode ? 'ON' : 'OFF'}. `
+                + `Strict: ${strictNicks ? 'ON' : 'OFF'}. `
+                + `Raidguard: ${raidGuard ? 'ON' : 'OFF'}. Filter: ${badwords.size} words. `
+                + `Autoban masks: ${autobanMasks.size}. Ops here: ${opped.has(chanKey(chan)) ? 'yes' : 'NO'}.`);
             break;
         }
-        case 'warnings':
-            say(chan, `${target || nick}: ${warns.get((target || nick).toLowerCase()) || 0}/${config.warnLimit} warnings.`);
+        // Who is this? Role, strikes, host, protection — the intel a mod needs
+        // before acting. (Vampire's !info.)
+        case 'info': {
+            const who = target || nick;
+            const k = who.toLowerCase();
+            const role = isOwner(who) ? 'owner' : isAdmin(who) ? 'admin' : 'user';
+            say(chan, `${who} — role: ${role}, strikes: ${warns.get(k) || 0}/${config.warnLimit}, `
+                + `host: ${hostOf.get(k) || 'unknown'}, `
+                + `${whitelist.has(k) ? 'whitelisted (immune)' : 'not whitelisted'}`
+                + `${ignored.has(k) ? ', ignored' : ''}, last seen: ${seenUsers[k] || 'never'}.`);
+            break;
+        }
+        case 'rules':
+            say(chan, channelRules || 'Be civil, no slurs, no spam, no unsolicited links. I am always watching. 🦇');
+            break;
+
+        // ── Timed actions: the thing a plain IRC client cannot do ─────────
+        case 'tempmute': {
+            if (!admin || !target) break;
+            if (!requireOps(chan, `mute ${target}`)) break;
+            const mins = Math.min(parseInt(args[1] || '5', 10) || 5, 1440);
+            const mask = banMask(target);
+            send(`MODE ${chan} +q ${mask}`);
+            say(chan, `\x0304[MOD]\x03 ${target} muted for ${mins}m. 🦇`);
+            setTimeout(() => { send(`MODE ${chan} -q ${mask}`); say(chan, `${target} may speak again.`); },
+                mins * 60000);
+            break;
+        }
+        case 'tempban': {
+            if (!admin || !target) break;
+            if (!requireOps(chan, `ban ${target}`)) break;
+            const mins = Math.min(parseInt(args[1] || '10', 10) || 10, 1440);
+            const mask = banMask(target);
+            send(`MODE ${chan} +b ${mask}`);
+            send(`KICK ${chan} ${target} :banned ${mins}m`);
+            say(chan, `\x0304[MOD]\x03 ${target} banned for ${mins}m (${mask}). 🦇`);
+            setTimeout(() => { send(`MODE ${chan} -b ${mask}`); say(chan, `${target}'s ban has expired.`); },
+                mins * 60000);
+            break;
+        }
+
+        // ── Mass tools for a raid in progress. Owners, admins, whitelisted
+        //    users and the bot itself are never targeted. ─────────────────
+        case 'mass': {
+            if (!admin) break;
+            const action = (args[0] || '').toLowerCase();
+            if (!['kick', 'ban', 'voice', 'devoice'].includes(action)) {
+                say(chan, 'Usage: !!mass kick|ban|voice|devoice'); break;
+            }
+            if (!requireOps(chan, `mass ${action}`)) break;
+            const targets = [...members.get(chanKey(chan)) || []].filter((n) => !isExempt(n));
+            if (!targets.length) { say(chan, 'Nobody eligible — everyone here is protected.'); break; }
+            say(chan, `\x0304[MOD]\x03 mass ${action} on ${targets.length} user(s). 🦇`);
+            targets.forEach((n, i) => setTimeout(() => {
+                if (action === 'kick') send(`KICK ${chan} ${n} :mass kick`);
+                else if (action === 'ban') { send(`MODE ${chan} +b ${banMask(n)}`); send(`KICK ${chan} ${n} :mass ban`); }
+                else if (action === 'voice') send(`MODE ${chan} +v ${n}`);
+                else send(`MODE ${chan} -v ${n}`);
+            }, i * 350));                                  // paced: avoids server flood kill
+            break;
+        }
+
+        // ── Persistent mask rules, enforced on every join ────────────────
+        case 'autoban':
+            if (!admin) break;
+            if (args[0] === 'add' && args[1]) { autobanMasks.add(args[1]); say(chan, `Auto-ban mask added: ${args[1]} (${autobanMasks.size} total).`); }
+            else if (args[0] === 'remove' && args[1]) { autobanMasks.delete(args[1]); say(chan, `Removed ${args[1]} (${autobanMasks.size} left).`); }
+            else say(chan, `Auto-ban masks (${autobanMasks.size}): ${[...autobanMasks].join(', ') || '(none)'}. Use !!autoban add|remove <mask>.`);
+            break;
+        case 'clearbans':
+            if (!admin) break;
+            send(`PRIVMSG ChanServ :CLEAR ${chan} BANS`);
+            say(chan, '\x0304[MOD]\x03 Clearing every ban via ChanServ.');
+            break;
+
+        // ── Toggles ──────────────────────────────────────────────────────
+        case 'strict':
+            if (!admin) break;
+            if (args[0] === 'on') { strictNicks = true; say(chan, '\x0304[MOD]\x03 Strict mode ON — offensive nicks are removed on sight.'); }
+            else if (args[0] === 'off') { strictNicks = false; say(chan, 'Strict mode OFF.'); }
+            else say(chan, `Strict mode is ${strictNicks ? 'ON' : 'OFF'}. Use !!strict on|off.`);
+            break;
+        case 'linkfilter':
+            if (!admin) break;
+            if (args[0] === 'on') { config.linkFilter = true; say(chan, 'Link filter ON.'); }
+            else if (args[0] === 'off') { config.linkFilter = false; say(chan, 'Link filter OFF.'); }
+            else say(chan, `Link filter is ${config.linkFilter ? 'ON' : 'OFF'}.`);
+            break;
+        case 'raidguard':
+            if (!admin) break;
+            if (args[0] === 'on') { raidGuard = true; say(chan, `🛡️ Raid guard ON (${raidJoins} joins / ${raidWindowMs / 1000}s → auto-lock).`); }
+            else if (args[0] === 'off') { raidGuard = false; say(chan, 'Raid guard OFF.'); }
+            else say(chan, `Raid guard is ${raidGuard ? 'ON' : 'OFF'}.`);
             break;
         case 'sentient':
-            if (!admin) { say(chan, 'Access denied: admins only.'); break; }
+            if (!admin) { say(chan, 'Access denied.'); break; }
             if (args[0] === 'on') { sentientMode = true; say(chan, '🧠 Sentient moderation ACTIVE — I read the room now.'); }
             else if (args[0] === 'off') { sentientMode = false; say(chan, 'Sentient moderation off — scripted filter still stands guard.'); }
-            else say(chan, `Sentient is ${sentientMode ? 'ON' : 'OFF'}. Use !!sentient on|off.`);
+            else say(chan, `Sentient is ${sentientMode ? 'ON' : 'OFF'}.`);
             break;
-        case 'warn': if (admin && target) warnUser(chan, target, `warned by ${nick}`); break;
-        case 'unwarn': if (admin && target) { warns.delete(target.toLowerCase()); say(chan, `${target}'s warnings cleared.`); } break;
-        case 'kick': if (admin && target) kickUser(chan, target, `by ${nick}`); break;
-        case 'ban': if (admin && target) banUser(chan, target, `by ${nick}`); break;
-        case 'unban': if (admin && target) send(`MODE ${chan} -b ${target}!*@*`); break;
-        case 'mute': if (admin && target) send(`MODE ${chan} +q ${target}!*@*`); break;
-        case 'unmute': if (admin && target) send(`MODE ${chan} -q ${target}!*@*`); break;
         case 'badword':
             if (!admin) break;
-            if (args[0] === 'add' && args[1]) { badwords.add(args[1].toLowerCase()); say(chan, `Added "${args[1]}" to the filter (${badwords.size} total).`); }
+            if (args[0] === 'add' && args[1]) { badwords.add(args[1].toLowerCase()); say(chan, `Added "${args[1]}" (${badwords.size} total).`); }
             else if (args[0] === 'remove' && args[1]) { badwords.delete(args[1].toLowerCase()); say(chan, `Removed "${args[1]}" (${badwords.size} total).`); }
-            else say(chan, `Filter holds ${badwords.size} words. Use !!badword add|remove <word>.`);
+            else say(chan, `Filter holds ${badwords.size} words.`);
             break;
         case 'whitelist':
             if (!admin) break;
@@ -309,65 +425,9 @@ function handleCommand(chan, nick, message) {
             else if (args[0] === 'remove' && args[1]) { whitelist.delete(args[1].toLowerCase()); say(chan, `${args[1]} removed from the whitelist.`); }
             else say(chan, `Whitelist (${whitelist.size}): ${[...whitelist].join(', ') || '(empty)'}.`);
             break;
-        case 'say': if (owner) say(chan, args.join(' ')); break;
-        case 'mode': if (owner && args.length) send(`MODE ${chan} ${args.join(' ')}`); break;
-        case 'lock': if (owner) send(`MODE ${chan} +i`); break;
-        case 'unlock': if (owner) send(`MODE ${chan} -i`); break;
-        case 'moderate': if (owner) send(`MODE ${chan} +m`); break;
-        case 'unmoderate': if (owner) send(`MODE ${chan} -m`); break;
-
-        // ── Moderation tools ported from the Vampire bot ──────────────────
-        case 'kb':                                   // kick AND ban in one go
-            if (admin && target) banUser(chan, target, args.slice(1).join(' ') || `by ${nick}`);
-            break;
-        case 'akick':                                // persistent ban via ChanServ
-            if (!admin || !target) break;
-            send(`PRIVMSG ChanServ :AKICK ${chan} ADD ${banMask(target)} ${args.slice(1).join(' ') || 'akick'}`);
-            say(chan, `\x0304[MOD]\x03 ${target} added to the permanent ban list.`);
-            break;
-        case 'unakick':
-            if (!admin || !target) break;
-            send(`PRIVMSG ChanServ :AKICK ${chan} DEL ${banMask(target)}`);
-            say(chan, `\x0304[MOD]\x03 ${target} removed from the permanent ban list.`);
-            break;
-        case 'op': if (admin && target && requireOps(chan, 'op')) send(`MODE ${chan} +o ${target}`); break;
-        case 'deop': if (admin && target && requireOps(chan, 'deop')) send(`MODE ${chan} -o ${target}`); break;
-        case 'voice': if (admin && target && requireOps(chan, 'voice')) send(`MODE ${chan} +v ${target}`); break;
-        case 'devoice': if (admin && target && requireOps(chan, 'devoice')) send(`MODE ${chan} -v ${target}`); break;
-        case 'invite': if (admin && target) send(`INVITE ${target} ${chan}`); break;
-        case 'topic': if (admin && args.length) send(`TOPIC ${chan} :${args.join(' ')}`); break;
-        case 'ops':                                  // (re)claim ops from ChanServ
-            if (!admin) break;
-            send(`PRIVMSG ChanServ :OP ${chan} ${currentNick}`);
-            say(chan, 'Asking ChanServ for ops…');
-            break;
-        case 'ignore':
-            if (!admin || !target) break;
-            ignored.add(target.toLowerCase());
-            say(chan, `\x0304[MOD]\x03 Ignoring ${target} — I no longer hear them.`);
-            break;
-        case 'unignore':
-            if (!admin || !target) break;
-            ignored.delete(target.toLowerCase());
-            say(chan, `\x0304[MOD]\x03 Listening to ${target} again.`);
-            break;
-        case 'warnlist': {
-            if (!admin) break;
-            const rows = [...warns.entries()].filter(([, n]) => n > 0)
-                .map(([n, c]) => `${n} (${c}/${config.warnLimit})`);
-            say(chan, rows.length ? `Warned: ${rows.join(', ')}` : 'Nobody is carrying warnings.');
-            break;
-        }
-        case 'lockdown':                             // +i +m together, one switch
-            if (!admin) break;
-            if (args[0] === 'off') { send(`MODE ${chan} -i-m`); say(chan, '\x0304[MOD]\x03 Lockdown lifted.'); }
-            else { send(`MODE ${chan} +i+m`); say(chan, '\x0304[MOD]\x03 Lockdown — invite-only and moderated. 🦇'); }
-            break;
-        case 'raidguard':
-            if (!admin) break;
-            if (args[0] === 'on') { raidGuard = true; say(chan, `🛡️ Raid guard ON (${raidJoins} joins / ${raidWindowMs / 1000}s → auto-lock).`); }
-            else if (args[0] === 'off') { raidGuard = false; say(chan, 'Raid guard OFF.'); }
-            else say(chan, `Raid guard is ${raidGuard ? 'ON' : 'OFF'}. Use !!raidguard on|off.`);
+        case 'announce':
+            if (!admin || !args.length) break;
+            say(chan, `\x0304[ANNOUNCE]\x03 \x02${args.join(' ')}\x02`);
             break;
         default: break;
     }
@@ -488,16 +548,47 @@ function handleLine(line) {
         }
     }
 
+    if (command === '353') {                       // NAMES reply -> membership
+        const ch = chanKey(params[2] || '');
+        const set = members.get(ch) || new Set();
+        for (const raw of (params.slice(3).join(' ').replace(/^:/, '')).split(/\s+/)) {
+            const n = raw.replace(/^[~&@%+]+/, '');
+            if (n) set.add(n);
+        }
+        members.set(ch, set);
+    }
+    if (command === 'PART' && nick) (members.get(chanKey(tgt)) || new Set()).delete(nick);
+    if (command === 'QUIT' && nick) for (const set of members.values()) set.delete(nick);
+
     if (command === 'JOIN' && nick.toLowerCase() === config.nick.toLowerCase()) {
         hasJoined = true;
         const c = (tgt || msg).replace(/^:/, '');
         log('OK', `Joined ${c}`);
         send(`PRIVMSG ChanServ :OP ${c} ${currentNick}`);   // claim ops up front
         say(c, '🦇 Dracula stirs. The night watch begins — !!help.');
-    } else if (command === 'JOIN' && nick && ready && raidGuard) {
-        // Raid guard: a burst of joins in a few seconds is a raid, not traffic.
+    } else if (command === 'JOIN' && nick) {
         const c = chanKey((tgt || msg).replace(/^:/, ''));
-        if (isOurChannel(c)) {
+        if (!isOurChannel(c)) return;
+        (members.get(c) || members.set(c, new Set()).get(c)).add(nick);
+
+        // Persistent auto-ban masks — enforced the moment they walk in.
+        if (ready && !isExempt(nick) && userHost) {
+            const hit = matchesAnyMask(nick, userHost);
+            if (hit) {
+                log('MOD', `Auto-ban mask ${hit} matched ${nick}!${userHost}`);
+                banUser(c, nick, 'auto-ban rule');
+                return;
+            }
+        }
+        // Strict mode: an offensive NICK is itself a violation.
+        if (ready && strictNicks && !isExempt(nick) && badNick(nick)) {
+            log('MOD', `Strict mode: offensive nick ${nick}`);
+            kickUser(c, nick, 'offensive nickname');
+            return;
+        }
+
+        // Raid guard: a burst of joins in a few seconds is a raid, not traffic.
+        if (ready && raidGuard) {
             const now = Date.now();
             const hist = (joinLog.get(c) || []).filter((t) => now - t < raidWindowMs);
             hist.push(now); joinLog.set(c, hist);
