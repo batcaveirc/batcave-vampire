@@ -86,7 +86,15 @@ let raidGuard = onOff(process.env.RAID_GUARD || 'on');
 function log(type, msg) { console.log(`[${type}] ${msg}`); }
 function send(data) { if (socket && socket.writable) socket.write(data + '\r\n'); }
 function say(chan, msg) { send(`PRIVMSG ${chan} :${msg}`); }
-function getTime() { return new Date().toLocaleTimeString('en-US', { hour12: false }); }
+// Store an absolute timestamp and render it as "12m ago". A clock reading is
+// useless here: the runner is UTC and every user is in a different zone.
+function ago(ts) {
+    const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    if (sec < 60) return `${sec}s ago`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m ago`;
+    return `${Math.floor(sec / 86400)}d ago`;
+}
 
 function isOwner(nick) { return config.owners.includes(nick.toLowerCase()); }
 function isAdmin(nick) { const n = nick.toLowerCase(); return config.owners.includes(n) || config.admins.includes(n); }
@@ -114,6 +122,13 @@ function wordHit(wordSet, msg) {
 function globToRe(glob) {
     return new RegExp('^' + glob.split('*').map((x) =>
         x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$', 'i');
+}
+// "lucifer" -> "*!*@their.host" if known, else "lucifer!*@*". Anything that
+// already looks like a mask is left alone.
+function toMask(input) {
+    if (/[!@*]/.test(input)) return input;
+    const host = hostOf.get(input.toLowerCase());
+    return host ? `*!*@${host.split('@')[1]}` : `${input}!*@*`;
 }
 function matchesAnyMask(nick, userHost) {
     const full = `${nick}!${userHost}`;
@@ -303,7 +318,7 @@ function handleCommand(chan, nick, message) {
         case 'seen': {
             if (!target) { say(chan, 'Usage: !!seen <nick>'); break; }
             const st = seenUsers[target.toLowerCase()];
-            say(chan, st ? `${target} was last seen at ${st}.` : `I haven't seen ${target} since I rose.`);
+            say(chan, st ? `${target} was last active ${ago(st)}.` : `I haven't seen ${target} since I rose.`);
             break;
         }
         case 'status': {
@@ -324,7 +339,7 @@ function handleCommand(chan, nick, message) {
             say(chan, `${who} — role: ${role}, strikes: ${warns.get(k) || 0}/${config.warnLimit}, `
                 + `host: ${hostOf.get(k) || 'unknown'}, `
                 + `${whitelist.has(k) ? 'whitelisted (immune)' : 'not whitelisted'}`
-                + `${ignored.has(k) ? ', ignored' : ''}, last seen: ${seenUsers[k] || 'never'}.`);
+                + `${ignored.has(k) ? ', ignored' : ''}, last active: ${seenUsers[k] ? ago(seenUsers[k]) : 'never'}.`);
             break;
         }
         case 'rules':
@@ -390,8 +405,20 @@ function handleCommand(chan, nick, message) {
         // ── Persistent mask rules, enforced on every join ────────────────
         case 'autoban':
             if (!admin) break;
-            if (args[0] === 'add' && args[1]) { autobanMasks.add(args[1]); say(chan, `Auto-ban mask added: ${args[1]} (${autobanMasks.size} total).`); }
-            else if (args[0] === 'remove' && args[1]) { autobanMasks.delete(args[1]); say(chan, `Removed ${args[1]} (${autobanMasks.size} left).`); }
+            if (args[0] === 'add' && args[1]) {
+                // A bare nick is not a glob: "lucifer" only ever matches the
+                // literal string, never "lucifer!user@host", so the rule never
+                // fired. Turn a plain nick into a real mask — host-based when
+                // we know it (survives a nick change), nick-based otherwise.
+                const m = toMask(args[1]);
+                autobanMasks.add(m);
+                say(chan, `Auto-ban mask added: ${m} (${autobanMasks.size} total).`);
+            }
+            else if (args[0] === 'remove' && args[1]) {
+                const m = autobanMasks.has(args[1]) ? args[1] : toMask(args[1]);
+                autobanMasks.delete(m);
+                say(chan, `Removed ${m} (${autobanMasks.size} left).`);
+            }
             else say(chan, `Auto-ban masks (${autobanMasks.size}): ${[...autobanMasks].join(', ') || '(none)'}. Use !!autoban add|remove <mask>.`);
             break;
             send(`PRIVMSG ChanServ :CLEAR ${chan} BANS`);
@@ -425,7 +452,11 @@ function handleCommand(chan, nick, message) {
             break;
         case 'badword':
             if (!admin) break;
-            if (args[0] === 'add' && args[1]) { badwords.add(args[1].toLowerCase()); say(chan, `Added "${args[1]}" (${badwords.size} total).`); }
+            if (args[0] === 'add' && args[1]) {
+                const w = args[1].toLowerCase();
+                if (badwords.has(w)) say(chan, `"${w}" is already in the filter (${badwords.size} words).`);
+                else { badwords.add(w); say(chan, `Added "${w}" (${badwords.size} words).`); }
+            }
             else if (args[0] === 'remove' && args[1]) { badwords.delete(args[1].toLowerCase()); say(chan, `Removed "${args[1]}" (${badwords.size} total).`); }
             else say(chan, `Filter holds ${badwords.size} words.`);
             break;
@@ -637,7 +668,7 @@ function handleLine(line) {
     }
 
     if (command === 'PRIVMSG' && isOurChannel(tgt) && nick) {
-        seenUsers[nick.toLowerCase()] = getTime();
+        seenUsers[nick.toLowerCase()] = Date.now();
         if (!ready) return;                                   // ignore replayed backlog
         if (ignored.has(nick.toLowerCase())) return;          // !!ignore
 
