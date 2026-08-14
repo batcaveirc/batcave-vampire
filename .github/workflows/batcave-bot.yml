@@ -1,0 +1,45 @@
+name: BatCave Vampire Bot
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    # Every 5 minutes: if the previous run has ended, start a fresh one.
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+# One instance at a time. cancel-in-progress:false means the 5-minute cron
+# does NOT kill a running bot — the new run waits and only takes over once the
+# current one hits its timeout (below). That gives continuous coverage with a
+# short handoff roughly every ~5.8 hours instead of a restart every 5 minutes.
+concurrency:
+  group: batcave-bot
+  cancel-in-progress: false
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350   # just under GitHub's 6-hour hard cap
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Run the Vampire
+        env:
+          IRC_SERVER: ${{ secrets.IRC_SERVER }}
+          IRC_PORT: ${{ secrets.IRC_PORT }}
+          IRC_NICK: ${{ secrets.IRC_NICK }}
+          IRC_CHANNEL: ${{ secrets.IRC_CHANNEL }}
+          IRC_TLS: ${{ secrets.IRC_TLS }}
+          NICKSERV_PASS: ${{ secrets.NICKSERV_PASS }}
+          NICKSERV_ACCOUNT: ${{ secrets.NICKSERV_ACCOUNT }}
+          NICKSERV_GHOST_ON_CONNECT: ${{ secrets.NICKSERV_GHOST_ON_CONNECT }}
+          OWNERS: ${{ secrets.OWNERS }}
+          ADMINS: ${{ secrets.ADMINS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
+          BADWORDS: ${{ secrets.BADWORDS }}
+        run: node action-bot.js

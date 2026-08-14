@@ -1,0 +1,12 @@
+{
+  "name": "batcave-vampire",
+  "version": "1.0.0",
+  "main": "action-bot.js",
+  "scripts": {
+    "start": "node action-bot.js"
+  },
+  "dependencies": {
+    "groq-sdk": "^0.3.0",
+    "irc-framework": "*"
+  }
+}
