@@ -452,6 +452,14 @@ function aiRateOk() {
     return true;
 }
 // One place that talks to Groq, so both callers get key failover for free.
+// gpt-oss and qwen3 are REASONING models: they spend tokens on an internal
+// "reasoning" field first and leave `content` empty until that finishes. With a
+// small max_tokens they hit the cap mid-thought and return "" — which would have
+// made the fallback model silently produce nothing. max_tokens is a ceiling, not
+// a spend, so raising it costs the non-reasoning primary nothing.
+const REASONING_MIN_TOKENS = 320;
+function needsRoomToThink(model) { return /gpt-oss|qwen3|reason/i.test(model || ''); }
+
 async function groqChat(body) {
     const keys = [config.groqKey, config.groqKey2].filter(Boolean);
     const models = [...new Set([body.model || config.groqModel, config.groqModelFallback])];
@@ -462,7 +470,13 @@ async function groqChat(body) {
                 const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                     method: 'POST',
                     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ...body, model }),
+                    body: JSON.stringify({
+                        ...body,
+                        model,
+                        max_tokens: needsRoomToThink(model)
+                            ? Math.max(body.max_tokens || 0, REASONING_MIN_TOKENS)
+                            : body.max_tokens,
+                    }),
                 });
                 // 401 bad key / 429 rate-limited → try the other key
                 if ((res.status === 401 || res.status === 429) && keys.length > 1) {
