@@ -946,6 +946,40 @@ function connect() {
     socket.on('error', (err) => { connecting = false; log('ERROR', err.message); });
     socket.on('close', () => { connecting = false; opped.clear(); game.onDisconnect(); log('INFO', 'Connection closed.'); scheduleReconnect(); });
 }
+/**
+ * Re-identify, take our nick back, and rejoin. Used both when NickServ renames
+ * us mid-session and by the watchdog below.
+ */
+function reclaimNick() {
+    if (!config.password) return;
+    const account = config.nsAccount || config.nick;
+    send(`PRIVMSG NickServ :IDENTIFY ${account} ${config.password}`);
+    setTimeout(() => {
+        send(`PRIVMSG NickServ :GHOST ${config.nick} ${config.password}`);
+        send(`PRIVMSG NickServ :RELEASE ${config.nick} ${config.password}`);
+        send(`NICK ${config.nick}`);
+        setTimeout(() => {
+            config.channels.forEach((c) => send(`JOIN ${c}`));
+            log('INFO', `Reclaim attempted — now ${currentNick}`);
+        }, 1500);
+    }, 1200);
+}
+
+// Losing the nick is not a one-off event at connect: enforcement, a netsplit or
+// a stale ghost can take it at any point, and the bot is useless while it holds
+// a Guest nick the channel bans. Keep checking.
+let nickWatchdogStarted = false;
+function startNickWatchdog() {
+    if (nickWatchdogStarted) return;
+    nickWatchdogStarted = true;
+    setInterval(() => {
+        if (!ready || !socket || !socket.writable) return;
+        if (currentNick.toLowerCase() === config.nick.toLowerCase()) return;
+        log('WARN', `Nick is "${currentNick}", wanted "${config.nick}" — reclaiming.`);
+        reclaimNick();
+    }, 60000);
+}
+
 function scheduleReconnect() {
     if (reconnectTimer) return;
     reconnectAttempts += 1;
@@ -977,6 +1011,13 @@ function handleLine(line) {
         const newNick = (params[0] || '').replace(/^:/, '');
         if (nick.toLowerCase() === currentNick.toLowerCase()) {
             currentNick = newNick || currentNick;
+            // NickServ enforcement renames an unidentified protected nick to
+            // Guest####. The channel bans Guest*, so the bot then sits there
+            // unable to join anything and nothing notices. Recover immediately.
+            if (/^Guest\d+$/i.test(currentNick)) {
+                log('WARN', `Enforced rename to ${currentNick} — re-identifying and reclaiming.`);
+                reclaimNick();
+            }
         } else if (newNick) {
             const h = hostOf.get(nick.toLowerCase());
             if (h) hostOf.set(newNick.toLowerCase(), h);
@@ -1010,6 +1051,7 @@ function handleLine(line) {
                 // have left players quieted. Clear anything shaped like ours.
                 game.coldStart(config.channels[0]);
             }
+            startNickWatchdog();
             ready = true;
             log('OK', 'Identified, joined — moderation live.');
         }, 2500);
