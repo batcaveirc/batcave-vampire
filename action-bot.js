@@ -104,6 +104,10 @@ const autobanMasks = new Set(list(process.env.AUTOBAN_MASKS));
 // Strict mode: kick joiners whose NICK itself contains filtered words.
 let strictNicks = onOff(process.env.STRICT_NICKS || 'on');
 const channelRules = process.env.CHANNEL_RULES || '';
+// ChanServ history/logging. Template so the syntax can be corrected live with
+// !!history syntax rather than a redeploy per guess.
+let historyFmt = process.env.CHANSERV_HISTORY_FMT || 'HISTORY {chan} {state}';
+let historyReport = null;      // set while awaiting ChanServ's reply
 
 // Raid protection: N joins inside the window trips a temporary invite-lock.
 const raidJoins = parseInt(process.env.RAID_JOINS || '7', 10);
@@ -703,6 +707,7 @@ function handleCommand(chan, nick, message) {
                 + 'Mods: !!join/!!part #room, !!rooms, !!mass kick|ban|voice|devoice, '
                 + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
+                + '!!history on|off, '
                 + '!!sentient on|off, !!fun on|off, !!badword add|remove <w>, '
                 + '!!whitelist add|remove <nick>, !!announce <msg>.');
             break;
@@ -882,6 +887,53 @@ function handleCommand(chan, nick, message) {
             else if (args[0] === 'off') { strictNicks = false; say(chan, 'Strict mode OFF.'); }
             else say(chan, `Strict mode is ${strictNicks ? 'ON' : 'OFF'}. Use !!strict on|off.`);
             break;
+        // Channel history/logging via ChanServ. Services differ: Atheme wants
+        // one form, Anope another, and some networks use a line count rather
+        // than on/off. Rather than guess, the template is configurable and
+        // ChanServ's own reply is echoed back so the right form is discoverable
+        // in one try instead of a redeploy per guess.
+        case 'history': {
+            if (!admin) { say(chan, 'Access denied.'); break; }
+            const sub = (args[0] || '').toLowerCase();
+            if (sub === 'syntax') {
+                if (args[1]) {
+                    historyFmt = args.slice(1).join(' ');
+                    say(chan, `History syntax set to: ${historyFmt}`);
+                } else {
+                    say(chan, `History syntax: ${historyFmt} — placeholders {chan} {state} {lines}. `
+                        + 'e.g. !!history syntax SET {chan} HISTORY {lines}');
+                }
+                break;
+            }
+            if (sub !== 'on' && sub !== 'off') {
+                say(chan, 'Usage: !!history on|off  ·  !!history syntax [template]');
+                break;
+            }
+            const state = sub.toUpperCase();
+            const lines = sub === 'on' ? (process.env.CHANSERV_HISTORY_LINES || '50') : '0';
+            const replies = [];
+            historyReport = (m) => { if (replies.length < 6) replies.push(m.replace(/\s+/g, ' ').trim()); };
+            for (const c of config.channels) {
+                const line = historyFmt
+                    .replace(/\{chan\}/g, c)
+                    .replace(/\{state\}/g, state)
+                    .replace(/\{lines\}/g, lines);
+                send(`PRIVMSG ChanServ :${line}`);
+                log('CMD', `ChanServ <- ${line}`);
+            }
+            say(chan, `\x0306[HISTORY]\x03 ${state} requested for ${config.channels.join(', ')} — `
+                + `sent "${historyFmt.replace(/\{chan\}/g, '<chan>')}". Listening for ChanServ…`);
+            setTimeout(() => {
+                historyReport = null;
+                if (!replies.length) {
+                    say(chan, '\x0306[HISTORY]\x03 ChanServ said nothing — that syntax is probably '
+                        + 'not supported. Try !!history syntax SET {chan} HISTORY {state}');
+                } else {
+                    replies.forEach((r) => say(chan, `\x0306[ChanServ]\x03 ${r.slice(0, 300)}`));
+                }
+            }, 6000);
+            break;
+        }
         case 'mod':
             if (!admin) break;
             if (args[0] === 'on') { modEnabled = true; say(chan, '\x0304[MOD]\x03 Auto-moderation ON.'); }
@@ -1117,6 +1169,12 @@ function handleLine(line) {
     }
     if (command === '900' || (command === 'NOTICE' && /identified|logged in/i.test(msg))) {
         if (!hasJoined) config.channels.forEach((c) => send(`JOIN ${c}`));
+    }
+    // ChanServ's reply to !!history. We cannot know which syntax this network's
+    // services accept, so the bot repeats what ChanServ actually said instead of
+    // claiming success — that one line is what tells us the right form.
+    if (command === 'NOTICE' && /^chanserv$/i.test(nick || '') && historyReport) {
+        historyReport(msg);
     }
     // Remember every user@host we see — needed for bans that actually hold.
     const userHost = (prefix.match(/^:\S+?!(\S+)/) || [])[1];
