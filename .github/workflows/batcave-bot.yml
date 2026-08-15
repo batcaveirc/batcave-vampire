@@ -75,10 +75,8 @@ jobs:
           PROTECT_MASKS: ${{ secrets.PROTECT_MASKS }}
           CHANNEL_RULES: ${{ secrets.CHANNEL_RULES }}
           MOD_ENABLED: ${{ secrets.MOD_ENABLED || 'on' }}
-          # ChanServ history syntax. Services vary (Atheme/Anope/custom), so
-          # this is a template; !!history syntax changes it live.
-          CHANSERV_HISTORY_FMT: ${{ secrets.CHANSERV_HISTORY_FMT || 'HISTORY {chan} {state}' }}
-          CHANSERV_HISTORY_LINES: ${{ secrets.CHANSERV_HISTORY_LINES || '50' }}
+          # Channel scrollback: InspIRCd chanhistory, lines:duration.
+          CHANNEL_HISTORY_SPEC: ${{ secrets.CHANNEL_HISTORY_SPEC || '50:3d' }}
 
           # ── Findit game pacing (seconds unless noted) ────────────────────
           FINDIT_LOBBY_SECS: ${{ secrets.FINDIT_LOBBY_SECS || '90' }}
