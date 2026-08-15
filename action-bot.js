@@ -1,6 +1,7 @@
 const net = require('net');
 const tls = require('tls');
 const { FindIt } = require('./findit');
+const { Fun } = require('./fun');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
@@ -113,6 +114,8 @@ let raidGuard = onOff(process.env.RAID_GUARD || 'on');
 // The game. `bot` is the small surface findit.js needs.
 const bot = { send, say, notice, get nick() { return currentNick; } };
 const game = new FindIt(bot);
+const fun = new Fun(bot, (c) => game.isGameChannel(c));
+fun.enabled = onOff(process.env.FUN_ON || 'on');
 // Master moderation switch, independent of the game.
 let modEnabled = onOff(process.env.MOD_ENABLED || 'on');
 // No auto-moderation inside a running game: nobody should be kicked mid-round
@@ -499,12 +502,16 @@ async function groqChat(body) {
     return null;
 }
 
+// Whitespace/punctuation-insensitive form, for checking the model quoted
+// something that is genuinely in the message.
+const flatten = (s) => normalize(s).replace(/\s+/g, ' ').trim();
+
 async function sentientModeration(chan, nick, message) {
     if (isExempt(nick, chan) || moderationOff(chan) || !config.groqKey || message.length < 4) return;
     if (!aiRateOk()) return;                        // busy → scripted filter still covers it
     try {
         const data = await groqChat(({
-                model: config.groqModel, temperature: 0, max_tokens: 60,
+                model: config.groqModel, temperature: 0, max_tokens: 80,
                 messages: [
                     { role: 'system', content:
                         'You moderate a friendly IRC room. A word filter already handles ordinary '
@@ -515,9 +522,20 @@ async function sentientModeration(chan, nick, message) {
                         + 'crude banter, arguments, Hinglish slang and single rude words are NOT your '
                         + 'business — answer "none" for those.\n'
                         + 'Messages may be Hinglish/Hindi in Latin script; judge meaning, not spelling.\n'
-                        + 'Reply with ONLY compact JSON: {"action":"none|warn|kick|ban","reason":"few words"}. '
+                        + 'The first word is often the NICKNAME of the person being spoken to. A '
+                        + 'nickname is never abuse, however rude it reads: "bully you are late" is '
+                        + 'someone greeting a user called bully.\n'
+                        + 'Teasing between friends is the normal register here, especially with ":D", '
+                        + '":P" or "lol" — those mark a joke. Examples that are all "none": '
+                        + '"bully you have the right to be desperate here :D", "tu pagal hai yaar", '
+                        + '"shut up lol".\n'
+                        + 'Reply with ONLY compact JSON: {"action":"none|warn|kick|ban",'
+                        + '"confident":true|false,"quote":"the exact words from the message that are '
+                        + 'abusive","reason":"few words"}. '
                         + '"ban" = slurs, hate or threats. "kick" = serious targeted harassment. '
-                        + '"warn" = borderline but clearly demeaning. Everything else "none".' },
+                        + '"warn" = borderline but clearly demeaning. Everything else "none".\n'
+                        + 'A wrong call throws a real person out of their community. If you have to '
+                        + 'reason about whether it is abuse, it is not: answer "none".' },
                     { role: 'user', content: message },
                 ],
         }));
@@ -526,10 +544,41 @@ async function sentientModeration(chan, nick, message) {
         if (!m) return;
         let verdict;
         try { verdict = JSON.parse(m[0]); } catch (e) { return; }   // fail-safe: never act on unparseable output
+        const action = String(verdict.action || 'none').toLowerCase();
+        if (!['warn', 'kick', 'ban'].includes(action)) return;
+
+        // Gate 1 — the model must be sure. A hedged verdict is banter.
+        if (verdict.confident !== true) {
+            log('AI', `Flagged ${nick} (${action}) without confidence — leaving it.`);
+            return;
+        }
+        // Gate 2 — it must point AT the abuse, and the quote must really be in
+        // the message. A model that cannot quote what it is punishing is
+        // inventing it: that is how a friendly ":D" was read as harassment and
+        // a trusted regular got thrown out mid-joke.
+        const quote = flatten(verdict.quote || '');
+        if (!quote || !flatten(message).includes(quote)) {
+            log('AI', `Flagged ${nick} (${action}) but quoted "${verdict.quote || ''}" `
+                + `which is not in the message — ignoring.`);
+            return;
+        }
+
+        // Gate 3 — an AI opinion never outranks the trust hierarchy. A word from
+        // the filter is evidence; a model's reading of a joke is not, so for
+        // anyone with standing in the room the harshest an AI verdict can be is
+        // a warning, and their normal strike quota decides the rest.
         const reason = `AI: ${String(verdict.reason || 'abuse').slice(0, 40)}`;
-        if (verdict.action === 'ban') banUser(chan, nick, reason);
-        else if (verdict.action === 'kick') kickUser(chan, nick, reason);
-        else if (verdict.action === 'warn') warnUser(chan, nick, reason);   // tier-aware
+        const tier = tierOf(chan, nick);
+        log('AI', `${nick} [${tier}] → ${action} (${reason}) quote="${verdict.quote}"`);
+
+        if (tier !== 'stranger' && action !== 'warn') {
+            log('MOD', `AI wanted to ${action} ${nick} (${tier}) — downgraded to a warning.`);
+            warnUser(chan, nick, reason);
+            return;
+        }
+        if (action === 'ban') banUser(chan, nick, reason);
+        else if (action === 'kick') kickUser(chan, nick, reason);
+        else warnUser(chan, nick, reason);          // tier-aware
     } catch (e) {
         log('AI', 'moderation error: ' + e.message);
     }
@@ -643,14 +692,18 @@ function handleCommand(chan, nick, message) {
     // The game claims its own commands first. !!join with no argument joins a
     // lobby; !!join #room stays the admin channel command underneath.
     if (game.handle(nick, chan, cmd, args, hostOf.get(nick.toLowerCase()))) return;
+    // Fun comes after the game (a compartment's !!fix is not a joke) and before
+    // moderation commands, which it shares no names with.
+    if (fun.handle(nick, chan, cmd, args)) return;
 
     switch (cmd) {
         case 'help':
             say(chan, 'Everyone: !!seen <nick>, !!status, !!info [nick], !!rules. '
+                + 'Fun: !!bite, !!slap, !!8ball <q>, !!ship <a> <b>, !!fortune, !!rip, !!vibe. '
                 + 'Mods: !!join/!!part #room, !!rooms, !!mass kick|ban|voice|devoice, '
                 + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
-                + '!!sentient on|off, !!badword add|remove <w>, '
+                + '!!sentient on|off, !!fun on|off, !!badword add|remove <w>, '
                 + '!!whitelist add|remove <nick>, !!announce <msg>.');
             break;
         case 'seen': {
@@ -885,6 +938,12 @@ function handleCommand(chan, nick, message) {
             if (args[0] === 'on') { sentientMode = true; say(chan, '🧠 Sentient moderation ACTIVE — I read the room now.'); }
             else if (args[0] === 'off') { sentientMode = false; say(chan, 'Sentient moderation off — scripted filter still stands guard.'); }
             else say(chan, `Sentient is ${sentientMode ? 'ON' : 'OFF'}.`);
+            break;
+        case 'fun':
+            if (!admin) { say(chan, 'Access denied.'); break; }
+            if (args[0] === 'on') { fun.enabled = true; say(chan, '🦇 Fun commands ON — !!bite, !!8ball, !!ship, !!fortune, !!rip, !!vibe, !!slap.'); }
+            else if (args[0] === 'off') { fun.enabled = false; say(chan, 'Fun off. Back to brooding.'); }
+            else say(chan, `Fun is ${fun.enabled ? 'ON' : 'OFF'}.`);
             break;
         case 'badword':
             if (!admin) break;
@@ -1229,7 +1288,9 @@ function handleLine(line) {
         // Reply if mentioned by name
         if (new RegExp(`\\b${config.nick}\\b`, 'i').test(msg)) {
             getAIResponse(msg, nick).then((r) => { if (r) say(tgt, `${nick}: ${r}`); });
+            return;
         }
+        fun.ambient(tgt, nick, msg);          // rare unprompted quip on greetings
     }
 }
 
