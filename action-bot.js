@@ -649,7 +649,7 @@ function handleCommand(chan, nick, message) {
             say(chan, 'Everyone: !!seen <nick>, !!status, !!info [nick], !!rules. '
                 + 'Mods: !!join/!!part #room, !!rooms, !!mass kick|ban|voice|devoice, '
                 + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
-                + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, '
+                + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!sentient on|off, !!badword add|remove <w>, '
                 + '!!whitelist add|remove <nick>, !!announce <msg>.');
             break;
@@ -840,6 +840,34 @@ function handleCommand(chan, nick, message) {
             send(`MODE ${chan} -q ${target}!*@*`);
             say(chan, `Cleared any quiet on ${target}.`);
             break;
+        // There was no way to know whether the AI layer actually worked until
+        // abuse happened and it either acted or silently did not. This makes one
+        // real call and reports which key and model answered — never the value.
+        case 'aicheck': {
+            if (!admin) break;
+            if (!config.groqKey) { say(chan, 'No Groq key configured — word filter only.'); break; }
+            say(chan, 'Testing the AI backend…');
+            (async () => {
+                const started = Date.now();
+                try {
+                    const data = await groqChat({
+                        model: config.groqModel, temperature: 0, max_tokens: 40,
+                        messages: [{ role: 'user', content: 'reply with one word: ok' }],
+                    });
+                    const reply = (data?.choices?.[0]?.message?.content || '').trim();
+                    const served = data?.model || '(unknown)';
+                    say(chan, reply
+                        ? `\x0303AI OK\x03 — "${reply.slice(0, 20)}" from \x02${served}\x02 in ${Date.now() - started}ms. `
+                          + `Keys loaded: ${[config.groqKey, config.groqKey2].filter(Boolean).length}.`
+                        : `\x0304AI replied empty\x03 from ${served} — the model answered but returned no content.`);
+                } catch (e) {
+                    const m = String(e.message || e);
+                    say(chan, `\x0304AI FAILED\x03 — ${/429|rate/i.test(m) ? 'rate-limited (quota)' : m.slice(0, 60)}. `
+                        + 'Word filter still covers the room.');
+                }
+            })();
+            break;
+        }
         case 'linkfilter':
             if (!admin) break;
             if (args[0] === 'on') { config.linkFilter = true; say(chan, 'Link filter ON.'); }
