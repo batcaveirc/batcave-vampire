@@ -767,6 +767,32 @@ async function getAIResponse(prompt, who) {
     } catch (e) { return null; }
 }
 
+/** One real AI call at startup. Silence from this layer is indistinguishable
+ *  from an absence of abuse, so its health has to be asserted, not assumed. */
+async function selfCheckAI() {
+    if (!config.groqKey) { log('WARN', 'No Groq key — AI moderation is OFF.'); return; }
+    try {
+        const data = await groqChat({
+            model: config.groqModel, temperature: 0, max_tokens: 8,
+            messages: [{ role: 'user', content: 'reply with the single word: ok' }],
+        });
+        const txt = (data?.choices?.[0]?.message?.content || '').trim();
+        if (txt) { log('OK', `AI layer healthy (${config.groqModel}).`); return; }
+        throw new Error('empty response');
+    } catch (e) {
+        log('ERR', `AI layer FAILED at startup: ${e.message}`);
+        // Tell the people who can do something about it, without alarming the room.
+        for (const c of config.channels) {
+            for (const n of members.get(chanKey(c)) || []) {
+                if (isChannelMod(c, n)) {
+                    notice(n, `\x0304[ALERT]\x03 AI moderation is offline (${e.message.slice(0, 60)}). `
+                        + 'The word filter still stands. Check the Groq key.');
+                }
+            }
+        }
+    }
+}
+
 // --- Command handler (!! prefix) ---
 function handleCommand(chan, nick, message) {
     const args = message.slice(2).trim().split(/\s+/);
@@ -1261,6 +1287,11 @@ function handleLine(line) {
             startNickWatchdog();
             ready = true;
             log('OK', 'Identified, joined — moderation live.');
+            // A dead key looks exactly like a quiet room: the AI layer simply
+            // stops having opinions and nobody finds out until abuse walks
+            // through it. Prove it works at startup, and tell the operators if
+            // it does not.
+            selfCheckAI();
         }, 2500);
     }
     if (command === '900' || (command === 'NOTICE' && /identified|logged in/i.test(msg))) {
