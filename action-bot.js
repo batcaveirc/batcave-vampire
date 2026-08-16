@@ -95,6 +95,10 @@ const connectTime = Date.now();
 // Hosts protected from being kicked by other moderators, independent of nick
 // (e.g. *!*@ku0.6ol.235.110.IP). The WHITELIST is protected automatically.
 const protectMasks = new Set(list(process.env.PROTECT_MASKS));
+// Trust that follows the HOST, not the nick. A regular who arrives as "libu"
+// one day and "flood" the next needs one entry, not one per nick — and a nick
+// list can never keep up with someone who changes theirs.
+const trustedMasks = new Set(list(process.env.TRUSTED_MASKS));
 const rescueLog = new Map();       // nick(lower) -> [timestamps of rescues]
 let massPending = null;            // a bulk kick/ban awaiting confirmation
 const recentlyActioned = new Map(); // nick(lower) -> ts of last kick/ban
@@ -254,10 +258,23 @@ function prefixIn(chan, nick) { return prefixOf.get(`${chanKey(chan)}|${nick.toL
 function isChannelMod(chan, nick) { return /[~&@%]/.test(prefixIn(chan, nick)); }
 function isRegistered(nick) { return !!accountOf.get(nick.toLowerCase()); }
 
+/** True if this nick's host matches a TRUSTED_MASKS entry. */
+function hostIsTrusted(nick) {
+    if (!trustedMasks.size) return false;
+    const uh = hostOf.get(nick.toLowerCase());
+    if (!uh) return false;
+    for (const m of trustedMasks) if (globToRe(m).test(`${nick}!${uh}`)) return true;
+    return false;
+}
+/** Whitelisted by nick, or by host mask. */
+function isTrusted(nick) {
+    return whitelist.has(nick.toLowerCase()) || hostIsTrusted(nick);
+}
+
 function tierOf(chan, nick) {
     if (isAdmin(nick) || nick.toLowerCase() === config.nick.toLowerCase()) return 'staff';
     if (isChannelMod(chan, nick)) return 'mod';
-    if (whitelist.has(nick.toLowerCase())) return 'trusted';
+    if (isTrusted(nick)) return 'trusted';
     if (isRegistered(nick)) return 'registered';
     return 'stranger';
 }
@@ -377,7 +394,7 @@ function requireOps(chan, what) {
 // PROTECT_MASKS (so protection survives a nick change).
 function isProtectedFromKick(nick) {
     const n = nick.toLowerCase();
-    if (whitelist.has(n) || isAdmin(nick)) return true;
+    if (isTrusted(nick) || isAdmin(nick)) return true;
     const uh = hostOf.get(n);
     if (uh) { for (const m of protectMasks) if (globToRe(m).test(`${nick}!${uh}`)) return true; }
     return false;
@@ -523,6 +540,28 @@ async function groqChat(body) {
 // something that is genuinely in the message.
 const flatten = (s) => normalize(s).replace(/\s+/g, ' ').trim();
 
+// Words that NAME bigotry rather than express it. Someone expressing hate uses
+// a slur or a target; someone objecting to it uses one of these.
+const CALLOUT_WORDS = /^(racist|racism|sexist|sexism|homophobic|homophobia|transphobic|transphobia|bigot|bigotry|bigoted|casteist|casteism|misogynist|misogyny|xenophobic|xenophobia|antisemitic|islamophobic|prejudiced|discriminat\w*|offensive|abusive|hate|hateful|toxic|creepy|inappropriate)$/i;
+
+/**
+ * True when the model's own evidence is nothing but the name of the offence.
+ *
+ * A user replied "Racist" to somebody else's remark and was BANNED for hate
+ * speech: the model quoted the word "Racist" and called that the abuse. But
+ * naming a thing is not doing it, and punishing the person who objects
+ * silences the wrong side of the room. If the quote contains no slur and
+ * reduces to accusation vocabulary, there is no offence in it.
+ */
+function quoteNamesTheProblem(quote) {
+    const words = flatten(quote).split(' ').filter(Boolean);
+    if (!words.length) return false;
+    if (words.some((w) => severeWords.has(w) || badwords.has(w))) return false;
+    return words.every((w) => CALLOUT_WORDS.test(w)
+        || ['that', 'is', 'was', 'so', 'very', 'you', 'are', 'being', 'this',
+            'a', 'an', 'the', 'its', 'it', 'thats', 'stop', 'dont', 'not'].includes(w));
+}
+
 async function sentientModeration(chan, nick, message) {
     if (isExempt(nick, chan) || moderationOff(chan) || !config.groqKey || message.length < 4) return;
     if (!aiRateOk()) return;                        // busy → scripted filter still covers it
@@ -542,6 +581,10 @@ async function sentientModeration(chan, nick, message) {
                         + 'The first word is often the NICKNAME of the person being spoken to. A '
                         + 'nickname is never abuse, however rude it reads: "bully you are late" is '
                         + 'someone greeting a user called bully.\n'
+                        + 'CRITICAL: talking ABOUT bigotry is not bigotry. "Racist", "that is '
+                        + 'racist", "stop being homophobic", reporting or objecting to abuse, and '
+                        + 'discussing it are all "none" — the person naming the problem is not the '
+                        + 'person causing it. Punishing them silences the wrong side of the room.\n'
                         + 'Teasing between friends is the normal register here, especially with ":D", '
                         + '":P" or "lol" — those mark a joke. Examples that are all "none": '
                         + '"bully you have the right to be desperate here :D", "tu pagal hai yaar", '
@@ -580,21 +623,47 @@ async function sentientModeration(chan, nick, message) {
             return;
         }
 
-        // Gate 3 — an AI opinion never outranks the trust hierarchy. A word from
-        // the filter is evidence; a model's reading of a joke is not, so for
-        // anyone with standing in the room the harshest an AI verdict can be is
-        // a warning, and their normal strike quota decides the rest.
         const reason = `AI: ${String(verdict.reason || 'abuse').slice(0, 40)}`;
         const tier = tierOf(chan, nick);
         log('AI', `${nick} [${tier}] → ${action} (${reason}) quote="${verdict.quote}"`);
 
+        // Gate 3 — the model's evidence must be more than the name of the
+        // offence. This is the exact shape of the live false positive.
+        if (quoteNamesTheProblem(verdict.quote || '')) {
+            log('AI', `Ignoring ${action} on ${nick}: quoted "${verdict.quote}", which names abuse rather than being it.`);
+            return;
+        }
+
+        // Gate 4 — a short message carries no act, only a topic. A user replying
+        // "Racist" to someone else's remark was BANNED for hate speech: the
+        // model matched the subject and missed that they were objecting to it.
+        // Naming a thing is not doing it, and one or two words never carry
+        // enough context to tell the difference.
+        if (message.trim().split(/\s+/).length < 4) {
+            log('AI', `Ignoring ${action} on a ${message.trim().split(/\s+/).length}-word message from ${nick}.`);
+            return;
+        }
+
+        // Gate 5 — the AI may never ban. A ban is the one action the person
+        // cannot undo by coming back, and it should rest on something
+        // deterministic: the word list bans, the model at most removes. Same
+        // rule already applied to nickname screening.
+        if (action === 'ban') {
+            log('MOD', `AI wanted to ban ${nick} — capped at a kick.`);
+            if (tier === 'stranger') { kickUser(chan, nick, reason); return; }
+            warnUser(chan, nick, reason);
+            return;
+        }
+
+        // Gate 6 — an AI opinion never outranks the trust hierarchy. A word from
+        // the filter is evidence; a model's reading of a remark is not, so for
+        // anyone with standing the harshest it can be is a warning.
         if (tier !== 'stranger' && action !== 'warn') {
             log('MOD', `AI wanted to ${action} ${nick} (${tier}) — downgraded to a warning.`);
             warnUser(chan, nick, reason);
             return;
         }
-        if (action === 'ban') banUser(chan, nick, reason);
-        else if (action === 'kick') kickUser(chan, nick, reason);
+        if (action === 'kick') kickUser(chan, nick, reason);
         else warnUser(chan, nick, reason);          // tier-aware
     } catch (e) {
         log('AI', 'moderation error: ' + e.message);
@@ -660,7 +729,7 @@ async function screenNick(chan, nick) {
     // isExempt() deliberately excludes whitelisted users (they get a warn quota
     // for what they SAY). But a trusted regular's NAME is settled — screening it
     // banned a user seconds after the owner whitelisted them.
-    if (whitelist.has(nick.toLowerCase())) return;
+    if (isTrusted(nick)) return;
     // A registered nick is an identity someone owns; leave those to a human.
     if (isRegistered(nick)) return;
     const listHit = badNick(nick);
@@ -1309,7 +1378,7 @@ function handleLine(line) {
 
         // Trusted regulars get voice automatically — a visible mark of standing
         // and it keeps them speaking if the room is ever moderated (+m).
-        if (ready && !game.isGameChannel(c) && config.autoVoice && whitelist.has(nick.toLowerCase())
+        if (ready && !game.isGameChannel(c) && config.autoVoice && isTrusted(nick)
             && opped.has(c) && !/[~&@%+]/.test(prefixIn(c, nick))) {
             send(`MODE ${c} +v ${nick}`);
         }
