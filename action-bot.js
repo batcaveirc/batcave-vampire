@@ -296,6 +296,12 @@ function tierOf(chan, nick) {
     if (isChannelMod(chan, nick)) return 'mod';
     if (isTrusted(nick)) return 'trusted';
     if (isRegistered(nick)) return 'registered';
+    // Without services nobody reads as registered, so the whole room drops to
+    // the tier that gets removed on sight. "registered" is not gentle enough
+    // either — its quota is one, which still means a kick on first offence.
+    // If we genuinely cannot tell who someone is, assume the best: warn them
+    // like a regular and let a human decide.
+    if (servicesDown) return 'trusted';
     return 'stranger';
 }
 function warnQuotaFor(tier) {
@@ -842,6 +848,96 @@ async function selfCheckAI() {
     }
 }
 
+// ── Services health, and what to do without them ────────────────────────────
+//
+// Almost every trust decision here is really a services decision: who is
+// registered, who ChanServ voices, who holds ops. If Atheme splits or a channel
+// is dropped, none of that is knowable — and the dangerous part is that it does
+// not look like a failure. Everyone simply appears to be an unregistered
+// stranger.
+//
+// That inverts the usual instinct about degraded mode. The trust ladder's
+// harshest rule — remove a stranger on first offence — is the one that MUST be
+// suspended, because without services every regular in the room matches it.
+// Losing services should make the bot gentler, not stricter.
+let servicesDown = false;
+let servicesReport = null;      // set while awaiting ChanServ's INFO reply
+
+function enterDegradedMode(why) {
+    if (servicesDown) return;
+    servicesDown = true;
+    log('ERR', `DEGRADED: ${why}. Stranger-removal suspended; word filter still active.`);
+    for (const c of config.channels) {
+        for (const n of members.get(chanKey(c)) || []) {
+            if (isChannelMod(c, n)) {
+                notice(n, `\x0304[ALERT]\x03 ${why}. I cannot tell who is registered, so I have `
+                    + 'stopped removing strangers — everyone looks like one right now. '
+                    + 'Word filter, flood and raid guard are unaffected.');
+            }
+        }
+    }
+    setTimeout(() => verifyServices(1), 300000);   // look again in five minutes
+}
+
+function leaveDegradedMode() {
+    if (!servicesDown) return;
+    servicesDown = false;
+    log('OK', 'Services are back — full trust ladder restored.');
+    for (const c of config.channels) {
+        for (const n of members.get(chanKey(c)) || []) {
+            if (isChannelMod(c, n)) notice(n, '\x0303[OK]\x03 Services are back. Normal moderation resumed.');
+        }
+    }
+}
+
+/**
+ * Ask ChanServ about each channel and judge from the answer.
+ *
+ * Three outcomes worth distinguishing, because they need different responses:
+ *   registered + we are opped -> normal
+ *   registered + no ops       -> ask for ops, keep moderating what we can
+ *   no reply at all           -> services are gone; degrade
+ *   "not registered"          -> the channel was dropped; tell the owners,
+ *                                because no AKICK, VOP or auto-op exists now
+ */
+let servicesProbes = 0;
+function verifyServices(attempt = 1) {
+    const seen = new Set();
+    let anyReply = false;
+    servicesReport = (text) => {
+        anyReply = true;
+        const m = text.match(/(#\S+)/);
+        const chan = m ? m[1] : '';
+        if (/is not registered|isn.t registered|no such channel/i.test(text)) {
+            seen.add(`unregistered:${chan}`);
+        }
+    };
+    for (const c of config.channels) send(`PRIVMSG ChanServ :INFO ${c}`);
+    setTimeout(() => {
+        servicesReport = null;
+        if (!anyReply) {
+            // One slow or dropped reply must not weaken moderation. Degrading
+            // suspends stranger-removal, so it needs more evidence than a
+            // single missed answer — ask again before concluding anything.
+            if (attempt < 3) { log('WARN', `ChanServ silent (probe ${attempt}/3) — retrying.`); verifyServices(attempt + 1); return; }
+            enterDegradedMode('ChanServ is not answering');
+            return;
+        }
+        leaveDegradedMode();
+        for (const key of seen) {
+            const chan = key.split(':')[1];
+            log('ERR', `${chan} is NOT registered with ChanServ.`);
+            for (const n of members.get(chanKey(chan)) || []) {
+                if (isChannelMod(chan, n)) {
+                    notice(n, `\x0304[ALERT]\x03 ${chan} is not registered with ChanServ. `
+                        + 'There is no AKICK list, no auto-voice and no auto-op behind me — '
+                        + 'if I drop, the room has nothing.');
+                }
+            }
+        }
+    }, 8000);
+}
+
 // --- Command handler (!! prefix) ---
 function handleCommand(chan, nick, message) {
     const args = message.slice(2).trim().split(/\s+/);
@@ -1341,6 +1437,7 @@ function handleLine(line) {
             // through it. Prove it works at startup, and tell the operators if
             // it does not.
             selfCheckAI();
+            verifyServices();
             quietSweep = true;
             config.channels.forEach((c) => send(`MODE ${c} +q`));   // list, then clear ours
             setTimeout(() => { quietSweep = false; }, 15000);
@@ -1348,6 +1445,11 @@ function handleLine(line) {
     }
     if (command === '900' || (command === 'NOTICE' && /identified|logged in/i.test(msg))) {
         if (!hasJoined) config.channels.forEach((c) => send(`JOIN ${c}`));
+    }
+    // ChanServ talks back in NOTICEs. Both the history command and the services
+    // health check listen here; each is inert unless it is actually waiting.
+    if (command === 'NOTICE' && /^chanserv$/i.test(nick || '')) {
+        if (servicesReport) servicesReport(msg);
     }
     // The server's verdict on a !!history MODE change: 472 unknown mode char
     // (chanhistory not loaded), 482 not opped, 467/461 malformed. Silence means
