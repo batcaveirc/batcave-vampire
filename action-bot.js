@@ -922,7 +922,12 @@ let servicesProbes = 0;
  * makes it idempotent.
  */
 function voiceSweep(ch) {
-    if (!ch || !ready || !config.autoVoice || game.isGameChannel(ch) || !opped.has(ch)) return;
+    // NOT gated on `ready`. That flag is a replay guard for user MESSAGES,
+    // and we join on identify — about a second and a half before it is set —
+    // so NAMES and WHO always answered while it was still false and the sweep
+    // returned immediately. It had never once run at startup, which is the
+    // whole moment it exists for.
+    if (!ch || !config.autoVoice || game.isGameChannel(ch) || !opped.has(ch)) return;
     for (const n of members.get(ch) || []) {
         if (deservesVoice(n) && !/[~&@%+]/.test(prefixIn(ch, n))) send(`MODE ${ch} +v ${n}`);
     }
@@ -1533,15 +1538,13 @@ function handleLine(line) {
         accountOf.set(nick.toLowerCase(), acct === '*' ? '' : acct);
     }
     if (command === '354' && params[1]) {                // WHOX reply
-        // We ask for "%cuhnar,152". The ",152" is a QUERYTYPE, and the server
-        // echoes it back as the first field — shifting chan/user/host/nick/
-        // account one place right. Reading them unshifted keyed the account map
-        // by HOST with the NICK as its value, so isRegistered() was false for
-        // everyone: the "registered" trust tier and AUTO_VOICE_REGISTERED had
-        // never once worked live.
-        //
-        // The test harness hid it by replying without a querytype, which lined
-        // up with the wrong indices exactly. Parse both shapes.
+        // HybridIRC answers "%cuhnar,152" WITHOUT echoing the querytype back —
+        // verified against the live server — so the fields land unshifted:
+        //   354 <me> <chan> <user> <host> <nick> <account> :<real>
+        // Other ircds DO echo it, which shifts everything one place right.
+        // Detect rather than assume, because reading the wrong shape keys the
+        // account map by host and silently makes every registered user look
+        // like a stranger.
         const q = params[1] === '152';
         const user = q ? params[3] : params[2];
         const host = q ? params[4] : params[3];
