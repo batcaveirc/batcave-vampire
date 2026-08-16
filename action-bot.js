@@ -908,6 +908,26 @@ function leaveDegradedMode() {
  *                                because no AKICK, VOP or auto-op exists now
  */
 let servicesProbes = 0;
+/**
+ * Voice everyone present who deserves it.
+ *
+ * Auto-voice originally fired only on JOIN, so anyone already sitting in the
+ * channel when we connect was skipped — and we reconnect every few hours.
+ *
+ * It must run after BOTH lists arrive. WHO and NAMES are sent back to back and
+ * answer independently: NAMES brings membership, WHO brings accounts. Sweeping
+ * on end-of-NAMES alone meant that whenever WHO had not finished, no one looked
+ * registered and nobody was voiced — which is exactly why the two rooms
+ * disagreed about the same people. Called from both endings; the prefix check
+ * makes it idempotent.
+ */
+function voiceSweep(ch) {
+    if (!ch || !ready || !config.autoVoice || game.isGameChannel(ch) || !opped.has(ch)) return;
+    for (const n of members.get(ch) || []) {
+        if (deservesVoice(n) && !/[~&@%+]/.test(prefixIn(ch, n))) send(`MODE ${ch} +v ${n}`);
+    }
+}
+
 function verifyServices(attempt = 1) {
     const seen = new Set();
     let anyReply = false;
@@ -1533,6 +1553,10 @@ function handleLine(line) {
     }
     if (command === '729') { game.endQuietSweep(); quietSweep = false; }
 
+    // 315 = end of WHO -> accounts are now known. Sweep again: NAMES may have
+    // finished first, in which case the earlier sweep saw nobody as registered.
+    if (command === '315') voiceSweep(chanKey(params[1] || ''));
+
     if (command === '353') {                       // NAMES reply -> membership + our own status
         const ch = chanKey(params[2] || '');
         const set = members.get(ch) || new Set();
@@ -1572,17 +1596,8 @@ function handleLine(line) {
         send(`WHO ${c} %cuhnar,152`);                       // WHOX: hosts AND accounts
         send(`NAMES ${c}`);                                 // and our own op status
         say(c, '🦇 Dracula stirs. The night watch begins — !!help.');
-    } else if (command === '366') {           // end of NAMES
-        // Auto-voice only ever fired on JOIN, so everyone already sitting in
-        // the channel when we connect was skipped — and we reconnect every few
-        // hours, which means most regulars were never voiced at all. Sweep the
-        // membership once the list is complete.
-        const ch = chanKey(params[1] || '');
-        if (ready && config.autoVoice && !game.isGameChannel(ch) && opped.has(ch)) {
-            for (const n of members.get(ch) || []) {
-                if (deservesVoice(n) && !/[~&@%+]/.test(prefixIn(ch, n))) send(`MODE ${ch} +v ${n}`);
-            }
-        }
+    } else if (command === '366') {           // end of NAMES -> membership known
+        voiceSweep(chanKey(params[1] || ''));
     } else if (command === 'JOIN' && nick) {
         const c = chanKey((tgt || msg).replace(/^:/, ''));
         if (!isOurChannel(c)) return;
