@@ -1532,9 +1532,25 @@ function handleLine(line) {
         const acct = (params[0] || '').replace(/^:/, '');
         accountOf.set(nick.toLowerCase(), acct === '*' ? '' : acct);
     }
-    if (command === '354' && params[1]) {                // WHOX reply: account
-        const [, , , , n, acct] = params;                // %cuhnar -> chan user host nick account
-        if (n) accountOf.set(n.toLowerCase(), (acct && acct !== '0') ? acct : '');
+    if (command === '354' && params[1]) {                // WHOX reply
+        // We ask for "%cuhnar,152". The ",152" is a QUERYTYPE, and the server
+        // echoes it back as the first field — shifting chan/user/host/nick/
+        // account one place right. Reading them unshifted keyed the account map
+        // by HOST with the NICK as its value, so isRegistered() was false for
+        // everyone: the "registered" trust tier and AUTO_VOICE_REGISTERED had
+        // never once worked live.
+        //
+        // The test harness hid it by replying without a querytype, which lined
+        // up with the wrong indices exactly. Parse both shapes.
+        const q = params[1] === '152';
+        const user = q ? params[3] : params[2];
+        const host = q ? params[4] : params[3];
+        const n    = q ? params[5] : params[4];
+        const acct = q ? params[6] : params[5];
+        if (n) {
+            accountOf.set(n.toLowerCase(), (acct && acct !== '0') ? acct : '');
+            if (user && host) hostOf.set(n.toLowerCase(), `${user}@${host}`);
+        }
     }
     if (command === '330' && params[1] && params[2]) {   // WHOIS "is logged in as"
         accountOf.set(params[1].toLowerCase(), params[2]);
