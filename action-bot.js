@@ -108,6 +108,10 @@ const autobanMasks = new Set(list(process.env.AUTOBAN_MASKS));
 // Strict mode: kick joiners whose NICK itself contains filtered words.
 let strictNicks = onOff(process.env.STRICT_NICKS || 'on');
 const channelRules = process.env.CHANNEL_RULES || '';
+// How long a trusted regular is muted instead of kicked.
+const quietMinutes = parseInt(process.env.QUIET_MINUTES || '5', 10);
+// Voice anyone identified to services, not just a hand-kept nick list.
+const voiceRegistered = onOff(process.env.AUTO_VOICE_REGISTERED || 'on');
 // Channel history: InspIRCd's chanhistory mode, +H <lines>:<duration>.
 const historySpec = process.env.CHANNEL_HISTORY_SPEC || '50:3d';
 let historyReport = null;      // set while awaiting the server's verdict
@@ -271,6 +275,22 @@ function isTrusted(nick) {
     return whitelist.has(nick.toLowerCase()) || hostIsTrusted(nick);
 }
 
+/**
+ * Who gets auto-voice.
+ *
+ * Host masks are the wrong identity for this network: a webchat user's cloak
+ * changes between sessions, so the same person was "*!*@4sg.2ls.31.47.IP" one
+ * day and "*!webchat@c1p.6ol.235.110.IP" the next. A mask list decays quietly
+ * and the regulars it was meant to cover stop being recognised.
+ *
+ * A services ACCOUNT does not change. Voicing registered users covers every
+ * regular without a list to maintain, which is why AUTO_VOICE_REGISTERED is on
+ * by default.
+ */
+function deservesVoice(nick) {
+    return isTrusted(nick) || (voiceRegistered && isRegistered(nick));
+}
+
 function tierOf(chan, nick) {
     if (isAdmin(nick) || nick.toLowerCase() === config.nick.toLowerCase()) return 'staff';
     if (isChannelMod(chan, nick)) return 'mod';
@@ -315,7 +335,15 @@ function warnUser(chan, nick, reason) {
     warns.set(k, n);
     if (n >= quota) {
         warns.set(k, 0);
-        kickUser(chan, nick, `${quota} strike${quota > 1 ? 's' : ''} — ${reason}`);
+        // A regular who has had a bad five minutes should not lose the room.
+        // Muting keeps them present and lets them come back to the
+        // conversation; kicking makes it an event, and a wrong one is much
+        // harder to take back.
+        if (tier === 'trusted' || tier === 'mod' || tier === 'staff') {
+            quietUser(chan, nick, quietMinutes, `${quota} strikes — ${reason}`);
+        } else {
+            kickUser(chan, nick, `${quota} strike${quota > 1 ? 's' : ''} — ${reason}`);
+        }
     } else {
         say(chan, `\x0304[MOD]\x03 ${nick} warned (${n}/${quota}) — ${reason}.`);
     }
@@ -332,6 +360,27 @@ function actedRecently(chan, nick, action) {
 }
 function markActioned(chan, nick, action) {
     recentlyActioned.set(actionKey(chan, nick, action), Date.now());
+}
+
+// Muting one person needs +q, not +m. A moderated channel silences everyone
+// who is not voiced — newcomers, anyone whose auto-voice has not landed yet —
+// so it turns a targeted action into a room-wide one. +q takes away exactly
+// one voice and leaves the room running. (findit.js reached the same
+// conclusion independently.)
+const quietUntil = new Map();      // "chan|nick" -> ts the -q is due
+let quietSweep = false;            // true while asking for the +q list at startup
+function quietUser(chan, nick, mins, reason) {
+    if (!requireOps(chan, `quiet ${nick}`)) return;
+    const uh = hostOf.get(nick.toLowerCase());
+    const mask = uh ? `*!*@${uh.split('@')[1]}` : `${nick}!*@*`;
+    send(`MODE ${chan} +q ${mask}`);
+    say(chan, `\x0304[MOD]\x03 ${nick} muted ${mins}m — ${reason}. Still here, just quiet.`);
+    quietUntil.set(`${chanKey(chan)}|${nick.toLowerCase()}`, Date.now() + mins * 60000);
+    setTimeout(() => {
+        send(`MODE ${chan} -q ${mask}`);
+        quietUntil.delete(`${chanKey(chan)}|${nick.toLowerCase()}`);
+        notice(nick, `You can speak in ${chan} again.`);
+    }, mins * 60000);
 }
 
 function kickUser(chan, nick, reason) {
@@ -1292,6 +1341,9 @@ function handleLine(line) {
             // through it. Prove it works at startup, and tell the operators if
             // it does not.
             selfCheckAI();
+            quietSweep = true;
+            config.channels.forEach((c) => send(`MODE ${c} +q`));   // list, then clear ours
+            setTimeout(() => { quietSweep = false; }, 15000);
         }, 2500);
     }
     if (command === '900' || (command === 'NOTICE' && /identified|logged in/i.test(msg))) {
@@ -1359,8 +1411,18 @@ function handleLine(line) {
         accountOf.set(params[1].toLowerCase(), params[2]);
     }
 
-    if (command === '728' && params[3]) game.onQuietEntry(params[1], params[3]);
-    if (command === '729') game.endQuietSweep();
+    if (command === '728' && params[3]) {
+        game.onQuietEntry(params[1], params[3]);
+        // A mute is meant to last minutes, but the host restarts us every few
+        // hours — so any quiet WE set that outlived the process is stale by
+        // definition, and the person is silenced with nobody left to release
+        // them. Clear ours on the way in. params: [us, chan, 'q', mask, setter, ts]
+        if (quietSweep && (params[4] || '').toLowerCase().startsWith(config.nick.toLowerCase())) {
+            log('MOD', `Clearing a mute left behind by a previous run: ${params[3]}`);
+            send(`MODE ${params[1]} -q ${params[3]}`);
+        }
+    }
+    if (command === '729') { game.endQuietSweep(); quietSweep = false; }
 
     if (command === '353') {                       // NAMES reply -> membership + our own status
         const ch = chanKey(params[2] || '');
@@ -1401,6 +1463,17 @@ function handleLine(line) {
         send(`WHO ${c} %cuhnar,152`);                       // WHOX: hosts AND accounts
         send(`NAMES ${c}`);                                 // and our own op status
         say(c, '🦇 Dracula stirs. The night watch begins — !!help.');
+    } else if (command === '366') {           // end of NAMES
+        // Auto-voice only ever fired on JOIN, so everyone already sitting in
+        // the channel when we connect was skipped — and we reconnect every few
+        // hours, which means most regulars were never voiced at all. Sweep the
+        // membership once the list is complete.
+        const ch = chanKey(params[1] || '');
+        if (ready && config.autoVoice && !game.isGameChannel(ch) && opped.has(ch)) {
+            for (const n of members.get(ch) || []) {
+                if (deservesVoice(n) && !/[~&@%+]/.test(prefixIn(ch, n))) send(`MODE ${ch} +v ${n}`);
+            }
+        }
     } else if (command === 'JOIN' && nick) {
         const c = chanKey((tgt || msg).replace(/^:/, ''));
         if (!isOurChannel(c)) return;
@@ -1409,7 +1482,7 @@ function handleLine(line) {
 
         // Trusted regulars get voice automatically — a visible mark of standing
         // and it keeps them speaking if the room is ever moderated (+m).
-        if (ready && !game.isGameChannel(c) && config.autoVoice && isTrusted(nick)
+        if (ready && !game.isGameChannel(c) && config.autoVoice && deservesVoice(nick)
             && opped.has(c) && !/[~&@%+]/.test(prefixIn(c, nick))) {
             send(`MODE ${c} +v ${nick}`);
         }

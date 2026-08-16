@@ -61,6 +61,10 @@ jobs:
           WARN_LIMIT_REGISTERED: ${{ secrets.WARN_LIMIT_REGISTERED || '1' }}
           KICK_UNREGISTERED: ${{ secrets.KICK_UNREGISTERED || 'on' }}
           AUTO_VOICE: ${{ secrets.AUTO_VOICE || 'on' }}
+          # Voice anyone identified to services. A cloak changes between
+          # sessions on this network; an account does not.
+          AUTO_VOICE_REGISTERED: ${{ secrets.AUTO_VOICE_REGISTERED || 'on' }}
+          QUIET_MINUTES: ${{ secrets.QUIET_MINUTES || '5' }}
           LINK_FILTER: ${{ secrets.LINK_FILTER || 'off' }}
           BADWORDS: ${{ secrets.BADWORDS }}
           SEVERE_WORDS: ${{ secrets.SEVERE_WORDS }}
