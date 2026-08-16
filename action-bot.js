@@ -295,6 +295,13 @@ function tierOf(chan, nick) {
     if (isAdmin(nick) || nick.toLowerCase() === config.nick.toLowerCase()) return 'staff';
     if (isChannelMod(chan, nick)) return 'mod';
     if (isTrusted(nick)) return 'trusted';
+    // A services-granted voice IS the trust signal, once VOP holds the list.
+    // Voice used to be only an OUTPUT of this function — the bot voiced people
+    // it already trusted — which meant moving the roster into ChanServ VOP
+    // changed nothing: the bot kept judging by its own stale nick list. Reading
+    // +v back as an INPUT is what makes that migration take effect, and it
+    // covers a human operator voicing someone by hand too.
+    if (/\+/.test(prefixIn(chan, nick))) return 'trusted';
     if (isRegistered(nick)) return 'registered';
     // Without services nobody reads as registered, so the whole room drops to
     // the tier that gets removed on sight. "registered" is not gentle enough
