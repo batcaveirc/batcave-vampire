@@ -1003,7 +1003,8 @@ function handleCommand(chan, nick, message) {
     switch (cmd) {
         case 'help':
             reply( 'Everyone: !!seen <nick>, !!status, !!info [nick], !!rules. '
-                + 'Fun: !!bite, !!slap, !!8ball <q>, !!ship <a> <b>, !!fortune, !!rip, !!vibe. '
+                + 'Fun: !!bite, !!slap, !!hug, !!pat, !!8ball <q>, !!ship <a> <b>, !!fortune, !!rip, !!vibe. '
+                + 'Talk: !!icebreaker, !!hotseat [nick], !!story, !!toast [nick]. '
                 + 'Mods: !!join/!!part #room, !!rooms, !!mass kick|ban|voice|devoice, '
                 + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '

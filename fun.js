@@ -102,6 +102,59 @@ const NIGHT = Object.freeze([
     'Night. If you hear wings, ignore it.',
 ]);
 
+// Prompts, not jokes. A quiet room does not need another punchline — it needs
+// something for people to answer. Ported from the local bot, where these were
+// the commands that actually restarted conversations.
+const ICEBREAKERS = Object.freeze([
+    "What's a tiny hill you'll die on?",
+    'Which fictional place would you move to for a month?',
+    "What's your comfort rewatch when life gets loud?",
+    'What did you believe as a kid that you defended way too hard?',
+    "What's the last thing that genuinely impressed you?",
+    'Which everyday sound do you unreasonably love?',
+    "What's a skill you have that never comes up?",
+    'Best meal you have ever had at 2am?',
+]);
+
+const HOTSEAT = Object.freeze([
+    'Tell us one take people disagree with but you stand by.',
+    "What's one decision you're proud you made?",
+    'If you could master one skill instantly, what is it?',
+    'What is something you changed your mind about this year?',
+    "What's the compliment you never know how to accept?",
+    'Which of your habits would you defend in court?',
+]);
+
+const STORY_SEEDS = Object.freeze([
+    'A locked rooftop door opens at 3:33 AM every night.',
+    "Someone in chat predicts tomorrow's headlines perfectly.",
+    'The city loses all sound for exactly one minute.',
+    'Every mirror in your house is two seconds behind.',
+    'A stray cat keeps returning your lost things.',
+    'The last train has one carriage nobody can enter.',
+]);
+
+const TOASTS = Object.freeze([
+    'A toast to {t}: may your luck stay loud and your stress stay quiet.',
+    'To {t}: clean wins, good people, and perfect timing.',
+    'Cheers to {t}: may your week surprise you in the best way.',
+    'To {t} — may every queue you join be the fast one.',
+    'Raise a glass to {t}: unbothered, well rested, correctly caffeinated.',
+]);
+
+const HUGS = Object.freeze([
+    'wraps {t} in a cold, slightly damp hug. It is the thought that counts.',
+    'hugs {t}. Four hundred years and still bad at this.',
+    'gives {t} a hug that lasts a beat too long.',
+    'hugs {t} carefully, like something breakable.',
+]);
+
+const PATS = Object.freeze([
+    'pats {t} on the head. Good mortal.',
+    'pats {t} twice and looks away, embarrassed.',
+    'pats {t}. There. Emotions handled.',
+]);
+
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
 // Stable hash: !!ship gives the same couple the same number forever, which is
@@ -154,7 +207,8 @@ class Fun {
      * @returns {boolean} true if this was a fun command (handled or swallowed)
      */
     handle(nick, chan, cmd, args) {
-        const commands = ['bite', '8ball', 'ship', 'slap', 'fortune', 'rip', 'vibe'];
+        const commands = ['bite', '8ball', 'ship', 'slap', 'fortune', 'rip', 'vibe',
+            'hug', 'pat', 'icebreaker', 'ask', 'hotseat', 'story', 'toast'];
         if (!commands.includes(cmd)) return false;
         if (!this.enabled || this.isGameChannel(chan)) return true;   // swallow, stay quiet
         if (!this.cooldownOk(chan, nick)) return true;
@@ -195,6 +249,25 @@ class Fun {
                 return true;
             case 'vibe':
                 this.bot.say(chan, `🦇 ${pick(VIBES)}`);
+                return true;
+            case 'hug':
+                this.action(chan, pick(HUGS).split('{t}').join(target));
+                return true;
+            case 'pat':
+                this.action(chan, pick(PATS).split('{t}').join(target));
+                return true;
+            case 'icebreaker':
+            case 'ask':
+                this.bot.say(chan, `\x0306🧠 ${pick(ICEBREAKERS)}\x03`);
+                return true;
+            case 'hotseat':
+                this.bot.say(chan, `\x0306🎤 ${target}:\x03 ${pick(HOTSEAT)}`);
+                return true;
+            case 'story':
+                this.bot.say(chan, `\x0306📖 Story seed:\x03 ${pick(STORY_SEEDS)}`);
+                return true;
+            case 'toast':
+                this.bot.say(chan, `🥂 ${pick(TOASTS).split('{t}').join(target)}`);
                 return true;
             default:
                 return false;
