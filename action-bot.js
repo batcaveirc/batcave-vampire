@@ -1467,6 +1467,13 @@ function handleLine(line) {
         reconnectAttempts = 0;
         everRegistered = true;
         preRegFailures = 0;
+        // +g (callerid) refuses private messages from anyone not on our accept
+        // list, +R from anyone unregistered. Enforced by the SERVER, so a DM
+        // flood never reaches our socket and cannot get us killed for excess
+        // flood — ignoring it bot-side would still mean reading every line.
+        // Verified on this network: services are exempt, so ChanServ and
+        // NickServ still reach us. +i keeps us out of unsolicited scans.
+        send(`MODE ${currentNick} +giR`);
         log('OK', `Registered as ${currentNick}.`);
         // Identify to the ACCOUNT immediately — the two-arg form works even if NickServ
         // enforcement already bumped us to a Guest nick, and fast identify keeps our nick.
