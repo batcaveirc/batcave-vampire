@@ -69,6 +69,10 @@ let socket = null;
 let currentNick = config.nick;
 let connecting = false;
 let reconnectAttempts = 0;
+// Did we ever complete registration on ANY connection this process? Used to
+// tell "the network refused this address" apart from "the link dropped".
+let everRegistered = false;
+let preRegFailures = 0;
 let hasJoined = false;
 let ready = false;                 // replay guard: ignore backlog on (re)join
 let sentientMode = onOff(process.env.SENTIENT_ON || 'on');
@@ -1371,6 +1375,26 @@ function startNickWatchdog() {
 function scheduleReconnect() {
     if (reconnectTimer) return;
     reconnectAttempts += 1;
+
+    // A connection that closes before we ever reach 001 is a different animal
+    // from one that drops mid-session. It means the SERVER refused this IP —
+    // GitHub runner addresses land on DroneBL often enough that it happens for
+    // real — and no amount of retrying fixes an address. Retrying it for six
+    // hours is worse than useless: the room has no bot the entire time, and the
+    // one thing that WOULD help is a different IP, which is exactly what the
+    // next run gets. So give up and let the cron start a fresh one.
+    if (!everRegistered) {
+        preRegFailures += 1;
+        if (preRegFailures >= 5) {
+            log('ERR', `Refused ${preRegFailures} times without ever registering — this address `
+                + 'looks blocked. Exiting so the next run picks up a different one.');
+            process.exit(1);
+        }
+        log('INFO', `Rejected before registering (${preRegFailures}/5) — retrying in 20s.`);
+        reconnectTimer = setTimeout(connect, 20000);
+        return;
+    }
+
     const delay = Math.min(10000 * 2 ** (reconnectAttempts - 1), 300000); // 10s,20s,40s… cap 5m — avoids connection-flood bans
     log('INFO', `Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts}).`);
     reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
@@ -1441,6 +1465,8 @@ function handleLine(line) {
     }
     if (command === '001') {
         reconnectAttempts = 0;
+        everRegistered = true;
+        preRegFailures = 0;
         log('OK', `Registered as ${currentNick}.`);
         // Identify to the ACCOUNT immediately — the two-arg form works even if NickServ
         // enforcement already bumped us to a Guest nick, and fast identify keeps our nick.
