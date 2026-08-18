@@ -18,7 +18,7 @@ const config = {
     port: parseInt(process.env.IRC_PORT || (useTls ? '6697' : '6667'), 10),
     tls: useTls,
     nick: process.env.IRC_NICK || 'Dracula',
-    realname: process.env.IRC_REALNAME || 'BatCave Vampire Bot',
+    realname: process.env.IRC_REALNAME || 'Older than the room, and in no hurry',
     password: process.env.NICKSERV_PASS || '',
     nsAccount: process.env.NICKSERV_ACCOUNT || '',
     channels,
@@ -1493,7 +1493,13 @@ function handleLine(line) {
         // flood — ignoring it bot-side would still mean reading every line.
         // Verified on this network: services are exempt, so ChanServ and
         // NickServ still reach us. +i keeps us out of unsolicited scans.
-        send(`MODE ${currentNick} +giR`);
+        // +I hides our channel list from WHOIS — verified: another client sees
+        // the nick and host but gets no channel line at all. +g/+R close DMs.
+        // NOTE the absence of -x: +x is the cloak, and dropping it would put the
+        // runner's real address in everyone's WHOIS. Hiding and unmasking are
+        // opposite things and one letter apart.
+        send(`MODE ${currentNick} +gIiR`);
+        send('PRIVMSG HostServ :ON');        // reapply the vhost after a reconnect
         log('OK', `Registered as ${currentNick}.`);
         // Identify to the ACCOUNT immediately — the two-arg form works even if NickServ
         // enforcement already bumped us to a Guest nick, and fast identify keeps our nick.

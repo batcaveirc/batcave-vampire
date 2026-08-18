@@ -43,7 +43,7 @@ jobs:
           # Both rooms: Dracula is the primary moderator in each. Luna covers
           # the gaps in the same two rooms and relays only the emoji one.
           IRC_CHANNEL: ${{ secrets.IRC_CHANNEL || '#batcave,#🅱🅰🆃🅲🅰🆅🅴' }}
-          IRC_REALNAME: ${{ secrets.IRC_REALNAME || 'BatCave Vampire Bot' }}
+          IRC_REALNAME: ${{ secrets.IRC_REALNAME || 'Older than the room, and in no hurry' }}
           NICKSERV_ACCOUNT: ${{ secrets.NICKSERV_ACCOUNT }}
 
           # Owners get every command. Admins get the moderation subset; leaving
