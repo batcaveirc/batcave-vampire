@@ -854,13 +854,9 @@ async function selfCheckAI() {
     } catch (e) {
         log('ERR', `AI layer FAILED at startup: ${e.message}`);
         // Tell the people who can do something about it, without alarming the room.
-        for (const c of config.channels) {
-            for (const n of members.get(chanKey(c)) || []) {
-                if (isChannelMod(c, n)) {
-                    notice(n, `\x0304[ALERT]\x03 AI moderation is offline (${e.message.slice(0, 60)}). `
-                        + 'The word filter still stands. Check the Groq key.');
-                }
-            }
+        for (const n of channelMods()) {
+            notice(n, `\x0304[ALERT]\x03 AI moderation is offline (${e.message.slice(0, 60)}). `
+                + 'The word filter still stands. Check the Groq key.');
         }
     }
 }
@@ -880,18 +876,28 @@ async function selfCheckAI() {
 let servicesDown = false;
 let servicesReport = null;      // set while awaiting ChanServ's INFO reply
 
+/** Every operator across our channels, each listed once. */
+function channelMods() {
+    const seen = new Map();
+    for (const c of config.channels) {
+        for (const n of members.get(chanKey(c)) || []) {
+            if (isChannelMod(c, n) && n.toLowerCase() !== config.nick.toLowerCase()) {
+                seen.set(n.toLowerCase(), n);
+            }
+        }
+    }
+    return [...seen.values()];
+}
+
 function enterDegradedMode(why) {
     if (servicesDown) return;
     servicesDown = true;
     log('ERR', `DEGRADED: ${why}. Stranger-removal suspended; word filter still active.`);
-    for (const c of config.channels) {
-        for (const n of members.get(chanKey(c)) || []) {
-            if (isChannelMod(c, n)) {
-                notice(n, `\x0304[ALERT]\x03 ${why}. I cannot tell who is registered, so I have `
-                    + 'stopped removing strangers — everyone looks like one right now. '
-                    + 'Word filter, flood and raid guard are unaffected.');
-            }
-        }
+    // One alert per person. An operator in both rooms was being told twice.
+    for (const n of channelMods()) {
+        notice(n, `\x0304[ALERT]\x03 ${why}. I cannot tell who is registered, so I have `
+            + 'stopped removing strangers — everyone looks like one right now. '
+            + 'Word filter, flood and raid guard are unaffected.');
     }
     setTimeout(() => verifyServices(1), 300000);   // look again in five minutes
 }
@@ -900,11 +906,7 @@ function leaveDegradedMode() {
     if (!servicesDown) return;
     servicesDown = false;
     log('OK', 'Services are back — full trust ladder restored.');
-    for (const c of config.channels) {
-        for (const n of members.get(chanKey(c)) || []) {
-            if (isChannelMod(c, n)) notice(n, '\x0303[OK]\x03 Services are back. Normal moderation resumed.');
-        }
-    }
+    for (const n of channelMods()) notice(n, '\x0303[OK]\x03 Services are back. Normal moderation resumed.');
 }
 
 /**
@@ -977,7 +979,7 @@ function verifyServices(attempt = 1) {
                 }
             }
         }
-    }, 8000);
+    }, 15000);
 }
 
 // --- Command handler (!! prefix) ---
@@ -1528,7 +1530,12 @@ function handleLine(line) {
             // through it. Prove it works at startup, and tell the operators if
             // it does not.
             selfCheckAI();
-            verifyServices();
+            // Not immediately: registration queues joins, WHO, NAMES, mode
+            // sets and the quiet-list request through a 5-lines/second
+            // limiter, so a probe fired now sits behind twenty other lines and
+            // times out on our own traffic. It reported "ChanServ is not
+            // answering" when ChanServ was answering fine.
+            setTimeout(() => verifyServices(), 20000);
             recruiter.channels.forEach((c) => { send(`JOIN ${c}`); send(`NAMES ${c}`); });
             recruiter.start(log);
             quietSweep = true;
