@@ -2,6 +2,7 @@ const net = require('net');
 const tls = require('tls');
 const { FindIt } = require('./findit');
 const { Fun } = require('./fun');
+const { Recruiter } = require('./recruit');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
@@ -130,6 +131,11 @@ let raidGuard = onOff(process.env.RAID_GUARD || 'on');
 const bot = { send, say, notice, get nick() { return currentNick; } };
 const game = new FindIt(bot);
 const fun = new Fun(bot, (c) => game.isGameChannel(c));
+const recruiter = new Recruiter(bot, {
+    membersOf: (c) => [...(members.get(chanKey(c)) || [])],
+    prefixOf: (c, n) => prefixIn(c, n),
+    get homeChannel() { return config.channels[0]; },
+});
 fun.enabled = onOff(process.env.FUN_ON || 'on');
 // Master moderation switch, independent of the game.
 let modEnabled = onOff(process.env.MOD_ENABLED || 'on');
@@ -1009,7 +1015,7 @@ function handleCommand(chan, nick, message) {
                 + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!history on|off, '
-                + '!!sentient on|off, !!fun on|off, !!badword add|remove <w>, '
+                + '!!sentient on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
                 + '!!whitelist add|remove <nick>, !!announce <msg>.');
             break;
         case 'seen': {
@@ -1273,6 +1279,19 @@ function handleCommand(chan, nick, message) {
             else if (args[0] === 'off') { sentientMode = false; reply( 'Sentient moderation off — scripted filter still stands guard.'); }
             else reply( `Sentient is ${sentientMode ? 'ON' : 'OFF'}.`);
             break;
+        case 'recruit':
+            if (!admin) { reply('Access denied.'); break; }
+            if (args[0] === 'on') { recruiter.enabled = recruiter.channels.length > 0; reply(recruiter.enabled ? `Recruiting from ${recruiter.channels.join(', ')}.` : 'No RECRUIT_CHANNELS set.'); }
+            else if (args[0] === 'off') { recruiter.enabled = false; reply('Recruiting off.'); }
+            else if (args[0] === 'now') {
+                const r = recruiter.inviteOne();
+                reply(r ? `Invited ${r.target} from ${r.chan}.` : 'Nobody eligible right now.');
+            } else {
+                reply(`Recruiting is ${recruiter.enabled ? 'ON' : 'OFF'}`
+                    + `${recruiter.channels.length ? ` from ${recruiter.channels.join(', ')}` : ' (no channels set)'}`
+                    + `; ${recruiter.invited.size} invited so far. !!recruit on|off|now`);
+            }
+            break;
         case 'fun':
             if (!admin) { reply( 'Access denied.'); break; }
             if (args[0] === 'on') { fun.enabled = true; reply( '🦇 Fun commands ON — !!bite, !!8ball, !!ship, !!fortune, !!rip, !!vibe, !!slap.'); }
@@ -1504,6 +1523,8 @@ function handleLine(line) {
             // it does not.
             selfCheckAI();
             verifyServices();
+            recruiter.channels.forEach((c) => { send(`JOIN ${c}`); send(`NAMES ${c}`); });
+            recruiter.start(log);
             quietSweep = true;
             config.channels.forEach((c) => send(`MODE ${c} +q`));   // list, then clear ours
             setTimeout(() => { quietSweep = false; }, 15000);

@@ -82,6 +82,18 @@ jobs:
           TRUSTED_MASKS: ${{ secrets.TRUSTED_MASKS }}
           CHANNEL_RULES: ${{ secrets.CHANNEL_RULES }}
           MOD_ENABLED: ${{ secrets.MOD_ENABLED || 'on' }}
+
+          # ── Recruiting ───────────────────────────────────────────────────
+          # Channels the OWNER runs, that Dracula may invite from. Empty = the
+          # whole feature is off. Only list rooms you hold ops in.
+          RECRUIT_CHANNELS: ${{ secrets.RECRUIT_CHANNELS }}
+          RECRUIT_ON: ${{ secrets.RECRUIT_ON || 'on' }}
+          # Long, random gaps. A metronome is what a bot looks like; these
+          # numbers are what keep it looking like a person being friendly.
+          RECRUIT_MIN_GAP_MIN: ${{ secrets.RECRUIT_MIN_GAP_MIN || '45' }}
+          RECRUIT_MAX_GAP_MIN: ${{ secrets.RECRUIT_MAX_GAP_MIN || '180' }}
+          RECRUIT_ANNOUNCE_MIN: ${{ secrets.RECRUIT_ANNOUNCE_MIN || '240' }}
+          FEMININE_HINTS: ${{ secrets.FEMININE_HINTS }}
           # Channel scrollback: InspIRCd chanhistory, lines:duration.
           CHANNEL_HISTORY_SPEC: ${{ secrets.CHANNEL_HISTORY_SPEC || '50:3d' }}
 
