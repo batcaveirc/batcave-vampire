@@ -1350,7 +1350,13 @@ function handleCommand(chan, nick, message) {
         }
         case 'recruit':
             if (!admin) { reply('Access denied.'); break; }
-            if (args[0] === 'on') { recruiter.enabled = recruiter.channels.length > 0; reply(recruiter.enabled ? `Recruiting from ${recruiter.channels.join(', ')}.` : 'No RECRUIT_CHANNELS set.'); }
+            if (args[0] === 'on') {
+                recruiter.enabled = recruiter.channels.length > 0;
+                recruiter.start(log);       // idempotent; the timers may not exist yet
+                reply(recruiter.enabled
+                    ? `Recruiting from ${recruiter.channels.join(', ')} — next attempt ${recruiter.dueIn()}.`
+                    : 'No RECRUIT_CHANNELS set.');
+            }
             else if (args[0] === 'off') { recruiter.enabled = false; reply('Recruiting off.'); }
             else if (args[0] === 'now') {
                 const r = recruiter.inviteOne();
@@ -1362,7 +1368,8 @@ function handleCommand(chan, nick, message) {
             } else {
                 reply(`Recruiting is ${recruiter.enabled ? 'ON' : 'OFF'}`
                     + `${recruiter.channels.length ? ` from ${recruiter.channels.join(', ')}` : ' (no channels set)'}`
-                    + `; ${recruiter.invited.size} invited so far. !!recruit on|off|now`);
+                    + `; ${recruiter.invited.size} invited so far, next attempt ${recruiter.dueIn()}. `
+                    + '!!recruit on|off|now');
                 recruiter.explain().forEach((l) => reply(l));
             }
             break;

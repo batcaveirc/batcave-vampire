@@ -137,18 +137,32 @@ class Recruiter {
         return chan;
     }
 
-    /** Random gaps, never a fixed interval: a metronome is what a bot looks like. */
+    /**
+     * Random gaps, never a fixed interval: a metronome is what a bot looks like.
+     *
+     * The loops ALWAYS run, and each firing asks whether recruiting is on. The
+     * previous version returned early when it was off, so the timers were never
+     * created — and since the bot boots before anyone types !!recruit on, the
+     * toggle flipped a boolean with nothing behind it. It looked enabled and
+     * could only ever act when someone typed !!recruit now by hand.
+     *
+     * State that can be switched at runtime must not decide whether the
+     * machinery exists. It decides what the machinery does when it fires.
+     */
     start(log) {
-        if (!this.enabled) {
-            log('INFO', 'Recruiting is off (set RECRUIT_CHANNELS to enable).');
-            return;
-        }
-        log('OK', `Recruiting from ${this.channels.join(', ')} into ${this.deps.homeChannel}.`);
+        if (this.timers.length) return;          // idempotent
+        this.log = log;
+        log(this.enabled ? 'OK' : 'INFO',
+            this.enabled
+                ? `Recruiting from ${this.channels.join(', ')} into ${this.deps.homeChannel}.`
+                : 'Recruiting is idle (no channels set, or turned off) — the timer is running '
+                  + 'and will act the moment it is switched on.');
         const loop = (fn, lo, hi) => {
             const t = setTimeout(() => {
                 try { fn(); } catch (e) { log('ERR', `recruit: ${e.message}`); }
                 loop(fn, lo, hi);
             }, between(lo, hi));
+            this.nextAt = Date.now() + lo;
             this.timers.push(t);
         };
         loop(() => {
@@ -157,6 +171,12 @@ class Recruiter {
         }, MIN_GAP_MS, MAX_GAP_MS);
         loop(() => { const c = this.announce(); if (c) log('INFO', `Announced in ${c}.`); },
             ANNOUNCE_GAP_MS, ANNOUNCE_GAP_MS * 2);
+    }
+
+    /** Roughly how long until the next attempt, for !!recruit to report. */
+    dueIn() {
+        if (!this.timers.length) return 'not scheduled';
+        return `up to ${Math.round(MAX_GAP_MS / 60000)}m`;
     }
 
     stop() {
