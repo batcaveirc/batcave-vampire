@@ -977,6 +977,10 @@ let servicesProbes = 0;
  * makes it idempotent.
  */
 const enforcedModeration = new Set();
+// Who keeps channel access when !!prune runs. Nicks, not hostmasks.
+const accessKeep = process.env.ACCESS_KEEP
+    || 'vampire,scarlet,vlkram,luna1,riyu,johnny,libu';
+let prunePlan = null;      // a preview awaiting !!prune confirm
 
 function voiceSweep(ch) {
     // A room listed in MODERATED_ROOMS but not actually +m is the worst of
@@ -1072,7 +1076,7 @@ function handleCommand(chan, nick, message) {
                 + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!history on|off, '
-                + '!!access, !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
+                + '!!access, !!prune [confirm], !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
                 + '!!whitelist add|remove <nick>, !!announce <msg>.');
             break;
         case 'seen': {
@@ -1353,6 +1357,61 @@ function handleCommand(chan, nick, message) {
         // is just its effect, and someone can hold access while absent.
         // Read-only on purpose — removing access is a separate decision and
         // should be made looking at this output, not blind.
+        // Trim the moderator list down to a keep-list. Reads ChanServ's own
+        // listing first, previews exactly what would go, and does nothing until
+        // confirmed — !!mass removed thirty regulars in one command, and an
+        // access list is harder to rebuild than a room.
+        case 'prune': {
+            if (!admin) { reply('Access denied.'); break; }
+
+            if (args[0] === 'confirm') {
+                if (!prunePlan || Date.now() - prunePlan.at > 120000) {
+                    reply('Nothing to confirm — run !!prune first (the preview expires after 2 minutes).');
+                    break;
+                }
+                let n = 0;
+                for (const [chan, targets] of Object.entries(prunePlan.byChannel)) {
+                    for (const t of targets) { send(`PRIVMSG ChanServ :FLAGS ${chan} ${t} -*`); n += 1; }
+                }
+                say(chan, `\x0304[ACCESS]\x03 removing channel access from ${n} entr${n === 1 ? 'y' : 'ies'}.`);
+                prunePlan = null;
+                break;
+            }
+
+            const keep = new Set((args.length ? args.join(',') : accessKeep)
+                .split(',').map((x) => x.trim().toLowerCase()).filter(Boolean));
+            const rows = [];
+            servicesReport = (m) => rows.push(m.replace(/\s+/g, ' ').trim());
+            for (const c of config.channels) send(`PRIVMSG ChanServ :FLAGS ${c}`);
+            reply(`\x0306[ACCESS]\x03 reading the lists, keeping: ${[...keep].join(', ')}…`);
+
+            setTimeout(() => {
+                servicesReport = null;
+                const plan = {};
+                let total = 0;
+                // "25 *!*@* +V (USER) [modified …]" — entry, target, flags.
+                for (const line of rows) {
+                    const m = line.match(/^\d+\s+(\S+)\s+(\+\S+)/);
+                    if (!m) continue;
+                    const [, target, flags] = m;
+                    const t = target.toLowerCase();
+                    if (keep.has(t)) continue;
+                    if (flags.includes('F')) continue;              // founders: not ours to touch
+                    if (/^[$]/.test(target) || /[!@*]/.test(target)) continue;  // groups and masks, not people
+                    if (t === config.nick.toLowerCase()) continue;
+                    (plan[config.channels[0]] = plan[config.channels[0]] || []).push(target);
+                    total += 1;
+                }
+                if (!total) { reply('Nothing to remove — everyone listed is either on the keep-list, a founder, or an auto-voice rule.'); return; }
+                prunePlan = { byChannel: plan, at: Date.now() };
+                for (const [c, targets] of Object.entries(plan)) {
+                    reply(`\x0306[ACCESS]\x03 ${c}: would remove ${targets.length} — ${targets.join(', ')}`);
+                }
+                reply('Founders and auto-voice rules are untouched. '
+                    + '\x02!!prune confirm\x02 within 2 minutes to apply.');
+            }, 9000);
+            break;
+        }
         case 'access': {
             if (!admin) { reply('Access denied.'); break; }
             const lines = [];
