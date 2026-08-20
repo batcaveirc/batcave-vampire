@@ -94,6 +94,10 @@ jobs:
           RECRUIT_ON: ${{ secrets.RECRUIT_ON || 'on' }}
           # Long, random gaps. A metronome is what a bot looks like; these
           # numbers are what keep it looking like a person being friendly.
+          # The first attempt after startup. Short on purpose: the host
+          # restarts this bot every six hours and every restart resets the
+          # timer, so a long first gap means it can never fire.
+          RECRUIT_FIRST_MIN: ${{ secrets.RECRUIT_FIRST_MIN || '4' }}
           RECRUIT_MIN_GAP_MIN: ${{ secrets.RECRUIT_MIN_GAP_MIN || '45' }}
           RECRUIT_MAX_GAP_MIN: ${{ secrets.RECRUIT_MAX_GAP_MIN || '180' }}
           RECRUIT_ANNOUNCE_MIN: ${{ secrets.RECRUIT_ANNOUNCE_MIN || '240' }}

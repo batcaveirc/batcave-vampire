@@ -22,6 +22,12 @@
 const MIN_GAP_MS = parseInt(process.env.RECRUIT_MIN_GAP_MIN || '45', 10) * 60000;
 const MAX_GAP_MS = parseInt(process.env.RECRUIT_MAX_GAP_MIN || '180', 10) * 60000;
 const ANNOUNCE_GAP_MS = parseInt(process.env.RECRUIT_ANNOUNCE_MIN || '240', 10) * 60000;
+// The FIRST attempt after startup is deliberately much sooner than the rest.
+// The host restarts this bot every six hours, and every restart resets the
+// timer — so with a 45-180 minute first gap, a few redeploys in an afternoon
+// mean it never fires at all. A short opening interval makes the feature
+// survive its own deployment; the long gaps take over from the second firing.
+const FIRST_GAP_MS = parseInt(process.env.RECRUIT_FIRST_MIN || '4', 10) * 60000;
 
 // A guess, and a poor one — nicknames are not gender. It only decides WHICH
 // bot extends the invitation, so being wrong costs nothing. Extend with
@@ -157,26 +163,31 @@ class Recruiter {
                 ? `Recruiting from ${this.channels.join(', ')} into ${this.deps.homeChannel}.`
                 : 'Recruiting is idle (no channels set, or turned off) — the timer is running '
                   + 'and will act the moment it is switched on.');
-        const loop = (fn, lo, hi) => {
+        // `track` marks the invite loop, so dueIn() reports THAT one rather
+        // than whichever timer happened to be scheduled last.
+        const loop = (fn, lo, hi, first, track) => {
+            const delay = first != null ? first : between(lo, hi);
             const t = setTimeout(() => {
                 try { fn(); } catch (e) { log('ERR', `recruit: ${e.message}`); }
-                loop(fn, lo, hi);
-            }, between(lo, hi));
-            this.nextAt = Date.now() + lo;
+                loop(fn, lo, hi, null, track);   // settle into the long gaps
+            }, delay);
+            if (track) this.nextAt = Date.now() + delay;
             this.timers.push(t);
         };
         loop(() => {
             const r = this.inviteOne();
             if (r) log('INFO', `Invited ${r.target} from ${r.chan}.`);
-        }, MIN_GAP_MS, MAX_GAP_MS);
+        }, MIN_GAP_MS, MAX_GAP_MS, FIRST_GAP_MS, true);
         loop(() => { const c = this.announce(); if (c) log('INFO', `Announced in ${c}.`); },
-            ANNOUNCE_GAP_MS, ANNOUNCE_GAP_MS * 2);
+            ANNOUNCE_GAP_MS, ANNOUNCE_GAP_MS * 2, FIRST_GAP_MS * 3);
     }
 
     /** Roughly how long until the next attempt, for !!recruit to report. */
     dueIn() {
         if (!this.timers.length) return 'not scheduled';
-        return `up to ${Math.round(MAX_GAP_MS / 60000)}m`;
+        if (!this.nextAt) return `up to ${Math.round(MAX_GAP_MS / 60000)}m`;
+        const mins = Math.max(0, Math.round((this.nextAt - Date.now()) / 60000));
+        return `in about ${mins}m`;
     }
 
     stop() {
