@@ -69,7 +69,8 @@ class Recruiter {
         this.hints = DEFAULT_HINTS.concat(
             (process.env.FEMININE_HINTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean));
         this.invited = new Set();      // nobody is ever asked twice
-        this.timers = [];
+        this.timers = {};             // name -> the ONE live handle for that job
+        this.started = false;
     }
 
     /** Nicknames that look feminine enough for Dracula to take this one. */
@@ -162,43 +163,70 @@ class Recruiter {
      * machinery exists. It decides what the machinery does when it fires.
      */
     start(log) {
-        if (this.timers.length) return;          // idempotent
+        if (this.started) return;                // idempotent
+        this.started = true;
         this.log = log;
         log(this.enabled ? 'OK' : 'INFO',
             this.enabled
                 ? `Recruiting from ${this.channels.join(', ')} into ${this.deps.homeChannel}.`
                 : 'Recruiting is idle (no channels set, or turned off) — the timer is running '
                   + 'and will act the moment it is switched on.');
-        // `track` marks the invite loop, so dueIn() reports THAT one rather
-        // than whichever timer happened to be scheduled last.
-        const loop = (fn, lo, hi, first, track) => {
-            const delay = first != null ? first : between(lo, hi);
-            const t = setTimeout(() => {
-                try { fn(); } catch (e) { log('ERR', `recruit: ${e.message}`); }
-                loop(fn, lo, hi, null, track);   // settle into the long gaps
-            }, delay);
-            if (track) this.nextAt = Date.now() + delay;
-            this.timers.push(t);
-        };
-        loop(() => {
-            const r = this.inviteOne();
-            if (r) log('INFO', `Invited ${r.target} from ${r.chan}.`);
-        }, MIN_GAP_MS, MAX_GAP_MS, FIRST_GAP_MS, true);
-        loop(() => { const c = this.announce(); if (c) log('INFO', `Announced in ${c}.`); },
-            ANNOUNCE_GAP_MS, ANNOUNCE_GAP_MS * 2, FIRST_GAP_MS * 3);
+        this.loop('invite', FIRST_GAP_MS);
+        this.loop('announce', FIRST_GAP_MS * 3);
+    }
+
+    /**
+     * One self-rescheduling timer per job, held by NAME.
+     *
+     * The previous version pushed every rescheduling onto an array that was
+     * only ever emptied by stop(), so a timer that had already fired stayed in
+     * the list forever — at a gap of a minute that is 1440 dead handles a day.
+     * Keying by name means each job has exactly one live timer, and it can be
+     * replaced (see soon()) instead of only ever appended to.
+     */
+    loop(name, first) {
+        const lo = name === 'invite' ? MIN_GAP_MS : ANNOUNCE_GAP_MS;
+        const hi = name === 'invite' ? MAX_GAP_MS : ANNOUNCE_GAP_MS * 2;
+        const delay = first != null ? first : between(lo, hi);
+        clearTimeout(this.timers[name]);
+        this.timers[name] = setTimeout(() => {
+            try {
+                if (name === 'invite') {
+                    const r = this.inviteOne();
+                    if (r) this.log('INFO', `Invited ${r.target} from ${r.chan}.`);
+                } else {
+                    const c = this.announce();
+                    if (c) this.log('INFO', `Announced in ${c}.`);
+                }
+            } catch (e) { this.log('ERR', `recruit: ${e.message}`); }
+            this.loop(name, null);               // settle into the normal gaps
+        }, delay);
+        if (name === 'invite') this.nextAt = Date.now() + delay;
+    }
+
+    /**
+     * Bring the next invitation forward. Switching recruiting ON used to leave
+     * whatever gap had been rolled while it was OFF still standing, so someone
+     * who turned it on could be told the next attempt was two hours away — the
+     * toggle appeared to do nothing. Turning a thing on should make it happen.
+     */
+    soon() {
+        if (!this.started) return;
+        this.loop('invite', FIRST_GAP_MS);
     }
 
     /** Roughly how long until the next attempt, for !!recruit to report. */
     dueIn() {
-        if (!this.timers.length) return 'not scheduled';
+        if (!this.started) return 'not scheduled';
         if (!this.nextAt) return `up to ${Math.round(MAX_GAP_MS / 60000)}m`;
         const mins = Math.max(0, Math.round((this.nextAt - Date.now()) / 60000));
-        return `in about ${mins}m`;
+        return mins < 1 ? 'in under a minute' : `in about ${mins}m`;
     }
 
     stop() {
-        this.timers.forEach(clearTimeout);
-        this.timers = [];
+        Object.values(this.timers).forEach(clearTimeout);
+        this.timers = {};
+        this.started = false;
     }
 }
 

@@ -1470,6 +1470,7 @@ function handleCommand(chan, nick, message) {
             if (args[0] === 'on') {
                 recruiter.enabled = recruiter.channels.length > 0;
                 recruiter.start(log);       // idempotent; the timers may not exist yet
+                recruiter.soon();           // and don't inherit the gap rolled while it was off
                 reply(recruiter.enabled
                     ? `Recruiting from ${recruiter.channels.join(', ')} — next attempt ${recruiter.dueIn()}.`
                     : 'No RECRUIT_CHANNELS set.');
