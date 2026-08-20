@@ -976,7 +976,19 @@ let servicesProbes = 0;
  * disagreed about the same people. Called from both endings; the prefix check
  * makes it idempotent.
  */
+const enforcedModeration = new Set();
+
 function voiceSweep(ch) {
+    // A room listed in MODERATED_ROOMS but not actually +m is the worst of
+    // both worlds: the bot believes it is running the voice ladder, so a first
+    // offence takes a voice that means nothing, the offender keeps talking,
+    // and only the third strike does anything at all. The failure is
+    // completely silent. Make the room match the configuration.
+    if (moderatedRooms.has(ch) && opped.has(ch) && !enforcedModeration.has(ch)) {
+        enforcedModeration.add(ch);
+        send(`MODE ${ch} +m`);
+        log('MOD', `${ch} set +m — voice is the right to speak here.`);
+    }
     // NOT gated on `ready`. That flag is a replay guard for user MESSAGES,
     // and we join on identify — about a second and a half before it is set —
     // so NAMES and WHO always answered while it was still false and the sweep
