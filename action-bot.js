@@ -1354,11 +1354,16 @@ function handleCommand(chan, nick, message) {
             else if (args[0] === 'off') { recruiter.enabled = false; reply('Recruiting off.'); }
             else if (args[0] === 'now') {
                 const r = recruiter.inviteOne();
-                reply(r ? `Invited ${r.target} from ${r.chan}.` : 'Nobody eligible right now.');
+                if (r) { reply(`Invited ${r.target} from ${r.chan}.`); break; }
+                // Say WHY. "Nobody eligible" cannot tell four different
+                // problems apart, and each needs a different fix.
+                reply(`Nobody eligible. ${recruiter.enabled ? '' : 'Recruiting is OFF. '}`);
+                recruiter.explain().forEach((l) => reply(l));
             } else {
                 reply(`Recruiting is ${recruiter.enabled ? 'ON' : 'OFF'}`
                     + `${recruiter.channels.length ? ` from ${recruiter.channels.join(', ')}` : ' (no channels set)'}`
                     + `; ${recruiter.invited.size} invited so far. !!recruit on|off|now`);
+                recruiter.explain().forEach((l) => reply(l));
             }
             break;
         case 'fun':

@@ -85,6 +85,38 @@ class Recruiter {
         return out;
     }
 
+    /**
+     * Why nothing happened. "Nobody eligible" is true and useless — it cannot
+     * distinguish "I am not in that room", "I cannot see its member list",
+     * "everyone there is an operator" and "no nickname matched". Each needs a
+     * different fix, so each gets counted.
+     */
+    explain() {
+        const lines = [];
+        for (const chan of this.channels) {
+            const all = this.deps.membersOf(chan);
+            if (!all.length) {
+                lines.push(`${chan}: no member list — am I actually in that room?`);
+                continue;
+            }
+            let ops = 0, bots = 0, already = 0, unmatched = 0, asked = 0, ok = 0;
+            const home = this.deps.membersOf(this.deps.homeChannel).map((m) => m.toLowerCase());
+            for (const nick of all) {
+                const n = nick.toLowerCase();
+                if (NEVER.has(n) || n === this.bot.nick.toLowerCase()) { bots++; continue; }
+                if (this.invited.has(n)) { asked++; continue; }
+                if (/[~&@%]/.test(this.deps.prefixOf(chan, nick))) { ops++; continue; }
+                if (home.includes(n)) { already++; continue; }
+                if (!this.looksFeminine(nick)) { unmatched++; continue; }
+                ok++;
+            }
+            lines.push(`${chan}: ${all.length} present — ${ok} eligible `
+                + `(${ops} ops, ${bots} bots, ${already} already home, ${asked} asked before, `
+                + `${unmatched} no name match)`);
+        }
+        return lines.length ? lines : ['no channels configured'];
+    }
+
     inviteOne() {
         if (!this.enabled) return null;
         const chan = pick(this.channels);
