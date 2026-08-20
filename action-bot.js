@@ -1113,7 +1113,7 @@ function handleCommand(chan, nick, message) {
             break;
         }
         case 'part': {
-            if (!admin) break;
+            if (!admin) { reply('Access denied.'); break; }
             const room = target ? (target.startsWith('#') ? target : '#' + target) : chan;
             if (!isOurChannel(room)) { reply( `I'm not in ${room}.`); break; }
             send(`PART ${room} :Called away`);
@@ -1125,7 +1125,7 @@ function handleCommand(chan, nick, message) {
             break;
         }
         case 'rooms':
-            if (!admin) break;
+            if (!admin) { reply('Access denied.'); break; }
             reply( `Watching: ${config.channels.map((c) => `${c}${opped.has(chanKey(c)) ? '(op)' : ''}`).join(', ')}`);
             break;
 
@@ -1133,7 +1133,7 @@ function handleCommand(chan, nick, message) {
         //    whitelisted regulars, protected masks and the bot are never
         //    targeted, and kick/ban need an explicit confirmation. ──────────
         case 'mass': {
-            if (!admin) break;
+            if (!admin) { reply('Access denied.'); break; }
             const action = (args[0] || '').toLowerCase();
             if (!['kick', 'ban', 'voice', 'devoice'].includes(action)) {
                 reply( 'Usage: !!mass kick|ban|voice|devoice'); break;
@@ -1176,7 +1176,7 @@ function handleCommand(chan, nick, message) {
 
         // ── Persistent mask rules, enforced on every join ────────────────
         case 'protect':
-            if (!admin) break;
+            if (!admin) { reply('Access denied.'); break; }
             if (args[0] === 'add' && args[1]) {
                 protectMasks.add(toMask(args[1]));
                 reply( `Protected from other mods' kicks: ${toMask(args[1])} (${protectMasks.size} masks + the whitelist).`);
@@ -1211,7 +1211,7 @@ function handleCommand(chan, nick, message) {
             break;
         }
         case 'autoban':
-            if (!admin) break;
+            if (!admin) { reply('Access denied.'); break; }
             if (args[0] === 'add' && args[1]) {
                 // A bare nick is not a glob: "lucifer" only ever matches the
                 // literal string, never "lucifer!user@host", so the rule never
@@ -1234,7 +1234,7 @@ function handleCommand(chan, nick, message) {
 
         // ── Toggles ──────────────────────────────────────────────────────
         case 'strict':
-            if (!admin) break;
+            if (!admin) { reply('Access denied.'); break; }
             if (args[0] === 'on') { strictNicks = true; reply( '\x0304[MOD]\x03 Strict mode ON — offensive nicks are removed on sight.'); }
             else if (args[0] === 'off') { strictNicks = false; reply( 'Strict mode OFF.'); }
             else reply( `Strict mode is ${strictNicks ? 'ON' : 'OFF'}. Use !!strict on|off.`);
@@ -1268,13 +1268,13 @@ function handleCommand(chan, nick, message) {
             break;
         }
         case 'mod':
-            if (!admin) break;
+            if (!admin) { reply('Access denied.'); break; }
             if (args[0] === 'on') { modEnabled = true; reply( '\x0304[MOD]\x03 Auto-moderation ON.'); }
             else if (args[0] === 'off') { modEnabled = false; reply( '\x0304[MOD]\x03 Auto-moderation OFF — only severe words and kick-protection remain.'); }
             else reply( `Auto-moderation is ${modEnabled ? 'ON' : 'OFF'}. Use !!mod on|off.`);
             break;
         case 'unquiet':
-            if (!admin || !target) break;
+            if (!admin) { reply('Access denied.'); break; } if (!target) break;
             send(`MODE ${chan} -q ${target}!*@*`);
             reply( `Cleared any quiet on ${target}.`);
             break;
@@ -1282,7 +1282,7 @@ function handleCommand(chan, nick, message) {
         // abuse happened and it either acted or silently did not. This makes one
         // real call and reports which key and model answered — never the value.
         case 'aicheck': {
-            if (!admin) break;
+            if (!admin) { reply('Access denied.'); break; }
             if (!config.groqKey) { reply( 'No Groq key configured — word filter only.'); break; }
             reply( 'Testing the AI backend…');
             (async () => {
@@ -1307,13 +1307,13 @@ function handleCommand(chan, nick, message) {
             break;
         }
         case 'linkfilter':
-            if (!admin) break;
+            if (!admin) { reply('Access denied.'); break; }
             if (args[0] === 'on') { config.linkFilter = true; reply( 'Link filter ON.'); }
             else if (args[0] === 'off') { config.linkFilter = false; reply( 'Link filter OFF.'); }
             else reply( `Link filter is ${config.linkFilter ? 'ON' : 'OFF'}.`);
             break;
         case 'raidguard':
-            if (!admin) break;
+            if (!admin) { reply('Access denied.'); break; }
             if (args[0] === 'on') { raidGuard = true; reply( `🛡️ Raid guard ON (${raidJoins} joins / ${raidWindowMs / 1000}s → auto-lock).`); }
             else if (args[0] === 'off') { raidGuard = false; reply( 'Raid guard OFF.'); }
             else reply( `Raid guard is ${raidGuard ? 'ON' : 'OFF'}.`);
@@ -1380,7 +1380,7 @@ function handleCommand(chan, nick, message) {
             else reply( `Fun is ${fun.enabled ? 'ON' : 'OFF'}.`);
             break;
         case 'badword':
-            if (!admin) break;
+            if (!admin) { reply('Access denied.'); break; }
             if (args[0] === 'add' && args[1]) {
                 const w = args[1].toLowerCase();
                 if (badwords.has(w)) reply( `"${w}" is already in the filter (${badwords.size} words).`);
@@ -1390,13 +1390,13 @@ function handleCommand(chan, nick, message) {
             else reply( `Filter holds ${badwords.size} words.`);
             break;
         case 'whitelist':
-            if (!admin) break;
+            if (!admin) { reply('Access denied.'); break; }
             if (args[0] === 'add' && args[1]) { whitelist.add(args[1].toLowerCase()); reply( `${args[1]} is trusted now — immune to auto-mod. 🩸`); }
             else if (args[0] === 'remove' && args[1]) { whitelist.delete(args[1].toLowerCase()); reply( `${args[1]} removed from the whitelist.`); }
             else reply( `Whitelist (${whitelist.size}): ${[...whitelist].join(', ') || '(empty)'}.`);
             break;
         case 'announce':
-            if (!admin || !args.length) break;
+            if (!admin) { reply('Access denied.'); break; } if (!args.length) break;
             say(chan, `\x0304[ANNOUNCE]\x03 \x02${args.join(' ')}\x02`);   // for the room, by definition
             break;
         default: break;
