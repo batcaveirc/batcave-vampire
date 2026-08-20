@@ -97,9 +97,9 @@ jobs:
           # The first attempt after startup. Short on purpose: the host
           # restarts this bot every six hours and every restart resets the
           # timer, so a long first gap means it can never fire.
-          RECRUIT_FIRST_MIN: ${{ secrets.RECRUIT_FIRST_MIN || '4' }}
-          RECRUIT_MIN_GAP_MIN: ${{ secrets.RECRUIT_MIN_GAP_MIN || '45' }}
-          RECRUIT_MAX_GAP_MIN: ${{ secrets.RECRUIT_MAX_GAP_MIN || '180' }}
+          RECRUIT_FIRST_MIN: ${{ secrets.RECRUIT_FIRST_MIN || '1' }}
+          RECRUIT_MIN_GAP_MIN: ${{ secrets.RECRUIT_MIN_GAP_MIN || '1' }}
+          RECRUIT_MAX_GAP_MIN: ${{ secrets.RECRUIT_MAX_GAP_MIN || '2' }}
           RECRUIT_ANNOUNCE_MIN: ${{ secrets.RECRUIT_ANNOUNCE_MIN || '240' }}
           FEMININE_HINTS: ${{ secrets.FEMININE_HINTS }}
           # Channel scrollback: InspIRCd chanhistory, lines:duration.

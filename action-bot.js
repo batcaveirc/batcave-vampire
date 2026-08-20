@@ -1095,7 +1095,7 @@ function handleCommand(chan, nick, message) {
                 + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!history on|off, '
-                + '!!access, !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
+                + '!!access, !!unwarn <nick>, !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
                 + '!!whitelist add|remove <nick>, !!announce <msg>.');
             break;
         case 'seen': {
@@ -1119,7 +1119,13 @@ function handleCommand(chan, nick, message) {
             const who = target || nick;
             const k = who.toLowerCase();
             const role = isOwner(who) ? 'owner' : isAdmin(who) ? 'admin' : 'user';
-            reply( `${who} — role: ${role}, strikes: ${warns.get(k) || 0}/${config.warnLimit}, `
+            // Against the quota THIS person actually has. Reporting everyone's
+            // strikes out of config.warnLimit told a mod that an unregistered
+            // guest sat at 1/3 when one more word would remove them.
+            const tier = tierOf(chan, who);
+            const quota = moderatedRooms.has(chanKey(chan))
+                ? moderatedQuotaFor(tier) : warnQuotaFor(tier);
+            reply( `${who} — role: ${role} (${tier}), strikes: ${warns.get(k) || 0}/${quota}, `
                 + `host: ${hostOf.get(k) || 'unknown'}, `
                 + `${whitelist.has(k) ? 'whitelisted (immune)' : 'not whitelisted'}`
                 + `${ignored.has(k) ? ', ignored' : ''}, last active: ${seenUsers[k] ? ago(seenUsers[k]) : 'never'}.`);
@@ -1128,6 +1134,25 @@ function handleCommand(chan, nick, message) {
         case 'rules':
             reply( channelRules || 'Be civil, no slurs, no spam, no unsolicited links. I am always watching. 🦇');
             break;
+
+        // Forgiveness. The ladder can put someone one word away from a kick and
+        // there was no way to undo it short of restarting the bot — so a mod who
+        // decided a strike was unfair had to either say nothing or let it stand.
+        // (Vampire's !unwarn.) Restores voice too: a strike usually arrives with
+        // a devoice, and clearing one without the other is half an apology.
+        case 'unwarn': {
+            if (!admin) { reply('Access denied.'); break; }
+            if (!target) { reply('Usage: !!unwarn <nick>'); break; }
+            const k = target.toLowerCase();
+            const had = warns.get(k) || 0;
+            if (!had) { reply(`${target} has no strikes to clear.`); break; }
+            warns.delete(k);
+            if (moderatedRooms.has(chanKey(chan)) && deservesVoice(target, chan)) {
+                send(`MODE ${chan} +v ${target}`);
+            }
+            say(chan, `\x0309[MOD]\x03 ${target} — slate wiped clean (${had} cleared) by ${nick}.`);
+            break;
+        }
 
 
         // ── Room control ─────────────────────────────────────────────────

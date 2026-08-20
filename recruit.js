@@ -6,28 +6,34 @@
 // singled out — the split is thematic, and a wrong guess just means the other
 // bot would have done it.
 //
-// THE RATE IS THE WHOLE DESIGN. A channel operator inviting someone now and
-// then is ordinary; the same act on a loop is a drone, and this bot is
-// identified to the FOUNDER account — a network-level ban would take the
-// channels with it. So every guard here exists to keep it looking like a
-// person being friendly rather than software harvesting a room:
+// THE POOL, NOT THE CLOCK, IS WHAT LIMITS THIS. The bot is identified to the
+// FOUNDER account, so a network-level ban would take the channels with it.
+// What keeps that from happening is `invited`: nobody is ever asked twice, so
+// the eligible pool DRAINS and the loop goes quiet by itself. A one-minute
+// gap therefore means a short burst until the room is exhausted, not a
+// sustained thousand invites a day. Raise RECRUIT_MIN_GAP_MIN if that burst
+// ever draws attention. The remaining guards:
 //
-//   - long random gaps, never a fixed interval
+//   - random gaps, never a fixed interval (paced by RECRUIT_MIN/MAX_GAP_MIN)
 //   - one person at a time, never a sweep
 //   - nobody is ever invited twice, so an ignored invite is the end of it
 //   - operators, bots, services and anyone already in the room are skipped
 //   - only channels the owner has explicitly named
 //   - off unless RECRUIT_CHANNELS is set, and killable with !!recruit off
 
-const MIN_GAP_MS = parseInt(process.env.RECRUIT_MIN_GAP_MIN || '45', 10) * 60000;
-const MAX_GAP_MS = parseInt(process.env.RECRUIT_MAX_GAP_MIN || '180', 10) * 60000;
+// Owner-set pace: roughly one invitation a minute while there is anyone left
+// to invite. That is fast, and it is deliberate — see the note below on why it
+// is survivable: `invited` means the pool drains rather than the rate
+// sustaining, so this is a short burst that goes quiet on its own.
+const MIN_GAP_MS = parseInt(process.env.RECRUIT_MIN_GAP_MIN || '1', 10) * 60000;
+const MAX_GAP_MS = parseInt(process.env.RECRUIT_MAX_GAP_MIN || '2', 10) * 60000;
 const ANNOUNCE_GAP_MS = parseInt(process.env.RECRUIT_ANNOUNCE_MIN || '240', 10) * 60000;
 // The FIRST attempt after startup is deliberately much sooner than the rest.
 // The host restarts this bot every six hours, and every restart resets the
 // timer — so with a 45-180 minute first gap, a few redeploys in an afternoon
 // mean it never fires at all. A short opening interval makes the feature
 // survive its own deployment; the long gaps take over from the second firing.
-const FIRST_GAP_MS = parseInt(process.env.RECRUIT_FIRST_MIN || '4', 10) * 60000;
+const FIRST_GAP_MS = parseInt(process.env.RECRUIT_FIRST_MIN || '1', 10) * 60000;
 
 // A guess, and a poor one — nicknames are not gender. It only decides WHICH
 // bot extends the invitation, so being wrong costs nothing. Extend with
