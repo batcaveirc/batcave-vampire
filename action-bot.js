@@ -983,15 +983,22 @@ const accessKeep = process.env.ACCESS_KEEP
 let prunePlan = null;      // a preview awaiting !!prune confirm
 
 function voiceSweep(ch) {
-    // A room listed in MODERATED_ROOMS but not actually +m is the worst of
-    // both worlds: the bot believes it is running the voice ladder, so a first
-    // offence takes a voice that means nothing, the offender keeps talking,
-    // and only the third strike does anything at all. The failure is
-    // completely silent. Make the room match the configuration.
+    // Deliberately NOT setting +m here any more.
+    //
+    // It used to, from config, and that silenced every unregistered newcomer
+    // in both rooms: +m went on, the on-join voice did not follow, and people
+    // arrived unable to speak or even ask why. A moderated room only works if
+    // voicing is completely reliable, and a bot that restarts every six hours
+    // and lands on blocked addresses is not that.
+    //
+    // So moderation is now only ever a human decision — !!moderate on — made
+    // by someone who is present to see whether arrivals can talk. Config may
+    // describe how the LADDER behaves; it may not take away the room's voice
+    // on its own.
     if (moderatedRooms.has(ch) && opped.has(ch) && !enforcedModeration.has(ch)) {
         enforcedModeration.add(ch);
-        send(`MODE ${ch} +m`);
-        log('MOD', `${ch} set +m — voice is the right to speak here.`);
+        log('MOD', `${ch} is configured for the voice ladder. Not setting +m by myself — `
+            + 'use !!moderate on when someone is watching.');
     }
     // NOT gated on `ready`. That flag is a replay guard for user MESSAGES,
     // and we join on identify — about a second and a half before it is set —
@@ -1758,6 +1765,11 @@ function handleLine(line) {
             // times out on our own traffic. It reported "ChanServ is not
             // answering" when ChanServ was answering fine.
             setTimeout(() => verifyServices(), 20000);
+            // Re-sweep periodically. A single missed JOIN used to mean somebody
+            // sat voiceless indefinitely; now the worst case is a couple of
+            // minutes. Cheap: the prefix check makes it a no-op for anyone who
+            // already has voice.
+            setInterval(() => config.channels.forEach((c) => voiceSweep(chanKey(c))), 120000);
             recruiter.channels.forEach((c) => { send(`JOIN ${c}`); send(`NAMES ${c}`); });
             recruiter.start(log);
             quietSweep = true;
