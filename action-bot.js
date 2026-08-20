@@ -1072,7 +1072,7 @@ function handleCommand(chan, nick, message) {
                 + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!history on|off, '
-                + '!!sentient on|off, !!moderate on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
+                + '!!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
                 + '!!whitelist add|remove <nick>, !!announce <msg>.');
             break;
         case 'seen': {
@@ -1339,6 +1339,38 @@ function handleCommand(chan, nick, message) {
         // Put a room on the voice ladder: +m, everyone present voiced, and
         // from then on losing voice is the first consequence rather than a
         // kick. The room keeps working exactly as before for anyone behaving.
+        // Server-side auto-voice, so the room keeps working when we do not.
+        // Both rooms run +m, which means an unvoiced person cannot speak — so
+        // if both bots are down, nobody new can. ChanServ can grant voice on
+        // join by itself, with no bot involved, and that is the layer that
+        // should be holding the room up.
+        //
+        // We can set this because we are identified to the FOUNDER account;
+        // ChanServ grants access to accounts, not to channel operators, which
+        // is why an opped throwaway nick could not do it.
+        case 'autovoice': {
+            if (!admin) { reply('Access denied.'); break; }
+            const target = args[1] || '$registered';
+            const replies = [];
+            servicesReport = (m) => { if (replies.length < 6) replies.push(m.replace(/\s+/g, ' ').trim()); };
+            if (args[0] === 'on') {
+                for (const c of config.channels) send(`PRIVMSG ChanServ :FLAGS ${c} ${target} +V`);
+            } else if (args[0] === 'off') {
+                for (const c of config.channels) send(`PRIVMSG ChanServ :FLAGS ${c} ${target} -V`);
+            } else {
+                for (const c of config.channels) send(`PRIVMSG ChanServ :FLAGS ${c}`);
+                reply('Current ChanServ access lists:');
+                setTimeout(() => { servicesReport = null; replies.forEach((r) => reply(r.slice(0, 300))); }, 6000);
+                break;
+            }
+            reply(`\x0306[AUTOVOICE]\x03 ${args[0]} for ${target} on ${config.channels.join(', ')}…`);
+            setTimeout(() => {
+                servicesReport = null;
+                if (replies.length) replies.forEach((r) => reply(`\x0306[ChanServ]\x03 ${r.slice(0, 300)}`));
+                else reply('\x0306[AUTOVOICE]\x03 ChanServ said nothing — check I still hold founder access.');
+            }, 6000);
+            break;
+        }
         case 'moderate': {
             if (!admin) { reply('Access denied.'); break; }
             const ch = chanKey(chan);
