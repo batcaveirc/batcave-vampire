@@ -1072,7 +1072,7 @@ function handleCommand(chan, nick, message) {
                 + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!history on|off, '
-                + '!!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
+                + '!!access, !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
                 + '!!whitelist add|remove <nick>, !!announce <msg>.');
             break;
         case 'seen': {
@@ -1348,6 +1348,27 @@ function handleCommand(chan, nick, message) {
         // We can set this because we are identified to the FOUNDER account;
         // ChanServ grants access to accounts, not to channel operators, which
         // is why an opped throwaway nick could not do it.
+        // Who actually holds channel access. NOT the same as who is opped
+        // right now: ChanServ's list is the persistent grant, the @ in the room
+        // is just its effect, and someone can hold access while absent.
+        // Read-only on purpose — removing access is a separate decision and
+        // should be made looking at this output, not blind.
+        case 'access': {
+            if (!admin) { reply('Access denied.'); break; }
+            const lines = [];
+            servicesReport = (m) => { if (lines.length < 40) lines.push(m.replace(/\s+/g, ' ').trim()); };
+            for (const c of config.channels) send(`PRIVMSG ChanServ :FLAGS ${c}`);
+            reply(`\x0306[ACCESS]\x03 asking ChanServ about ${config.channels.join(', ')}…`);
+            setTimeout(() => {
+                servicesReport = null;
+                if (!lines.length) {
+                    reply('ChanServ said nothing — do I still hold access to read this?');
+                } else {
+                    lines.forEach((l) => reply(l.slice(0, 300)));
+                }
+            }, 8000);
+            break;
+        }
         case 'autovoice': {
             if (!admin) { reply('Access denied.'); break; }
             const target = args[1] || '$registered';
