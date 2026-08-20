@@ -296,4 +296,4 @@ class Fun {
     }
 }
 
-module.exports = { Fun, hashPct };
+module.exports = { Fun };

@@ -679,4 +679,4 @@ class FindIt {
     }
 }
 
-module.exports = { FindIt, ROOMS };
+module.exports = { FindIt };

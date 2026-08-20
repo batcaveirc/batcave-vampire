@@ -337,6 +337,18 @@ function warnQuotaFor(tier) {
     return 0;                       // strangers get none
 }
 
+// The same ladder, in a moderated room, where the first rungs cost a person
+// their voice rather than their seat. Nobody drops to zero here: taking the
+// floor is cheap and reversible, so even a stranger is quieted once before
+// anyone reaches for a kick — that is the whole point of moderating the room.
+// Above that floor the hierarchy is the open-room one, so who you are still
+// decides how much runway you get, not merely what happens when it runs out.
+function moderatedQuotaFor(tier) {
+    if (tier === 'trusted' || tier === 'mod' || tier === 'staff') return config.warnLimit;
+    if (tier === 'registered') return Math.max(2, config.warnLimitRegistered);
+    return 1;                       // strangers: one devoice, then out
+}
+
 // Nick screening is different from message screening: wordHit() matches whole
 // words so ordinary chat isn't over-flagged, but a nick is a single token —
 // "stupidbot" would never match "stupid". Use substring matching here, with a
@@ -360,12 +372,16 @@ function warnUser(chan, nick, reason) {
     // next two minutes and costs the room nothing at all, which makes it the
     // right first answer to somebody who was probably joking.
     if (moderatedRooms.has(chanKey(chan))) {
+        const quota = moderatedQuotaFor(tier);
         const n = (warns.get(k) || 0) + 1;
         warns.set(k, n);
-        if (n < config.warnLimit) {
+        // `<=`, not `<`: the quota counts devoices, so a quota of one has to
+        // yield one devoice. With `<` a stranger's first offence skipped
+        // straight to a kick and the moderated room bought them nothing.
+        if (n <= quota) {
             send(`MODE ${chan} -v ${nick}`);
             say(chan, `\x0304[MOD]\x03 ${nick} — ${reason}. Voice back in ${devoiceMinutes}m. `
-                + `(${n}/${config.warnLimit})`);
+                + `(${n}/${quota})`);
             setTimeout(() => {
                 const here = members.get(chanKey(chan));
                 if (here && [...here].some((m) => m.toLowerCase() === k)) send(`MODE ${chan} +v ${nick}`);
@@ -376,9 +392,9 @@ function warnUser(chan, nick, reason) {
         // Out of strikes. Trusted people are quieted rather than removed; the
         // rest leave, and can come straight back.
         if (tier === 'trusted' || tier === 'mod' || tier === 'staff') {
-            quietUser(chan, nick, quietMinutes, `${config.warnLimit} strikes — ${reason}`);
+            quietUser(chan, nick, quietMinutes, `${quota} strikes — ${reason}`);
         } else {
-            kickUser(chan, nick, `${config.warnLimit} strikes — ${reason}`);
+            kickUser(chan, nick, `${quota} strikes — ${reason}`);
         }
         return;
     }
@@ -977,10 +993,6 @@ let servicesProbes = 0;
  * makes it idempotent.
  */
 const enforcedModeration = new Set();
-// Who keeps channel access when !!prune runs. Nicks, not hostmasks.
-const accessKeep = process.env.ACCESS_KEEP
-    || 'vampire,scarlet,vlkram,luna1,riyu,johnny,libu';
-let prunePlan = null;      // a preview awaiting !!prune confirm
 
 function voiceSweep(ch) {
     // Deliberately NOT setting +m here any more.
@@ -1083,7 +1095,7 @@ function handleCommand(chan, nick, message) {
                 + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!history on|off, '
-                + '!!access, !!prune [confirm], !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
+                + '!!access, !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
                 + '!!whitelist add|remove <nick>, !!announce <msg>.');
             break;
         case 'seen': {
@@ -1368,76 +1380,6 @@ function handleCommand(chan, nick, message) {
         // listing first, previews exactly what would go, and does nothing until
         // confirmed — !!mass removed thirty regulars in one command, and an
         // access list is harder to rebuild than a room.
-        case 'prune': {
-            if (!admin) { reply('Access denied.'); break; }
-
-            if (args[0] === 'confirm') {
-                if (!prunePlan || Date.now() - prunePlan.at > 120000) {
-                    reply('Nothing to confirm — run !!prune first (the preview expires after 2 minutes).');
-                    break;
-                }
-                let n = 0;
-                for (const [chan, targets] of Object.entries(prunePlan.byChannel)) {
-                    for (const t of targets) { send(`PRIVMSG ChanServ :FLAGS ${chan} ${t} -*`); n += 1; }
-                }
-                say(chan, `\x0304[ACCESS]\x03 removing channel access from ${n} entr${n === 1 ? 'y' : 'ies'}.`);
-                prunePlan = null;
-                break;
-            }
-
-            const keep = new Set((args.length ? args.join(',') : accessKeep)
-                .split(',').map((x) => x.trim().toLowerCase()).filter(Boolean));
-            const rows = [];
-            servicesReport = (m) => rows.push(m.replace(/\s+/g, ' ').trim());
-            for (const c of config.channels) send(`PRIVMSG ChanServ :FLAGS ${c}`);
-            reply(`\x0306[ACCESS]\x03 reading the lists, keeping: ${[...keep].join(', ')}…`);
-
-            setTimeout(() => {
-                servicesReport = null;
-                const plan = {};
-                let total = 0;
-                // ChanServ names the channel only in its CLOSING line — the
-                // rows themselves carry no channel at all. Attributing them to
-                // the first channel would have tried to remove emoji-room
-                // moderators from #batcave, where they hold nothing, and left
-                // the emoji room untouched. So buffer rows and assign them when
-                // the "End of <chan> FLAGS listing" arrives.
-                //
-                // It also matters that the same person can hold DIFFERENT flags
-                // in each room: Scarlet is a founder in one and an ordinary AOP
-                // in the other, so the founder check has to be per listing, not
-                // per person.
-                let pending = [];
-                for (const line of rows) {
-                    const end = line.match(/End of (\S+) FLAGS listing/i);
-                    if (end) {
-                        const chan = end[1];
-                        for (const { target, flags } of pending) {
-                            const t = target.toLowerCase();
-                            if (keep.has(t)) continue;
-                            if (flags.includes('F')) continue;          // founder here
-                            if (/^[$]/.test(target) || /[!@*]/.test(target)) continue;
-                            if (t === config.nick.toLowerCase()) continue;
-                            (plan[chan] = plan[chan] || []).push(target);
-                            total += 1;
-                        }
-                        pending = [];
-                        continue;
-                    }
-                    // "16 pooja +AOeiortv (AOP) [modified …]"
-                    const m = line.match(/^\d+\s+(\S+)\s+(\+\S+)/);
-                    if (m) pending.push({ target: m[1], flags: m[2] });
-                }
-                if (!total) { reply('Nothing to remove — everyone listed is either on the keep-list, a founder, or an auto-voice rule.'); return; }
-                prunePlan = { byChannel: plan, at: Date.now() };
-                for (const [c, targets] of Object.entries(plan)) {
-                    reply(`\x0306[ACCESS]\x03 ${c}: would remove ${targets.length} — ${targets.join(', ')}`);
-                }
-                reply('Founders and auto-voice rules are untouched. '
-                    + '\x02!!prune confirm\x02 within 2 minutes to apply.');
-            }, 9000);
-            break;
-        }
         case 'access': {
             if (!admin) { reply('Access denied.'); break; }
             const lines = [];
@@ -1769,7 +1711,7 @@ function handleLine(line) {
             // sat voiceless indefinitely; now the worst case is a couple of
             // minutes. Cheap: the prefix check makes it a no-op for anyone who
             // already has voice.
-            setInterval(() => config.channels.forEach((c) => voiceSweep(chanKey(c))), 120000);
+            setInterval(() => config.channels.forEach((c) => voiceSweep(chanKey(c))), 30000);
             recruiter.channels.forEach((c) => { send(`JOIN ${c}`); send(`NAMES ${c}`); });
             recruiter.start(log);
             quietSweep = true;
@@ -1930,12 +1872,27 @@ function handleLine(line) {
         (members.get(c) || members.set(c, new Set()).get(c)).add(nick);
         game.onJoin(nick, c);
 
-        // Trusted regulars get voice automatically — a visible mark of standing
-        // and it keeps them speaking if the room is ever moderated (+m).
-        if (ready && !game.isGameChannel(c) && config.autoVoice && deservesVoice(nick, c)
-            && opped.has(c) && !/[~&@%+]/.test(prefixIn(c, nick))) {
+        // Voice on arrival. NOT gated on `ready`: that flag is a replay guard
+        // for messages, and a JOIN is not a message — gating on it means a
+        // newcomer who arrives during the first seconds of a reconnect never
+        // gets voiced at all.
+        //
+        // Checked twice, because this went wrong live and I could not reproduce
+        // it: the second pass costs one comparison and covers every race I
+        // could not pin down — ChanServ opping us a moment after we join, a
+        // NAMES reply landing late, our own prefix bookkeeping being briefly
+        // stale. In a +m room the cost of missing one JOIN is a person sitting
+        // there unable to speak or to ask why, so belt and braces is the right
+        // trade.
+        const voiceIfNeeded = () => {
+            if (game.isGameChannel(c) || !config.autoVoice) return;
+            if (!deservesVoice(nick, c) || !opped.has(c)) return;
+            if (/[~&@%+]/.test(prefixIn(c, nick))) return;
+            if (!(members.get(c) || new Set()).has(nick)) return;    // already left
             send(`MODE ${c} +v ${nick}`);
-        }
+        };
+        voiceIfNeeded();
+        setTimeout(voiceIfNeeded, 5000);
 
         // Persistent auto-ban masks — enforced the moment they walk in.
         if (ready && !moderationOff(c) && !isExempt(nick) && userHost) {
