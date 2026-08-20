@@ -1389,18 +1389,37 @@ function handleCommand(chan, nick, message) {
                 servicesReport = null;
                 const plan = {};
                 let total = 0;
-                // "25 *!*@* +V (USER) [modified …]" — entry, target, flags.
+                // ChanServ names the channel only in its CLOSING line — the
+                // rows themselves carry no channel at all. Attributing them to
+                // the first channel would have tried to remove emoji-room
+                // moderators from #batcave, where they hold nothing, and left
+                // the emoji room untouched. So buffer rows and assign them when
+                // the "End of <chan> FLAGS listing" arrives.
+                //
+                // It also matters that the same person can hold DIFFERENT flags
+                // in each room: Scarlet is a founder in one and an ordinary AOP
+                // in the other, so the founder check has to be per listing, not
+                // per person.
+                let pending = [];
                 for (const line of rows) {
+                    const end = line.match(/End of (\S+) FLAGS listing/i);
+                    if (end) {
+                        const chan = end[1];
+                        for (const { target, flags } of pending) {
+                            const t = target.toLowerCase();
+                            if (keep.has(t)) continue;
+                            if (flags.includes('F')) continue;          // founder here
+                            if (/^[$]/.test(target) || /[!@*]/.test(target)) continue;
+                            if (t === config.nick.toLowerCase()) continue;
+                            (plan[chan] = plan[chan] || []).push(target);
+                            total += 1;
+                        }
+                        pending = [];
+                        continue;
+                    }
+                    // "16 pooja +AOeiortv (AOP) [modified …]"
                     const m = line.match(/^\d+\s+(\S+)\s+(\+\S+)/);
-                    if (!m) continue;
-                    const [, target, flags] = m;
-                    const t = target.toLowerCase();
-                    if (keep.has(t)) continue;
-                    if (flags.includes('F')) continue;              // founders: not ours to touch
-                    if (/^[$]/.test(target) || /[!@*]/.test(target)) continue;  // groups and masks, not people
-                    if (t === config.nick.toLowerCase()) continue;
-                    (plan[config.channels[0]] = plan[config.channels[0]] || []).push(target);
-                    total += 1;
+                    if (m) pending.push({ target: m[1], flags: m[2] });
                 }
                 if (!total) { reply('Nothing to remove — everyone listed is either on the keep-list, a founder, or an auto-voice rule.'); return; }
                 prunePlan = { byChannel: plan, at: Date.now() };
