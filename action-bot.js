@@ -1883,12 +1883,16 @@ function handleLine(line) {
         send(`PRIVMSG ChanServ :OP ${c} ${currentNick}`);   // claim ops up front
         send(`WHO ${c} %cuhnar,152`);                       // WHOX: hosts AND accounts
         send(`NAMES ${c}`);                                 // and our own op status
-        // Only in rooms that are ours. Dracula also sits in channels he
-        // recruits from, and announcing himself there is somebody else's room
-        // being talked at.
-        if (channelSet.has(chanKey(c))) {
-            say(c, '🦇 Dracula stirs. The night watch begins — !!help.');
-        }
+        // Deliberately silent. This used to announce "Dracula stirs" in every
+        // room it owns, which was useful while the rooms were being set up and
+        // is noise now: the host hands the job over roughly every six hours and
+        // restarts on every push, so a live room got the same line four or more
+        // times a day for no news at all.
+        //
+        // The part worth keeping — telling a newcomer that !!help exists —
+        // belongs to ChanServ ENTRYMSG, which shows it to each person as they
+        // arrive, once, and survives every restart. Persistent things go to
+        // services; the bot only says something when something happened.
     } else if (command === '366') {           // end of NAMES -> membership known
         voiceSweep(chanKey(params[1] || ''));
     } else if (command === 'JOIN' && nick) {
