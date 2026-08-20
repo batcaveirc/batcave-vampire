@@ -65,6 +65,10 @@ jobs:
           # sessions on this network; an account does not.
           AUTO_VOICE_REGISTERED: ${{ secrets.AUTO_VOICE_REGISTERED || 'on' }}
           QUIET_MINUTES: ${{ secrets.QUIET_MINUTES || '5' }}
+          # Rooms on the voice ladder: +m, everyone voiced on arrival, and
+          # losing the voice is the first consequence instead of a kick.
+          MODERATED_ROOMS: ${{ secrets.MODERATED_ROOMS || '#batcave,#🅱🅰🆃🅲🅰🆅🅴' }}
+          DEVOICE_MINUTES: ${{ secrets.DEVOICE_MINUTES || '2' }}
           LINK_FILTER: ${{ secrets.LINK_FILTER || 'off' }}
           BADWORDS: ${{ secrets.BADWORDS }}
           SEVERE_WORDS: ${{ secrets.SEVERE_WORDS }}

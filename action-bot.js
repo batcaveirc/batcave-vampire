@@ -115,6 +115,12 @@ let strictNicks = onOff(process.env.STRICT_NICKS || 'on');
 const channelRules = process.env.CHANNEL_RULES || '';
 // How long a trusted regular is muted instead of kicked.
 const quietMinutes = parseInt(process.env.QUIET_MINUTES || '5', 10);
+// How long a devoice lasts before the floor is handed back.
+const devoiceMinutes = parseInt(process.env.DEVOICE_MINUTES || '2', 10);
+// Rooms running +m, where voice is the right to speak. Everyone who walks in
+// is given it; losing it is the first rung of the ladder.
+const moderatedRooms = new Set(
+    (process.env.MODERATED_ROOMS || '').split(',').map((c) => c.trim().toLowerCase()).filter(Boolean));
 // Voice anyone identified to services, not just a hand-kept nick list.
 const voiceRegistered = onOff(process.env.AUTO_VOICE_REGISTERED || 'on');
 // Channel history: InspIRCd's chanhistory mode, +H <lines>:<duration>.
@@ -297,7 +303,11 @@ function isTrusted(nick) {
  * regular without a list to maintain, which is why AUTO_VOICE_REGISTERED is on
  * by default.
  */
-function deservesVoice(nick) {
+function deservesVoice(nick, chan) {
+    // Where the room is +m, voice IS the right to speak, so everybody arriving
+    // gets it — otherwise a newcomer joins into silence and never finds out
+    // why. Elsewhere it stays a mark of standing.
+    if (chan && moderatedRooms.has(chanKey(chan))) return true;
     return isTrusted(nick) || (voiceRegistered && isRegistered(nick));
 }
 
@@ -341,6 +351,39 @@ function badNick(nick) {
 // --- Punishment / escalation ---
 function warnUser(chan, nick, reason) {
     const tier = tierOf(chan, nick);
+    const k = nick.toLowerCase();
+
+    // ── Moderated room: the voice ladder, and it applies to EVERYONE ───────
+    // Including strangers. Outside a moderated room an unregistered guest is
+    // removed on the first offence, because there is nothing else to take from
+    // them. Here there is: the floor. Taking it costs them nothing but the
+    // next two minutes and costs the room nothing at all, which makes it the
+    // right first answer to somebody who was probably joking.
+    if (moderatedRooms.has(chanKey(chan))) {
+        const n = (warns.get(k) || 0) + 1;
+        warns.set(k, n);
+        if (n < config.warnLimit) {
+            send(`MODE ${chan} -v ${nick}`);
+            say(chan, `\x0304[MOD]\x03 ${nick} — ${reason}. Voice back in ${devoiceMinutes}m. `
+                + `(${n}/${config.warnLimit})`);
+            setTimeout(() => {
+                const here = members.get(chanKey(chan));
+                if (here && [...here].some((m) => m.toLowerCase() === k)) send(`MODE ${chan} +v ${nick}`);
+            }, devoiceMinutes * 60000);
+            return;
+        }
+        warns.set(k, 0);
+        // Out of strikes. Trusted people are quieted rather than removed; the
+        // rest leave, and can come straight back.
+        if (tier === 'trusted' || tier === 'mod' || tier === 'staff') {
+            quietUser(chan, nick, quietMinutes, `${config.warnLimit} strikes — ${reason}`);
+        } else {
+            kickUser(chan, nick, `${config.warnLimit} strikes — ${reason}`);
+        }
+        return;
+    }
+
+    // ── Open room: the original ladder ────────────────────────────────────
     const quota = warnQuotaFor(tier);
 
     // Strangers (no NickServ account, not whitelisted) don't get a runway.
@@ -353,15 +396,10 @@ function warnUser(chan, nick, reason) {
         return;
     }
 
-    const k = nick.toLowerCase();
     const n = (warns.get(k) || 0) + 1;
     warns.set(k, n);
     if (n >= quota) {
         warns.set(k, 0);
-        // A regular who has had a bad five minutes should not lose the room.
-        // Muting keeps them present and lets them come back to the
-        // conversation; kicking makes it an event, and a wrong one is much
-        // harder to take back.
         if (tier === 'trusted' || tier === 'mod' || tier === 'staff') {
             quietUser(chan, nick, quietMinutes, `${quota} strikes — ${reason}`);
         } else {
@@ -653,6 +691,11 @@ async function sentientModeration(chan, nick, message) {
                         + 'The first word is often the NICKNAME of the person being spoken to. A '
                         + 'nickname is never abuse, however rude it reads: "bully you are late" is '
                         + 'someone greeting a user called bully.\n'
+                        + 'Hinglish teasing between friends is the ordinary register in this '
+                        + 'room, not abuse. Words like "churail", "pagal", "kamina", "chudail", '
+                        + '"nautanki", "gadha", "ullu" are what friends call each other here — '
+                        + 'answer "none" unless the message is genuinely aimed at hurting '
+                        + 'somebody, and remember you cannot hear tone.\n'
                         + 'CRITICAL: talking ABOUT bigotry is not bigotry. "Racist", "that is '
                         + 'racist", "stop being homophobic", reporting or objecting to abuse, and '
                         + 'discussing it are all "none" — the person naming the problem is not the '
@@ -941,7 +984,7 @@ function voiceSweep(ch) {
     // whole moment it exists for.
     if (!ch || !config.autoVoice || game.isGameChannel(ch) || !opped.has(ch)) return;
     for (const n of members.get(ch) || []) {
-        if (deservesVoice(n) && !/[~&@%+]/.test(prefixIn(ch, n))) send(`MODE ${ch} +v ${n}`);
+        if (deservesVoice(n, ch) && !/[~&@%+]/.test(prefixIn(ch, n))) send(`MODE ${ch} +v ${n}`);
     }
 }
 
@@ -991,8 +1034,8 @@ function handleCommand(chan, nick, message) {
     // Channel operators run the room, so they run the bot. Relying on a secret
     // list meant authority lived somewhere nobody could see or change from the
     // channel, and it silently denied people who plainly are in charge.
-    // The bulk and permanent actions stay owner-only: !!mass ban in the hands
-    // of every op is how thirty regulars were removed in one command.
+    // Owner-set: every operator gets every command. The confirm step on !!mass
+    // is what stops a slip becoming thirty removals, not the permission check.
     const admin = isAdmin(nick) || isChannelMod(chan, nick);
     log('CMD', `${nick} !!${cmd}`);
     // Command output goes back to the caller as a NOTICE. A help listing or a
@@ -1017,7 +1060,7 @@ function handleCommand(chan, nick, message) {
                 + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!history on|off, '
-                + '!!sentient on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
+                + '!!sentient on|off, !!moderate on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
                 + '!!whitelist add|remove <nick>, !!announce <msg>.');
             break;
         case 'seen': {
@@ -1090,7 +1133,7 @@ function handleCommand(chan, nick, message) {
         //    whitelisted regulars, protected masks and the bot are never
         //    targeted, and kick/ban need an explicit confirmation. ──────────
         case 'mass': {
-            if (!owner) break;
+            if (!admin) break;
             const action = (args[0] || '').toLowerCase();
             if (!['kick', 'ban', 'voice', 'devoice'].includes(action)) {
                 reply( 'Usage: !!mass kick|ban|voice|devoice'); break;
@@ -1152,7 +1195,7 @@ function handleCommand(chan, nick, message) {
         // of also covering others on that block, which is why it is deliberate
         // and separate rather than the default.
         case 'hardban': {
-            if (!owner || !target) { if (admin) reply( 'Usage: !!hardban <nick>'); break; }
+            if (!admin || !target) { if (admin) reply( 'Usage: !!hardban <nick>'); break; }
             const wide = banMask(target, true);
             const seen = banMask(target, false);
             if (wide === seen) {
@@ -1168,7 +1211,7 @@ function handleCommand(chan, nick, message) {
             break;
         }
         case 'autoban':
-            if (!owner) break;
+            if (!admin) break;
             if (args[0] === 'add' && args[1]) {
                 // A bare nick is not a glob: "lucifer" only ever matches the
                 // literal string, never "lucifer!user@host", so the rule never
@@ -1281,6 +1324,30 @@ function handleCommand(chan, nick, message) {
             else if (args[0] === 'off') { sentientMode = false; reply( 'Sentient moderation off — scripted filter still stands guard.'); }
             else reply( `Sentient is ${sentientMode ? 'ON' : 'OFF'}.`);
             break;
+        // Put a room on the voice ladder: +m, everyone present voiced, and
+        // from then on losing voice is the first consequence rather than a
+        // kick. The room keeps working exactly as before for anyone behaving.
+        case 'moderate': {
+            if (!admin) { reply('Access denied.'); break; }
+            const ch = chanKey(chan);
+            if (args[0] === 'on') {
+                moderatedRooms.add(ch);
+                send(`MODE ${chan} +m`);
+                for (const n of members.get(ch) || []) {
+                    if (!/[~&@%+]/.test(prefixIn(ch, n))) send(`MODE ${chan} +v ${n}`);
+                }
+                say(chan, '\x0304[MOD]\x03 Moderated. Everyone here has a voice; '
+                    + `lose it for ${devoiceMinutes}m if you earn it, kicked on ${config.warnLimit} strikes.`);
+            } else if (args[0] === 'off') {
+                moderatedRooms.delete(ch);
+                send(`MODE ${chan} -m`);
+                say(chan, '\x0304[MOD]\x03 Moderation lifted — anyone can speak.');
+            } else {
+                reply(`${chan} is ${moderatedRooms.has(ch) ? 'MODERATED (voice ladder)' : 'open'}. `
+                    + '!!moderate on|off');
+            }
+            break;
+        }
         case 'recruit':
             if (!admin) { reply('Access denied.'); break; }
             if (args[0] === 'on') { recruiter.enabled = recruiter.channels.length > 0; reply(recruiter.enabled ? `Recruiting from ${recruiter.channels.join(', ')}.` : 'No RECRUIT_CHANNELS set.'); }
@@ -1682,7 +1749,12 @@ function handleLine(line) {
         send(`PRIVMSG ChanServ :OP ${c} ${currentNick}`);   // claim ops up front
         send(`WHO ${c} %cuhnar,152`);                       // WHOX: hosts AND accounts
         send(`NAMES ${c}`);                                 // and our own op status
-        say(c, '🦇 Dracula stirs. The night watch begins — !!help.');
+        // Only in rooms that are ours. Dracula also sits in channels he
+        // recruits from, and announcing himself there is somebody else's room
+        // being talked at.
+        if (channelSet.has(chanKey(c))) {
+            say(c, '🦇 Dracula stirs. The night watch begins — !!help.');
+        }
     } else if (command === '366') {           // end of NAMES -> membership known
         voiceSweep(chanKey(params[1] || ''));
     } else if (command === 'JOIN' && nick) {
@@ -1693,7 +1765,7 @@ function handleLine(line) {
 
         // Trusted regulars get voice automatically — a visible mark of standing
         // and it keeps them speaking if the room is ever moderated (+m).
-        if (ready && !game.isGameChannel(c) && config.autoVoice && deservesVoice(nick)
+        if (ready && !game.isGameChannel(c) && config.autoVoice && deservesVoice(nick, c)
             && opped.has(c) && !/[~&@%+]/.test(prefixIn(c, nick))) {
             send(`MODE ${c} +v ${nick}`);
         }
