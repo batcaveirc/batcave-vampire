@@ -1747,7 +1747,26 @@ function handleLine(line) {
             // minutes. Cheap: the prefix check makes it a no-op for anyone who
             // already has voice.
             setInterval(() => config.channels.forEach((c) => voiceSweep(chanKey(c))), 30000);
-            recruiter.channels.forEach((c) => { send(`JOIN ${c}`); send(`NAMES ${c}`); });
+            // Recruiting rooms belong to other people, and the bot is a guest
+            // there: it can be dropped by a netsplit, a kick, or a JOIN that
+            // simply lost its place in the outbound queue at startup. This used
+            // to fire exactly once, 2.5s after ready, and never again — one
+            // missed JOIN meant that room contributed nothing for the whole
+            // six-hour shift, silently, because an empty member list is
+            // indistinguishable from an empty room.
+            //
+            // Re-checking is cheap: JOIN on a channel we are already in is a
+            // no-op at the server, and we only send it when we cannot see
+            // ourselves in the member list.
+            const joinRecruitRooms = () => {
+                for (const c of recruiter.channels) {
+                    const here = members.get(chanKey(c)) || new Set();
+                    const inIt = [...here].some((m) => m.toLowerCase() === currentNick.toLowerCase());
+                    if (!inIt) { send(`JOIN ${c}`); send(`NAMES ${c}`); }
+                }
+            };
+            joinRecruitRooms();
+            setInterval(joinRecruitRooms, 300000);   // every 5 minutes
             recruiter.start(log);
             quietSweep = true;
             config.channels.forEach((c) => send(`MODE ${c} +q`));   // list, then clear ours
