@@ -69,6 +69,7 @@ class Recruiter {
         this.hints = DEFAULT_HINTS.concat(
             (process.env.FEMININE_HINTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean));
         this.invited = new Set();      // nobody is ever asked twice
+        this.recent = [];              // last few invites, so !!recruit can show its work
         this.timers = {};             // name -> the ONE live handle for that job
         this.started = false;
     }
@@ -109,7 +110,8 @@ class Recruiter {
         for (const chan of this.channels) {
             const all = this.deps.membersOf(chan);
             if (!all.length) {
-                lines.push(`${chan}: no member list — am I actually in that room?`);
+                lines.push(`${chan}: NOT IN THE ROOM — cannot see anyone. `
+                    + `Check for a ban: /mode ${chan} +b`);
                 continue;
             }
             let ops = 0, bots = 0, already = 0, unmatched = 0, asked = 0, ok = 0;
@@ -130,15 +132,30 @@ class Recruiter {
         return lines.length ? lines : ['no channels configured'];
     }
 
+    /**
+     * Try the channels in random order and stop at the first with somebody in
+     * it. Picking ONE at random and giving up when it was empty meant a room
+     * the bot cannot even enter — #allindiachat.com bans it, so it yields zero
+     * every time — silently ate a third of all attempts. Still one invitation
+     * per firing; only the search is exhaustive, not the sending.
+     */
     inviteOne() {
         if (!this.enabled) return null;
-        const chan = pick(this.channels);
-        const who = this.eligible(chan);
-        if (!who.length) return null;
-        const target = pick(who);
-        this.invited.add(target.toLowerCase());
-        this.bot.send(`INVITE ${target} ${this.deps.homeChannel}`);
-        return { target, chan };
+        const order = this.channels.slice().sort(() => Math.random() - 0.5);
+        for (const chan of order) {
+            const who = this.eligible(chan);
+            if (!who.length) continue;
+            const target = pick(who);
+            this.invited.add(target.toLowerCase());
+            this.bot.send(`INVITE ${target} ${this.deps.homeChannel}`);
+            // An INVITE is delivered privately to the person invited, so from
+            // inside the home channel a working recruiter and a broken one look
+            // exactly alike. Keep the last few so !!recruit can show its work.
+            this.recent.unshift({ target, chan, at: Date.now() });
+            this.recent.length = Math.min(this.recent.length, 8);
+            return { target, chan };
+        }
+        return null;
     }
 
     announce() {

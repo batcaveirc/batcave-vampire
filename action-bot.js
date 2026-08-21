@@ -1488,6 +1488,15 @@ function handleCommand(chan, nick, message) {
                     + `${recruiter.channels.length ? ` from ${recruiter.channels.join(', ')}` : ' (no channels set)'}`
                     + `; ${recruiter.invited.size} invited so far, next attempt ${recruiter.dueIn()}. `
                     + '!!recruit on|off|now');
+                // An INVITE goes privately to whoever is invited, so the room
+                // sees nothing whether this is working perfectly or not at all.
+                // Show the last few by name, or say plainly that there are none.
+                if (recruiter.recent.length) {
+                    reply('Recent: ' + recruiter.recent
+                        .map((r) => `${r.target} (${r.chan}, ${ago(r.at)})`).join(', '));
+                } else {
+                    reply('No invitations sent yet this run.');
+                }
                 recruiter.explain().forEach((l) => reply(l));
             }
             break;
