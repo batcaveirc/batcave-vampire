@@ -3,6 +3,7 @@ const tls = require('tls');
 const { FindIt } = require('./findit');
 const { Fun } = require('./fun');
 const { Recruiter } = require('./recruit');
+const { parseOrder } = require('./orders');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
@@ -360,6 +361,69 @@ function badNick(nick) {
     return null;
 }
 
+/**
+ * Carry out a spoken moderation order from someone entitled to give one.
+ * Returns true if the message was an order (handled or refused), so the
+ * caller stops treating it as ordinary chat.
+ *
+ * The parser in orders.js decides what was MEANT. Everything here decides
+ * whether it is ALLOWED — kept apart deliberately, because understanding a
+ * sentence and being permitted to act on it are different questions and it
+ * would be easy to let a confident parse imply authority.
+ */
+function handleOrder(chan, nick, msg) {
+    const here = members.get(chanKey(chan)) || new Set();
+    const order = parseOrder(msg, currentNick, (n) => [...here].some((m) => m.toLowerCase() === n.toLowerCase()));
+    if (!order) return false;
+
+    const tier = tierOf(chan, nick);
+    if (tier !== 'trusted' && tier !== 'mod' && tier !== 'staff') {
+        // Say nothing. Announcing "you may not do that" teaches the room the
+        // exact phrasing that works and invites people to go looking for a gap.
+        return false;
+    }
+
+    const { action, target, reason } = order;
+    const why = reason ? `${reason} (by ${nick})` : `asked by ${nick}`;
+
+    // Never against another bot, services, or me.
+    const t = target.toLowerCase();
+    if (t === currentNick.toLowerCase() || /^(chanserv|nickserv|operserv|hostserv|memoserv|botserv|luna1)$/.test(t)) {
+        say(chan, `${nick}: not that one. 🦇`);
+        return true;
+    }
+    // Never against someone the hierarchy protects. This is the guard that
+    // stops the feature being turned around and used on the regulars.
+    const targetTier = tierOf(chan, target);
+    if (targetTier === 'trusted' || targetTier === 'mod' || targetTier === 'staff') {
+        say(chan, `${nick}: ${target} is one of ours — I won't. Do it yourself if you mean it.`);
+        return true;
+    }
+
+    if (!opped.has(chanKey(chan))) {
+        say(chan, `${nick}: I'd need ops for that.`);
+        return true;
+    }
+
+    switch (action) {
+        case 'kick':    kickUser(chan, target, why); break;
+        case 'ban':     banUser(chan, target, why); break;
+        case 'mute':    quietUser(chan, target, quietMinutes, why); break;
+        case 'unmute':  send(`MODE ${chan} -q ${target}!*@*`);
+                        say(chan, `\x0309[MOD]\x03 ${target} un-quieted — ${why}.`); break;
+        case 'voice':   send(`MODE ${chan} +v ${target}`);
+                        say(chan, `\x0309[MOD]\x03 ${target} voiced — ${why}.`); break;
+        case 'devoice': send(`MODE ${chan} -v ${target}`);
+                        say(chan, `\x0304[MOD]\x03 ${target} de-voiced — ${why}.`); break;
+        case 'unban':   send(`MODE ${chan} -b ${target}!*@*`);
+                        say(chan, `\x0309[MOD]\x03 ${target} un-banned — ${why}.`); break;
+        case 'warn':    warnUser(chan, target, why); break;
+        default:        return false;
+    }
+    log('OK', `Order from ${nick} (${tier}): ${action} ${target}`);
+    return true;
+}
+
 // --- Punishment / escalation ---
 function warnUser(chan, nick, reason) {
     const tier = tierOf(chan, nick);
@@ -372,6 +436,17 @@ function warnUser(chan, nick, reason) {
     // next two minutes and costs the room nothing at all, which makes it the
     // right first answer to somebody who was probably joking.
     if (moderatedRooms.has(chanKey(chan))) {
+        // Whitelisted regulars are TOLD, never silenced and never removed.
+        // They are the people the room is for; taking a regular's voice mid-joke
+        // costs more than the joke did, and the owner would rather handle those
+        // few by hand. A human moderator can still act — !!quiet, !!kick and a
+        // spoken order all still work on anyone.
+        if (tier === 'trusted' || tier === 'mod' || tier === 'staff') {
+            const n = (warns.get(k) || 0) + 1;
+            warns.set(k, n);
+            say(chan, `\x0308[MOD]\x03 ${nick} — ${reason}. (warning ${n}, no action taken)`);
+            return;
+        }
         const quota = moderatedQuotaFor(tier);
         const n = (warns.get(k) || 0) + 1;
         warns.set(k, n);
@@ -2004,6 +2079,10 @@ function handleLine(line) {
         if (ignored.has(nick.toLowerCase())) return;          // !!ignore
 
         if (msg.startsWith('!!')) { handleCommand(tgt, nick, msg); return; }
+        // A plain-English order from someone who already holds authority.
+        // Before the filters, because a moderator saying "Dracula ban troll42
+        // for racism" must not be screened as if THEY said something abusive.
+        if (handleOrder(tgt, nick, msg)) return;
         if (scriptedModeration(tgt, nick, msg)) return;       // scripted filter first
         // Sentient screening runs in the background. It must NOT return here:
         // doing so silenced every reply once sentient mode became the default.
