@@ -81,6 +81,15 @@ let ready = false;                 // replay guard: ignore backlog on (re)join
 let sentientMode = onOff(process.env.SENTIENT_ON || 'on');
 const seenUsers = {};
 const warns = new Map();           // nick(lower) -> strike count
+// Who is currently serving a de-voice, and until when: "chan|nick" -> epoch ms.
+//
+// Without this the punishment did not exist. deservesVoice() returns true for
+// EVERYONE in a moderated room, and voiceSweep runs every 30 seconds, so the
+// bot handed back the voice it had just taken — a two-minute sentence lasted
+// at most thirty seconds. ChanServ compounds it: the access list carries
+// `*!*@* +V`, so anyone who parts and rejoins is voiced again instantly.
+// Punishment has to be state the bot HOLDS, not merely a mode it once set.
+const serving = new Map();
 const floodLog = new Map();        // nick(lower) -> [timestamps]
 const repeatLog = new Map();       // nick(lower) -> { text, count }
 const hostOf = new Map();          // nick(lower) -> user@host (for real bans)
@@ -312,6 +321,10 @@ function deservesVoice(nick, chan) {
     // Where the room is +m, voice IS the right to speak, so everybody arriving
     // gets it — otherwise a newcomer joins into silence and never finds out
     // why. Elsewhere it stays a mark of standing.
+    // Still serving a de-voice? Then no — not from the sweep, not on rejoin,
+    // and not because ChanServ's autovoice already gave it back.
+    const until = serving.get(`${chanKey(chan)}|${nick.toLowerCase()}`);
+    if (until && Date.now() < until) return false;
     if (chan && moderatedRooms.has(chanKey(chan))) return true;
     return isTrusted(nick) || (voiceRegistered && isRegistered(nick));
 }
@@ -458,10 +471,13 @@ function warnUser(chan, nick, reason) {
         // yield one devoice. With `<` a stranger's first offence skipped
         // straight to a kick and the moderated room bought them nothing.
         if (n <= quota) {
+            const key = `${chanKey(chan)}|${k}`;
+            serving.set(key, Date.now() + devoiceMinutes * 60000);
             send(`MODE ${chan} -v ${nick}`);
             say(chan, `\x0304[MOD]\x03 ${nick} — ${reason}. Voice back in ${devoiceMinutes}m. `
                 + `(${n}/${quota})`);
             setTimeout(() => {
+                serving.delete(key);
                 const here = members.get(chanKey(chan));
                 if (here && [...here].some((m) => m.toLowerCase() === k)) send(`MODE ${chan} +v ${nick}`);
             }, devoiceMinutes * 60000);
@@ -1235,6 +1251,7 @@ function handleCommand(chan, nick, message) {
             const had = warns.get(k) || 0;
             if (!had) { reply(`${target} has no strikes to clear.`); break; }
             warns.delete(k);
+            serving.delete(`${chanKey(chan)}|${k}`);
             if (moderatedRooms.has(chanKey(chan)) && deservesVoice(target, chan)) {
                 send(`MODE ${chan} +v ${target}`);
             }
@@ -2039,6 +2056,20 @@ function handleLine(line) {
         };
         voiceIfNeeded();
         setTimeout(voiceIfNeeded, 5000);
+        // Rejoining does not end a sentence. ChanServ's access list carries
+        // `*!*@* +V`, so it voices everyone the moment they arrive — including
+        // somebody who left thirty seconds ago precisely to shed a de-voice.
+        // Take it back, twice, because our -v and ChanServ's +v race and the
+        // loser is whichever lands second.
+        const stillServing = () => {
+            const until = serving.get(`${c}|${nick.toLowerCase()}`);
+            if (!until || Date.now() >= until) return;
+            if (!opped.has(c)) return;
+            if (!(members.get(c) || new Set()).has(nick)) return;
+            send(`MODE ${c} -v ${nick}`);
+        };
+        setTimeout(stillServing, 1500);
+        setTimeout(stillServing, 6000);
 
         // Persistent auto-ban masks — enforced the moment they walk in.
         if (ready && !moderationOff(c) && !isExempt(nick) && userHost) {
