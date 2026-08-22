@@ -4,6 +4,7 @@ const { FindIt } = require('./findit');
 const { Fun } = require('./fun');
 const { Recruiter } = require('./recruit');
 const { parseOrder } = require('./orders');
+const { Retort, shieldLine } = require('./retort');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
@@ -137,6 +138,9 @@ let raidGuard = onOff(process.env.RAID_GUARD || 'on');
 // The game. `bot` is the small surface findit.js needs.
 const bot = { send, say, notice, get nick() { return currentNick; } };
 const game = new FindIt(bot);
+// Off with RETORT=off; on by default, because a room that sees an abuser
+// answered reads very differently from one that only sees a mod log line.
+const retort = new Retort({ enabled: !/^(0|off|false|no)$/i.test(process.env.RETORT || 'on') });
 const fun = new Fun(bot, (c) => game.isGameChannel(c));
 const recruiter = new Recruiter(bot, {
     membersOf: (c) => [...(members.get(chanKey(c)) || [])],
@@ -535,10 +539,18 @@ function quietUser(chan, nick, mins, reason) {
     }, mins * 60000);
 }
 
+// The room should see an abuser answered, not just processed. Spoken BEFORE the
+// KICK so it is the last thing said while they are still present to read it.
+function retortBefore(chan, nick, reason) {
+    const line = retort.lineFor(nick, reason, tierOf(chan, nick));
+    if (line) say(chan, `${nick}: ${line}`);
+}
+
 function kickUser(chan, nick, reason) {
     if (actedRecently(chan, nick, 'kick')) return;
     markActioned(chan, nick, 'kick');
     if (!requireOps(chan, `kick ${nick}`)) return;
+    retortBefore(chan, nick, reason);
     send(`KICK ${chan} ${nick} :${reason}`);
     say(chan, `\x0304[MOD]\x03 ${nick} banished — ${reason}. 🦇`);
 }
@@ -573,6 +585,7 @@ function banUser(chan, nick, reason) {
     markActioned(chan, nick, 'ban');
     if (!requireOps(chan, `ban ${nick}`)) return;
     const mask = banMask(nick);
+    retortBefore(chan, nick, reason);
     send(`MODE ${chan} +b ${mask}`);
     send(`KICK ${chan} ${nick} :${reason}`);
     say(chan, `\x0304[MOD]\x03 ${nick} banned (${mask}) — ${reason}. 🦇`);
@@ -2083,6 +2096,15 @@ function handleLine(line) {
         // Before the filters, because a moderator saying "Dracula ban troll42
         // for racism" must not be screened as if THEY said something abusive.
         if (handleOrder(tgt, nick, msg)) return;
+        // Someone trying to aim the bot at one of our own. Must come BEFORE the
+        // "said my name" reply below: that path hands the message to the AI,
+        // which would happily write the roast it was asked for.
+        {
+            const shield = shieldLine(msg, nick,
+                (n) => isTrusted(n) || isAdmin(n) || isOwner(n),
+                (n) => [...(members.get(chanKey(tgt)) || new Set())].some((m) => m.toLowerCase() === n.toLowerCase()));
+            if (shield && !isTrusted(nick) && !isAdmin(nick)) { say(tgt, shield); return; }
+        }
         if (scriptedModeration(tgt, nick, msg)) return;       // scripted filter first
         // Sentient screening runs in the background. It must NOT return here:
         // doing so silenced every reply once sentient mode became the default.

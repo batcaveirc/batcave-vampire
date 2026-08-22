@@ -55,6 +55,7 @@ jobs:
           # ── Moderation tuning ────────────────────────────────────────────
           GROQ_MODEL: ${{ secrets.GROQ_MODEL || 'llama-3.3-70b-versatile' }}
           GROQ_MODEL_FALLBACK: ${{ secrets.GROQ_MODEL_FALLBACK || 'openai/gpt-oss-20b' }}
+          RETORT: ${{ secrets.RETORT || 'on' }}
           SENTIENT_ON: ${{ secrets.SENTIENT_ON || 'on' }}
           # Trust ladder: staff/ops > whitelisted > registered > stranger
           WARN_LIMIT: ${{ secrets.WARN_LIMIT || '3' }}
