@@ -329,6 +329,29 @@ function deservesVoice(nick, chan) {
     return isTrusted(nick) || (voiceRegistered && isRegistered(nick));
 }
 
+/**
+ * Does carrying +v actually mean anything in this room?
+ *
+ * Voice is a trust signal only when it is SELECTIVE. Both live rooms carry
+ * `*!*@* +V` on the ChanServ access list, so services voice every arrival —
+ * at which point "has voice" is true of everyone and distinguishes nobody.
+ * Reading it as trust promoted the entire room, abusers included, to the tier
+ * that is never punished. The moderation system was switched off by an access
+ * list entry, silently, with every unit test still green.
+ *
+ * Self-tuning on purpose: if the blanket autovoice is ever removed in favour of
+ * a real VOP list, voice becomes meaningful again and this starts trusting it
+ * again, with no config to remember.
+ */
+function voiceIsSelective(chan) {
+    const ch = chanKey(chan);
+    const all = members.get(ch);
+    if (!all || all.size < 4) return true;      // too few to judge; keep the old read
+    let withPrefix = 0;
+    for (const n of all) if (/[+~&@%]/.test(prefixIn(ch, n))) withPrefix += 1;
+    return withPrefix / all.size < 0.6;
+}
+
 function tierOf(chan, nick) {
     if (isAdmin(nick) || nick.toLowerCase() === config.nick.toLowerCase()) return 'staff';
     if (isChannelMod(chan, nick)) return 'mod';
@@ -339,7 +362,7 @@ function tierOf(chan, nick) {
     // changed nothing: the bot kept judging by its own stale nick list. Reading
     // +v back as an INPUT is what makes that migration take effect, and it
     // covers a human operator voicing someone by hand too.
-    if (/\+/.test(prefixIn(chan, nick))) return 'trusted';
+    if (/\+/.test(prefixIn(chan, nick)) && voiceIsSelective(chan)) return 'trusted';
     if (isRegistered(nick)) return 'registered';
     // Without services nobody reads as registered, so the whole room drops to
     // the tier that gets removed on sight. "registered" is not gentle enough
