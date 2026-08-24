@@ -58,13 +58,40 @@ class Guardian {
     constructor(opts = {}) {
         this.enabled = opts.enabled !== false;
         this.minutes = opts.minutes || 10;
-        this.active = new Map();      // "chan|nick" -> expiry ms
+        // key -> {chan, nick, until}. The pair is STORED rather than encoded
+        // into the key and parsed back: IRC nicks may legally contain '|'
+        // ("john|away" is everywhere), so splitting the key mis-parsed exactly
+        // the nicks most likely to appear in a busy room.
+        this.active = new Map();
     }
 
     /** Already holding the keys? Then this is a no-op rather than a re-grant. */
     isActive(chan, nick) {
-        const until = this.active.get(`${chan}|${nick.toLowerCase()}`);
-        return Boolean(until && Date.now() < until);
+        const rec = this.active.get(`${chan}|${nick.toLowerCase()}`);
+        return Boolean(rec && Date.now() < rec.until);
+    }
+
+    /**
+     * Do we still owe this person a de-op?
+     *
+     * NOT the same question as isActive(), and conflating them is why the
+     * grant never expired: the expiry timer fires at exactly `until`, by which
+     * point isActive() is already false, so a handler guarded on it returned
+     * before removing the ops it was scheduled to remove. Somebody kept
+     * operator status permanently. Presence in the map is the right test —
+     * it means "granted and not yet taken back", regardless of the clock.
+     */
+    owes(chan, nick) {
+        return this.active.has(`${chan}|${nick.toLowerCase()}`);
+    }
+
+    /** Grants whose time is up, as [chan, nick] pairs. */
+    due() {
+        const out = [];
+        for (const rec of this.active.values()) {
+            if (Date.now() >= rec.until) out.push([rec.chan, rec.nick]);
+        }
+        return out;
     }
 
     /**
@@ -83,7 +110,8 @@ class Guardian {
     }
 
     grant(chan, victim) {
-        this.active.set(`${chan}|${victim.toLowerCase()}`, Date.now() + this.minutes * 60000);
+        this.active.set(`${chan}|${victim.toLowerCase()}`,
+            { chan, nick: victim, until: Date.now() + this.minutes * 60000 });
     }
 
     release(chan, victim) {

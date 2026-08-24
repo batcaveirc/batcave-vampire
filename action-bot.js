@@ -643,16 +643,29 @@ function guardVictim(chan, attacker, message) {
         + `${guardian.minutes}m. Deal with ${attacker} however you see fit. 🦇`);
     log('MOD', `Guardian: opped ${victim} in ${chan} (targeted by ${attacker}).`);
 
-    setTimeout(() => {
-        if (!guardian.isActive(ch, victim)) return;  // already released
-        guardian.release(ch, victim);
-        // Only take back what we gave, and only from someone still here.
-        if ([...(members.get(ch) || [])].some((m) => m.toLowerCase() === victim.toLowerCase())) {
-            send(`MODE ${chan} -o ${victim}`);
-            notice(victim, `Your temporary ops in ${chan} have expired.`);
-        }
-    }, guardian.minutes * 60000);
+    setTimeout(() => endGuard(chan, victim), guardian.minutes * 60000);
 }
+
+/** Take back a temporary grant. Safe to call twice; does nothing the second time. */
+function endGuard(chan, victim) {
+    const ch = chanKey(chan);
+    if (!guardian.owes(ch, victim)) return;          // already taken back
+    guardian.release(ch, victim);
+    // Only take back what we gave, and only from someone still here.
+    if ([...(members.get(ch) || [])].some((m) => m.toLowerCase() === victim.toLowerCase())) {
+        send(`MODE ${chan} -o ${victim}`);
+        notice(victim, `Your temporary ops in ${chan} have expired.`);
+    }
+    log('MOD', `Guardian: took ops back from ${victim} in ${chan}.`);
+}
+
+// A single setTimeout is not a promise. It dies with the process — and this one
+// restarts every six hours — and a handler that throws takes the de-op with it.
+// The sweep is the thing that actually guarantees the grant ends, so a missed
+// timer costs a few seconds rather than leaving someone opped for good.
+setInterval(() => {
+    for (const [ch, nick] of guardian.due()) endGuard(ch, nick);
+}, 20000);
 
 // The room should see an abuser answered, not just processed. Spoken BEFORE the
 // KICK so it is the last thing said while they are still present to read it.
