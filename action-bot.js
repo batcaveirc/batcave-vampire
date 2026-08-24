@@ -5,6 +5,7 @@ const { Fun } = require('./fun');
 const { Recruiter } = require('./recruit');
 const { parseOrder } = require('./orders');
 const { Retort, shieldLine } = require('./retort');
+const { geminiChat } = require('./gemini');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
@@ -38,6 +39,9 @@ const config = {
     // headroom for the !!ai command and the mention replies that share it.
     aiMaxPerDay: parseInt(process.env.AI_MAX_PER_DAY || '600', 10),
     aiMaxPerMin: parseInt(process.env.AI_MAX_PER_MIN || '12', 10),
+    // A provider on a DIFFERENT meter, so a spent Groq day is not a dead day.
+    geminiKey: process.env.GEMINI_API_KEY || '',
+    geminiModel: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
     linkFilter: onOff(process.env.LINK_FILTER),
     warnLimit: parseInt(process.env.WARN_LIMIT || '3', 10),            // whitelisted
     warnLimitRegistered: parseInt(process.env.WARN_LIMIT_REGISTERED || '1', 10),
@@ -111,6 +115,7 @@ let aiCalls = [];                  // recent Groq call timestamps (rate limit)
 // per day and resets at UTC midnight, so the budget has to be counted the same
 // way the provider counts it.
 let aiDayCount = 0;
+let geminiNoted = false;   // log the switch once, not per message
 let aiDayKey = '';
 let reconnectTimer = null;
 let lastRx = Date.now();           // last byte received — drives the health check
@@ -830,6 +835,17 @@ async function groqChat(body) {
                 return await res.json();
             } catch (e) { lastErr = e; }
         }
+    }
+    // Groq is spent or broken. Try the other meter before giving up: a 429 here
+    // means the ACCOUNT's day is gone, and no amount of retrying Groq fixes that.
+    if (config.geminiKey) {
+        try {
+            const out = await geminiChat(body, config.geminiKey, config.geminiModel);
+            if (out) {
+                if (!geminiNoted) { geminiNoted = true; log('AI', `Groq unavailable (${lastErr && lastErr.message}) — serving from Gemini.`); }
+                return out;
+            }
+        } catch (e) { lastErr = e; }
     }
     if (lastErr) throw lastErr;
     return null;
