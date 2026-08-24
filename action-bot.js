@@ -118,6 +118,11 @@ const ignored = new Set();         // nick(lower) -> bot ignores them entirely
 const opped = new Set();           // channel(lower) we currently hold +o in
 const joinLog = new Map();         // channel(lower) -> [join timestamps] (raid detect)
 const lockedByRaid = new Set();    // channels auto-locked, so we can auto-unlock
+// Arrivals we had to act on, per channel. A raid of abusers is not
+// characterised by VOLUME — this room was attacked by a steady drip that never
+// came close to the burst threshold — but by how many of the arrivals turn out
+// to be hostile. Counting that is what catches a slow raid.
+const hostileJoins = new Map();
 const members = new Map();         // channel(lower) -> Set(nick) for !!mass
 const accountOf = new Map();       // nick(lower) -> NickServ account ('' = unregistered)
 const prefixOf = new Map();        // "chan|nick" (lower) -> "@" / "+" / "" etc.
@@ -179,6 +184,12 @@ let historyReport = null;      // set while awaiting the server's verdict
 const raidJoins = parseInt(process.env.RAID_JOINS || '7', 10);
 const raidWindowMs = parseInt(process.env.RAID_WINDOW_SEC || '10', 10) * 1000;
 const raidLockSec = parseInt(process.env.RAID_LOCK_SEC || '60', 10);
+// The SLOW-raid detector. The burst thresholds above look at join RATE, and
+// the attack that prompted this never came close to them — roughly four joins
+// in thirteen seconds, then a drip. What made it a raid was not how fast people
+// arrived but how many of them had to be removed on arrival.
+const hostileLimit = parseInt(process.env.RAID_HOSTILE_JOINS || '3', 10);
+const hostileWindowMs = parseInt(process.env.RAID_HOSTILE_WINDOW_MIN || '5', 10) * 60000;
 let raidGuard = onOff(process.env.RAID_GUARD || 'on');
 
 // The game. `bot` is the small surface findit.js needs.
@@ -546,6 +557,45 @@ function handleOrder(chan, nick, msg) {
     }
     log('OK', `Order from ${nick} (${tier}): ${action} ${target}`);
     return true;
+}
+
+/**
+ * Shut the doors for a while. Idempotent — a second raid signal while already
+ * locked extends nothing and says nothing, rather than stacking timers.
+ *
+ * NOTE: this is refused outright by services if the channel's MLOCK carries
+ * `-i`, which is how #batcave was configured during the raid that prompted
+ * this. ChanServ reverts the mode within a second and the bot has no way to
+ * know, so the lock silently does nothing. Check `ChanServ INFO <#chan>` before
+ * trusting it: the mode lock must not forbid `i`.
+ */
+function lockDoors(chan, why) {
+    const c = chanKey(chan);
+    if (lockedByRaid.has(c)) return;
+    lockedByRaid.add(c);
+    send(`MODE ${chan} +i`);
+    say(chan, `\x0304[MOD]\x03 ${why} — invite-only for ${raidLockSec}s while this passes. 🦇`);
+    log('MOD', `Raid lock on ${c}: ${why}`);
+    setTimeout(() => {
+        lockedByRaid.delete(c);
+        hostileJoins.set(c, []);
+        send(`MODE ${chan} -i`);
+        say(chan, '\x0309[MOD]\x03 Doors open again.');
+    }, raidLockSec * 1000);
+}
+
+/**
+ * Someone who arrived and had to be removed. Enough of those in a few minutes
+ * is a raid however slowly they trickle in — which is the shape this room was
+ * actually attacked in, and the shape a join-rate threshold cannot see.
+ */
+function noteHostileArrival(chan, why) {
+    const c = chanKey(chan);
+    const now = Date.now();
+    const hist = (hostileJoins.get(c) || []).filter((t) => now - t < hostileWindowMs);
+    hist.push(now);
+    hostileJoins.set(c, hist);
+    if (hist.length >= hostileLimit) lockDoors(chan, `${hist.length} hostile arrivals in ${Math.round(hostileWindowMs / 60000)}m`);
 }
 
 // --- Punishment / escalation ---
@@ -1178,6 +1228,7 @@ async function screenNick(chan, nick) {
     const clone = clonesARegular(nick);
     if (clone) {
         banUser(chan, nick, `impersonating ${clone.who} with an abusive nick`);
+        noteHostileArrival(chan, 'clone');
         say(chan, `\x0304[MOD]\x03 That nick was built to target \x02${clone.who}\x02. `
             + `Banned on sight — ${clone.who}, you did not have to see that. 🦇`);
         log('MOD', `Clone attack: ${nick} targeted ${clone.who} (matched "${clone.word}").`);
@@ -1201,6 +1252,7 @@ async function screenNick(chan, nick) {
     // more than asking someone twice to change their nick.
     if (fromList && n > 1) banUser(chan, nick, `${bad} (returned with it)`);
     else kickUser(chan, nick, `${bad} - please pick a different nick`);
+    noteHostileArrival(chan, bad);
 }
 
 // --- Witty AI reply (for mentions when sentient mode is off) ---
@@ -2314,17 +2366,9 @@ function handleLine(line) {
             const now = Date.now();
             const hist = (joinLog.get(c) || []).filter((t) => now - t < raidWindowMs);
             hist.push(now); joinLog.set(c, hist);
-            if (hist.length >= raidJoins && !lockedByRaid.has(c)) {
-                lockedByRaid.add(c);
+            if (hist.length >= raidJoins) {
                 joinLog.set(c, []);
-                send(`MODE ${c} +i`);
-                say(c, `\x0304[MOD]\x03 Raid detected (${hist.length} joins in ${raidWindowMs / 1000}s) — invite-only for ${raidLockSec}s. 🦇`);
-                log('MOD', `Raid lock on ${c}`);
-                setTimeout(() => {
-                    lockedByRaid.delete(c);
-                    send(`MODE ${c} -i`);
-                    say(c, '\x0304[MOD]\x03 Doors open again.');
-                }, raidLockSec * 1000);
+                lockDoors(c, `${hist.length} joins in ${raidWindowMs / 1000}s`);
             }
         }
     }

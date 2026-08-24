@@ -86,6 +86,9 @@ jobs:
           RAID_GUARD: ${{ secrets.RAID_GUARD || 'on' }}
           RAID_JOINS: ${{ secrets.RAID_JOINS || '7' }}
           RAID_WINDOW_SEC: ${{ secrets.RAID_WINDOW_SEC || '10' }}
+          # Slow-raid detector: hostile ARRIVALS, not join rate.
+          RAID_HOSTILE_JOINS: ${{ secrets.RAID_HOSTILE_JOINS || '3' }}
+          RAID_HOSTILE_WINDOW_MIN: ${{ secrets.RAID_HOSTILE_WINDOW_MIN || '5' }}
           RAID_LOCK_SEC: ${{ secrets.RAID_LOCK_SEC || '60' }}
           STRICT_NICKS: ${{ secrets.STRICT_NICKS || 'on' }}
           AUTOBAN_MASKS: ${{ secrets.AUTOBAN_MASKS }}
