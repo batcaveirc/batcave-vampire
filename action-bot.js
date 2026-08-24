@@ -1381,9 +1381,17 @@ function handleCommand(chan, nick, message) {
             const tier = tierOf(chan, who);
             const quota = moderatedRooms.has(chanKey(chan))
                 ? moderatedQuotaFor(tier) : warnQuotaFor(tier);
-            reply( `${who} — role: ${role} (${tier}), strikes: ${warns.get(k) || 0}/${quota}, `
-                + `host: ${hostOf.get(k) || 'unknown'}, `
-                + `${whitelist.has(k) ? 'whitelisted (immune)' : 'not whitelisted'}`
+            // Say WHY they hold the tier they hold. Reporting only the raw
+            // whitelist produced "role: user (trusted) ... not whitelisted",
+            // which is two true statements that read as a contradiction and
+            // sent the owner looking for a list entry that was never the
+            // reason. Trust has three sources and they fail differently.
+            const why = whitelist.has(k) ? 'whitelisted'
+                : hostIsTrusted(who) ? 'trusted by host mask (TRUSTED_MASKS)'
+                : /\+/.test(prefixIn(chan, who)) && voiceIsSelective(chan) ? 'trusted by voice'
+                : 'not trusted';
+            reply( `${who} — role: ${role} (${tier} — ${why}), strikes: ${warns.get(k) || 0}/${quota}, `
+                + `host: ${hostOf.get(k) || 'unknown'}`
                 + `${ignored.has(k) ? ', ignored' : ''}, last active: ${seenUsers[k] ? ago(seenUsers[k]) : 'never'}.`);
             break;
         }
