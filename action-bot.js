@@ -34,6 +34,10 @@ const config = {
     // moderation with nothing in the channel to show for it.
     groqModel: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
     groqModelFallback: process.env.GROQ_MODEL_FALLBACK || 'openai/gpt-oss-20b',
+    // Sized for a free-tier daily token allowance at ~600 tokens a call, with
+    // headroom for the !!ai command and the mention replies that share it.
+    aiMaxPerDay: parseInt(process.env.AI_MAX_PER_DAY || '600', 10),
+    aiMaxPerMin: parseInt(process.env.AI_MAX_PER_MIN || '12', 10),
     linkFilter: onOff(process.env.LINK_FILTER),
     warnLimit: parseInt(process.env.WARN_LIMIT || '3', 10),            // whitelisted
     warnLimitRegistered: parseInt(process.env.WARN_LIMIT_REGISTERED || '1', 10),
@@ -103,6 +107,11 @@ const prefixOf = new Map();        // "chan|nick" (lower) -> "@" / "+" / "" etc.
 const nickVerdict = new Map();     // nick(lower) -> true/false (AI screened, cached)
 const nickOffences = new Map();    // nick(lower) -> times removed for the nick itself
 let aiCalls = [];                  // recent Groq call timestamps (rate limit)
+// Calls spent today, and the UTC day they belong to. Groq meters per ACCOUNT
+// per day and resets at UTC midnight, so the budget has to be counted the same
+// way the provider counts it.
+let aiDayCount = 0;
+let aiDayKey = '';
 let reconnectTimer = null;
 let lastRx = Date.now();           // last byte received — drives the health check
 let pingProbeSent = false;
@@ -734,12 +743,38 @@ function scriptedModeration(chan, nick, message) {
 }
 
 // --- Sentient (AI) moderation via Groq — only when !!sentient is ON ---
+/**
+ * May we spend a Groq call right now?
+ *
+ * Two limits, because they fail differently. The per-minute one stops a burst
+ * from tripping Groq's rate limiter. The DAILY one is the important one and did
+ * not exist: at 20 calls a minute, with a system prompt of roughly 500 tokens
+ * sent on every message, a free-tier day's token allowance is gone in well
+ * under an hour — after which moderation is dead until UTC midnight and the
+ * room spends 23 hours uncovered. The alert reported this as "key rejected",
+ * which sent the owner looking for a broken key that was never broken.
+ *
+ * Spending the budget slowly is strictly better than spending it early: the
+ * word filter covers the ordinary cases either way, and what the AI is FOR is
+ * the serious thing that might arrive at any hour.
+ */
 function aiRateOk() {
     const now = Date.now();
+    const day = new Date(now).toISOString().slice(0, 10);   // UTC, as Groq resets
+    if (day !== aiDayKey) { aiDayKey = day; aiDayCount = 0; }
+    if (aiDayCount >= config.aiMaxPerDay) return false;
     aiCalls = aiCalls.filter((t) => now - t < 60000);
-    if (aiCalls.length >= 20) return false;        // stay under Groq's rate limit
+    if (aiCalls.length >= config.aiMaxPerMin) return false;
     aiCalls.push(now);
+    aiDayCount += 1;
     return true;
+}
+
+/** For !!status — how much of today's allowance is left. */
+function aiBudgetLeft() {
+    const day = new Date().toISOString().slice(0, 10);
+    const used = day === aiDayKey ? aiDayCount : 0;
+    return `${Math.max(0, config.aiMaxPerDay - used)}/${config.aiMaxPerDay} left today`;
 }
 // One place that talks to Groq, so both callers get key failover for free.
 // gpt-oss and qwen3 are REASONING models: they spend tokens on an internal
@@ -768,10 +803,21 @@ async function groqChat(body) {
                             : body.max_tokens,
                     }),
                 });
-                // 401 bad key / 429 rate-limited → try the other key
-                if ((res.status === 401 || res.status === 429) && keys.length > 1) {
-                    lastErr = new Error(`key rejected (${res.status})`);
-                    continue;
+                // Both mean "try the other key", but they are NOT the same
+                // problem and reporting them identically sent the owner hunting
+                // for a bad key when the account had simply run out of quota.
+                //
+                // Worth knowing when the alert fires: Groq meters per ACCOUNT,
+                // not per key. A second key from the same account shares the
+                // same allowance, so two keys 429-ing together is the expected
+                // shape of "the daily limit is gone", not two broken keys.
+                if (res.status === 401 || res.status === 403) {
+                    lastErr = new Error(`key rejected (${res.status}) — bad or revoked key`);
+                    if (keys.length > 1) continue;
+                }
+                if (res.status === 429) {
+                    lastErr = new Error('rate limited (429) — account quota, not a bad key');
+                    if (keys.length > 1) continue;
                 }
                 // 400/404 usually means the model is gone or renamed → next model
                 if (res.status === 400 || res.status === 404) {
@@ -1237,6 +1283,7 @@ function handleCommand(chan, nick, message) {
             reply( `Online ${h}h${m}m. Sentient: ${sentientMode ? 'ON' : 'OFF'}. `
                 + `Strict: ${strictNicks ? 'ON' : 'OFF'}. `
                 + `Raidguard: ${raidGuard ? 'ON' : 'OFF'}. Filter: ${badwords.size} words. `
+                + `AI budget: ${aiBudgetLeft()}. `
                 + `Autoban masks: ${autobanMasks.size}. Ops here: ${opped.has(chanKey(chan)) ? 'yes' : 'NO'}.`);
             break;
         }
