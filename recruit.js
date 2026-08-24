@@ -34,6 +34,9 @@ const ANNOUNCE_GAP_MS = parseInt(process.env.RECRUIT_ANNOUNCE_MIN || '240', 10) 
 // mean it never fires at all. A short opening interval makes the feature
 // survive its own deployment; the long gaps take over from the second firing.
 const FIRST_GAP_MS = parseInt(process.env.RECRUIT_FIRST_MIN || '1', 10) * 60000;
+// How long before somebody may be invited again. Long enough that a second
+// invitation reads as a fresh welcome rather than nagging.
+const REASK_AFTER_MS = parseInt(process.env.RECRUIT_REASK_DAYS || '21', 10) * 86400000;
 
 // A guess, and a poor one — nicknames are not gender. It only decides WHICH
 // bot extends the invitation, so being wrong costs nothing. Extend with
@@ -68,10 +71,37 @@ class Recruiter {
             && /^(1|true|yes|on)$/i.test(process.env.RECRUIT_ON || 'on');
         this.hints = DEFAULT_HINTS.concat(
             (process.env.FEMININE_HINTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean));
-        this.invited = new Set();      // nobody is ever asked twice
+        this.target = (process.env.RECRUIT_TARGET || 'feminine').toLowerCase();
+        // nick -> when we asked. An expiry rather than a permanent set: a
+        // never-forgetting list turns a finite room into an empty pool within
+        // days, and someone who ignored an invitation three weeks ago is not
+        // being harassed by a second one.
+        this.invited = new Map();
         this.recent = [];              // last few invites, so !!recruit can show its work
         this.timers = {};             // name -> the ONE live handle for that job
         this.started = false;
+    }
+
+    /**
+     * Is this bot the one that should invite this person?
+     *
+     * The split was thematic — Dracula invites one half, Luna the other, so
+     * nobody is singled out. Luna's half was never built, which left ~90% of
+     * every source room permanently uninvitable: a live count showed 173 of 189
+     * people in one channel rejected purely for "no name match", and the tiny
+     * remainder drains for good because nobody is ever asked twice. The result
+     * was a recruiter that truthfully reported "nobody eligible" in a room of
+     * two hundred.
+     *
+     * RECRUIT_TARGET picks the half: 'feminine' (the original behaviour),
+     * 'other' (the complement, for whichever bot covers it), or 'all' when one
+     * bot is doing the whole job alone — which is the honest setting while only
+     * one of them recruits.
+     */
+    mine(nick) {
+        if (this.target === 'all') return true;
+        const fem = this.looksFeminine(nick);
+        return this.target === 'other' ? !fem : fem;
     }
 
     /** Nicknames that look feminine enough for Dracula to take this one. */
@@ -81,19 +111,25 @@ class Recruiter {
         return this.hints.some((h) => n.includes(h));
     }
 
+    /** Asked so recently that asking again would be pestering. */
+    askedRecently(nickLower) {
+        const at = this.invited.get(nickLower);
+        return Boolean(at && Date.now() - at < REASK_AFTER_MS);
+    }
+
     eligible(chan) {
         const out = [];
         for (const nick of this.deps.membersOf(chan)) {
             const n = nick.toLowerCase();
             if (NEVER.has(n) || n === this.bot.nick.toLowerCase()) continue;
-            if (this.invited.has(n)) continue;
+            if (this.askedRecently(n)) continue;
             // Never an operator. Being invited by a bot reads as spam to the
             // people most able to act on it, and that is how a bot gets banned.
             if (/[~&@%]/.test(this.deps.prefixOf(chan, nick))) continue;
             // Already home.
             if (this.deps.membersOf(this.deps.homeChannel).some(
                 (m) => m.toLowerCase() === n)) continue;
-            if (!this.looksFeminine(nick)) continue;
+            if (!this.mine(nick)) continue;
             out.push(nick);
         }
         return out;
@@ -119,15 +155,19 @@ class Recruiter {
             for (const nick of all) {
                 const n = nick.toLowerCase();
                 if (NEVER.has(n) || n === this.bot.nick.toLowerCase()) { bots++; continue; }
-                if (this.invited.has(n)) { asked++; continue; }
+                if (this.askedRecently(n)) { asked++; continue; }
                 if (/[~&@%]/.test(this.deps.prefixOf(chan, nick))) { ops++; continue; }
                 if (home.includes(n)) { already++; continue; }
-                if (!this.looksFeminine(nick)) { unmatched++; continue; }
+                if (!this.mine(nick)) { unmatched++; continue; }
                 ok++;
             }
             lines.push(`${chan}: ${all.length} present — ${ok} eligible `
                 + `(${ops} ops, ${bots} bots, ${already} already home, ${asked} asked before, `
-                + `${unmatched} no name match)`);
+                + `${unmatched} not my half)`);
+        }
+        if (lines.length) {
+            lines.push(`I invite the "${this.target}" half `
+                + `(RECRUIT_TARGET=all if no other bot is covering the rest).`);
         }
         return lines.length ? lines : ['no channels configured'];
     }
@@ -146,7 +186,7 @@ class Recruiter {
             const who = this.eligible(chan);
             if (!who.length) continue;
             const target = pick(who);
-            this.invited.add(target.toLowerCase());
+            this.invited.set(target.toLowerCase(), Date.now());
             this.bot.send(`INVITE ${target} ${this.deps.homeChannel}`);
             // An INVITE is delivered privately to the person invited, so from
             // inside the home channel a working recruiter and a broken one look

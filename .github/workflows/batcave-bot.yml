@@ -102,6 +102,11 @@ jobs:
           # Channels the OWNER runs, that Dracula may invite from. Empty = the
           # whole feature is off. Only list rooms you hold ops in.
           RECRUIT_CHANNELS: ${{ secrets.RECRUIT_CHANNELS }}
+          # Which half of a room this bot invites: feminine | other | all.
+          # 'all' while only one bot recruits — otherwise ~90% of every
+          # source room is unreachable and it reports 'nobody eligible'.
+          RECRUIT_TARGET: ${{ secrets.RECRUIT_TARGET || 'all' }}
+          RECRUIT_REASK_DAYS: ${{ secrets.RECRUIT_REASK_DAYS || '21' }}
           RECRUIT_ON: ${{ secrets.RECRUIT_ON || 'on' }}
           # Long, random gaps. A metronome is what a bot looks like; these
           # numbers are what keep it looking like a person being friendly.
