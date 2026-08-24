@@ -6,6 +6,7 @@ const { Recruiter } = require('./recruit');
 const { parseOrder, PROTECTED_NICKS } = require('./orders');
 const { Retort, shieldLine } = require('./retort');
 const { geminiChat } = require('./gemini');
+const { Guardian, victimOf } = require('./guardian');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
@@ -33,8 +34,20 @@ const config = {
     // llama-3.1-8b-instant was decommissioned 2026-08-16. Models get retired,
     // so keep a fallback: a dead model would otherwise silently disable all AI
     // moderation with nothing in the channel to show for it.
-    groqModel: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
-    groqModelFallback: process.env.GROQ_MODEL_FALLBACK || 'openai/gpt-oss-20b',
+    // llama-3.3-70b-versatile was DECOMMISSIONED by Groq. Asking for it 404s,
+    // and because a 404 only moves to the next MODEL, every single moderation
+    // call was spending two HTTP requests — one to a model that no longer
+    // exists, then one to the fallback that answered. Double consumption
+    // against the rate limit, which is what produced the 429 alerts.
+    //
+    // Verified 2026-08-22 against the live account: of the 13 models it can
+    // reach, gpt-oss-20b scored 7/7 on the real moderation prompt with real
+    // room messages, including both cases that previously caused wrong kicks.
+    // gpt-oss-safeguard-20b managed 4/7 — it returns EMPTY on explicit content,
+    // despite the name — and qwen3.6-27b 1/7, emitting <think> blocks and
+    // echoing the template. Re-run scratchpad/cmpmodels.py before changing this.
+    groqModel: process.env.GROQ_MODEL || 'openai/gpt-oss-20b',
+    groqModelFallback: process.env.GROQ_MODEL_FALLBACK || 'openai/gpt-oss-120b',
     // Sized for a free-tier daily token allowance at ~600 tokens a call, with
     // headroom for the !!ai command and the mention replies that share it.
     aiMaxPerDay: parseInt(process.env.AI_MAX_PER_DAY || '600', 10),
@@ -163,6 +176,10 @@ const bot = { send, say, notice, get nick() { return currentNick; } };
 const game = new FindIt(bot);
 // Off with RETORT=off; on by default, because a room that sees an abuser
 // answered reads very differently from one that only sees a mod log line.
+const guardian = new Guardian({
+    enabled: !/^(0|off|false|no)$/i.test(process.env.GUARDIAN || 'on'),
+    minutes: parseInt(process.env.GUARDIAN_MINUTES || '10', 10),
+});
 const retort = new Retort({ enabled: !/^(0|off|false|no)$/i.test(process.env.RETORT || 'on') });
 const fun = new Fun(bot, (c) => game.isGameChannel(c));
 const recruiter = new Recruiter(bot, {
@@ -604,6 +621,39 @@ function quietUser(chan, nick, mins, reason) {
     }, mins * 60000);
 }
 
+/**
+ * If this abuse was aimed at one of ours, arm them.
+ *
+ * The bot's own punishment still happens — this is an EXTRA layer, not a
+ * substitute. Being abused and being powerless are separate injuries and the
+ * ladder only ever addressed the first.
+ */
+function guardVictim(chan, attacker, message) {
+    const ch = chanKey(chan);
+    if (!opped.has(ch)) return;                      // nothing to give
+    const here = members.get(ch) || new Set();
+    const victim = victimOf(message, attacker, here, isTrusted);
+    if (!victim) return;
+    const why = guardian.refuse(ch, victim, tierOf(chan, attacker), /[~&@%]/.test(prefixIn(ch, victim)));
+    if (why) return;
+
+    guardian.grant(ch, victim);
+    send(`MODE ${chan} +o ${victim}`);
+    say(chan, `\x0309[GUARD]\x03 ${victim} — you are being targeted, so you have ops for `
+        + `${guardian.minutes}m. Deal with ${attacker} however you see fit. 🦇`);
+    log('MOD', `Guardian: opped ${victim} in ${chan} (targeted by ${attacker}).`);
+
+    setTimeout(() => {
+        if (!guardian.isActive(ch, victim)) return;  // already released
+        guardian.release(ch, victim);
+        // Only take back what we gave, and only from someone still here.
+        if ([...(members.get(ch) || [])].some((m) => m.toLowerCase() === victim.toLowerCase())) {
+            send(`MODE ${chan} -o ${victim}`);
+            notice(victim, `Your temporary ops in ${chan} have expired.`);
+        }
+    }, guardian.minutes * 60000);
+}
+
 // The room should see an abuser answered, not just processed. Spoken BEFORE the
 // KICK so it is the last thing said while they are still present to read it.
 function retortBefore(chan, nick, reason) {
@@ -957,6 +1007,10 @@ async function sentientModeration(chan, nick, message) {
 
         const reason = `AI: ${String(verdict.reason || 'abuse').slice(0, 40)}`;
         const tier = tierOf(chan, nick);
+        // Arm the target, if the target is one of ours. Placed here rather than
+        // beside each punishment below because every path from this point ends
+        // in an action, and the shield should not depend on WHICH one.
+        guardVictim(chan, nick, message);
         log('AI', `${nick} [${tier}] → ${action} (${reason}) quote="${verdict.quote}"`);
 
         // Gate 3 — the model's evidence must be more than the name of the
@@ -2234,7 +2288,7 @@ function handleLine(line) {
                 (n) => [...(members.get(chanKey(tgt)) || new Set())].some((m) => m.toLowerCase() === n.toLowerCase()));
             if (shield && !isTrusted(nick) && !isAdmin(nick)) { say(tgt, shield); return; }
         }
-        if (scriptedModeration(tgt, nick, msg)) return;       // scripted filter first
+        if (scriptedModeration(tgt, nick, msg)) { guardVictim(tgt, nick, msg); return; }
         // Sentient screening runs in the background. It must NOT return here:
         // doing so silenced every reply once sentient mode became the default.
         if (sentientMode) sentientModeration(tgt, nick, msg);

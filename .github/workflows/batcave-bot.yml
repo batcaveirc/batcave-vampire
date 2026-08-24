@@ -53,8 +53,11 @@ jobs:
           WHITELIST: ${{ secrets.WHITELIST }}
 
           # ── Moderation tuning ────────────────────────────────────────────
-          GROQ_MODEL: ${{ secrets.GROQ_MODEL || 'llama-3.3-70b-versatile' }}
-          GROQ_MODEL_FALLBACK: ${{ secrets.GROQ_MODEL_FALLBACK || 'openai/gpt-oss-20b' }}
+          GROQ_MODEL: ${{ secrets.GROQ_MODEL || 'openai/gpt-oss-20b' }}
+          GROQ_MODEL_FALLBACK: ${{ secrets.GROQ_MODEL_FALLBACK || 'openai/gpt-oss-120b' }}
+          # Temporary ops for a whitelisted regular who is being targeted.
+          GUARDIAN: ${{ secrets.GUARDIAN || 'on' }}
+          GUARDIAN_MINUTES: ${{ secrets.GUARDIAN_MINUTES || '10' }}
           RETORT: ${{ secrets.RETORT || 'on' }}
           # Second provider on a DIFFERENT daily meter. Dormant until set.
           # Other people's bots in the room — never a target, never invited.
