@@ -7,6 +7,7 @@ const { parseOrder, PROTECTED_NICKS } = require('./orders');
 const { Retort, shieldLine } = require('./retort');
 const { geminiChat } = require('./gemini');
 const { Guardian, victimOf } = require('./guardian');
+const { Watch } = require('./watch');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
@@ -197,6 +198,10 @@ const bot = { send, say, notice, get nick() { return currentNick; } };
 const game = new FindIt(bot);
 // Off with RETORT=off; on by default, because a room that sees an abuser
 // answered reads very differently from one that only sees a mod log line.
+const watch = new Watch({
+    enabled: !/^(0|off|false|no)$/i.test(process.env.WATCH || 'on'),
+    homes: config.channels,
+});
 const guardian = new Guardian({
     enabled: !/^(0|off|false|no)$/i.test(process.env.GUARDIAN || 'on'),
     minutes: parseInt(process.env.GUARDIAN_MINUTES || '10', 10),
@@ -2361,6 +2366,23 @@ function handleLine(line) {
         // Strict mode: the NICK itself is screened - word list first, then AI.
         if (ready && strictNicks && !moderationOff(c)) { screenNick(c, nick); }
 
+        // Somebody we heard organising this, arriving. Not a ban: advertising a
+        // channel is not yet an offence, and a pre-emptive ban on a suspicion
+        // formed in someone else's room is exactly the overreach that gets a
+        // real person thrown out. But they arrive without voice in a moderated
+        // room, so the first thing they say is read before the room hears it,
+        // and the moderators are told who walked in and why.
+        if (ready && watch.isFlagged(nick) && !isTrusted(nick) && !isAdmin(nick)) {
+            const where = watch.seenIn(nick).join(', ');
+            watch.forget(nick);                  // one greeting, not every join
+            noteHostileArrival(c, 'flagged arrival');
+            if (opped.has(c)) send(`MODE ${c} -v ${nick}`);
+            say(c, `\x0304[WATCH]\x03 \x02${nick}\x02 just arrived — I heard them `
+                + `advertising this room in ${where}. Speaking is off until a `
+                + `moderator says otherwise. \x02!!unwarn ${nick}\x02 to clear it. 🦇`);
+            log('MOD', `Watch: flagged arrival ${nick} in ${c} (seen in ${where})`);
+        }
+
         // Raid guard: a burst of joins in a few seconds is a raid, not traffic.
         if (ready && raidGuard && !game.isGameChannel(c)) {
             const now = Date.now();
@@ -2384,6 +2406,27 @@ function handleLine(line) {
             rescueFromKick(tgt, victim, nick, params.slice(2).join(' ').replace(/^:/, ''));
         }
         (members.get(chanKey(tgt)) || new Set()).delete(victim);
+    }
+
+    // A room that is not ours. We are a guest: never speak, never set a mode,
+    // never moderate. Only listen for our own channel being advertised, which
+    // is how the last raid was assembled before any of it reached home.
+    if (command === 'PRIVMSG' && nick && /^#/.test(tgt || '') && !isOurChannel(tgt)) {
+        const heard = watch.hear(tgt, nick, msg, {
+            trusted: isTrusted(nick) || isAdmin(nick) || isOwner(nick)
+                || nick.toLowerCase() === currentNick.toLowerCase(),
+            abusive: Boolean(wordHit(badwords, msg) || wordHit(severeWords, msg)),
+            badNick: Boolean(badNick(nick)),
+        });
+        if (heard.level === 'alert') {
+            const where = watch.seenIn(nick).join(', ') || tgt;
+            for (const home of config.channels) {
+                say(home, `\x0304[WATCH]\x03 \x02${nick}\x02 is ${heard.why} in `
+                    + `${where}. They are not here yet. 🦇`);
+            }
+            log('MOD', `Watch: ${nick} ${heard.why} in ${tgt}`);
+        }
+        return;
     }
 
     if (command === 'PRIVMSG' && isOurChannel(tgt) && nick) {

@@ -56,6 +56,9 @@ jobs:
           GROQ_MODEL: ${{ secrets.GROQ_MODEL || 'openai/gpt-oss-20b' }}
           GROQ_MODEL_FALLBACK: ${{ secrets.GROQ_MODEL_FALLBACK || 'openai/gpt-oss-120b' }}
           # Temporary ops for a whitelisted regular who is being targeted.
+          # Early warning: listen in the recruiting rooms for our channel
+          # being advertised, and meet a flagged arrival at the door.
+          WATCH: ${{ secrets.WATCH || 'on' }}
           GUARDIAN: ${{ secrets.GUARDIAN || 'on' }}
           GUARDIAN_MINUTES: ${{ secrets.GUARDIAN_MINUTES || '10' }}
           RETORT: ${{ secrets.RETORT || 'on' }}
