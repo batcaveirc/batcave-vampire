@@ -233,6 +233,13 @@ function isExempt(nick, chan) {
     if (n === config.nick.toLowerCase() || isAdmin(nick)) return true;
     // Channel operators are the moderators — never police them.
     if (chan && isChannelMod(chan, nick)) return true;
+    // Services and other people's bots. Policing a bot is not our job, its
+    // operator's is, and an AI moderator reading a persona bot's roleplay as
+    // harassment is entirely plausible — #batcave's Almond says things like
+    // "mind your own biz, don't come between me and Navs" and "she will be
+    // deleted??!!" in character. Kicking another operator's bot over its script
+    // is embarrassing at best and how bot wars start at worst.
+    if (PROTECTED_NICKS.has(n)) return true;
     // Whitelisted users are NOT exempt any more: they get a warning quota
     // instead, so genuine abuse from a trusted account is still caught.
     return false;
