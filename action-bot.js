@@ -3,7 +3,7 @@ const tls = require('tls');
 const { FindIt } = require('./findit');
 const { Fun } = require('./fun');
 const { Recruiter } = require('./recruit');
-const { parseOrder } = require('./orders');
+const { parseOrder, PROTECTED_NICKS } = require('./orders');
 const { Retort, shieldLine } = require('./retort');
 const { geminiChat } = require('./gemini');
 
@@ -442,7 +442,7 @@ function handleOrder(chan, nick, msg) {
 
     // Never against another bot, services, or me.
     const t = target.toLowerCase();
-    if (t === currentNick.toLowerCase() || /^(chanserv|nickserv|operserv|hostserv|memoserv|botserv|luna1)$/.test(t)) {
+    if (t === currentNick.toLowerCase() || PROTECTED_NICKS.has(t)) {
         say(chan, `${nick}: not that one. 🦇`);
         return true;
     }

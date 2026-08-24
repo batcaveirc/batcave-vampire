@@ -103,4 +103,15 @@ function parseOrder(text, botNick, isPresent) {
     return { action, target, reason: m ? m[1].trim() : '' };
 }
 
-module.exports = { parseOrder };
+// Nicks a spoken order may never be aimed at: services, and any bot sharing
+// the room. recruit.js already refused to invite these; handleOrder did not
+// refuse to KICK them, so "Dracula kick ChanBot" would have had the bot swing
+// at services. Extend with BOT_NICKS rather than editing this list — rooms
+// acquire other people's bots (Almond, NotSoBot) without warning.
+const PROTECTED_NICKS = new Set([
+    'chanserv', 'nickserv', 'operserv', 'hostserv', 'memoserv', 'botserv',
+    'global', 'chanbot', 'luna1', 'vampire', 'dracula', 'notsobot',
+    ...(process.env.BOT_NICKS || '').split(',').map((n) => n.trim().toLowerCase()).filter(Boolean),
+]);
+
+module.exports = { parseOrder, PROTECTED_NICKS };
