@@ -50,6 +50,23 @@ const DEFAULT_HINTS = [
     'angel', 'baby', 'barbie', 'doll', 'gudia', 'queen', 'princess', 'ladki',
 ];
 
+// Self-description, which is how people in these rooms actually signal gender.
+//
+// Two patterns, because they need different strictness. Words run together in
+// nicknames — "IndiangirlUSA" has no separator anywhere — so a word marker has
+// to match as a substring or it misses the obvious cases. The AGE-and-letter
+// form cannot: bare "f" or two digits appear in half the nicks on the network,
+// so those keep their boundaries.
+const FEM_WORD = /(female|girl|ladki|bhabhi|behen|aunty|didi)/i;
+const FEM_AGE  = /(^|[^a-z0-9])(f\s?\d{2}|\d{2}\s?f)([^a-z0-9]|$)/i;
+
+// Nicks the room's own AKICK list would reject on sight. Mirrors the patterns
+// set on ChanServ — keep the two in step, or the recruiter will keep inviting
+// people the channel instantly bans.
+const UNWELCOME = ['horny', 'slut', 'whore', 'milf', 'incest', 'porn', 'nangi',
+    'chudai', 'bhosdi', 'madarchod', 'gaand', 'chudwao', 'bitch', 'cuck', 'randi',
+    'lund', 'paid', 'cam4', 'f4m', 'm4f', 'nude', 'escort', 'bull4', 'sexy'];
+
 const NEVER = new Set(['chanserv', 'nickserv', 'operserv', 'hostserv', 'memoserv',
     'botserv', 'global', 'chanbot', 'luna1', 'vampire', 'dracula', 'notsobot']);
 
@@ -106,9 +123,29 @@ class Recruiter {
 
     /** Nicknames that look feminine enough for Dracula to take this one. */
     looksFeminine(nick) {
+        // Explicit self-description first, and it is far more reliable than a
+        // name list: people in these rooms label themselves "f29", "21f",
+        // "IndianGirlUSA". Guessing from a name's ending does not work — it
+        // reads Aakash, Aditya and RajCanada as feminine.
+        if (FEM_WORD.test(nick) || FEM_AGE.test(nick)) return true;
         const n = nick.toLowerCase().replace(/[^a-z]/g, '');
         if (!n) return false;
         return this.hints.some((h) => n.includes(h));
+    }
+
+    /**
+     * Would this person be thrown out the moment they arrived?
+     *
+     * Inviting somebody the channel's own AKICK list bans on sight is worse
+     * than pointless: it burns the invitation, it looks like a trap to them,
+     * and it is how a recruiter drags the exact population that raided the room
+     * back through the front door. The source rooms are full of accounts
+     * advertising sex work, and the whole reason recruiting was widened this
+     * morning is the reason the room was attacked tonight.
+     */
+    unwelcome(nick) {
+        const n = nick.toLowerCase().replace(/[^a-z0-9]/g, '');
+        return UNWELCOME.some((w) => n.includes(w));
     }
 
     /** Asked so recently that asking again would be pestering. */
@@ -129,6 +166,7 @@ class Recruiter {
             // Already home.
             if (this.deps.membersOf(this.deps.homeChannel).some(
                 (m) => m.toLowerCase() === n)) continue;
+            if (this.unwelcome(nick)) continue;
             if (!this.mine(nick)) continue;
             out.push(nick);
         }
@@ -150,7 +188,7 @@ class Recruiter {
                     + `Check for a ban: /mode ${chan} +b`);
                 continue;
             }
-            let ops = 0, bots = 0, already = 0, unmatched = 0, asked = 0, ok = 0;
+            let ops = 0, bots = 0, already = 0, unmatched = 0, asked = 0, ok = 0, unwelcome = 0;
             const home = this.deps.membersOf(this.deps.homeChannel).map((m) => m.toLowerCase());
             for (const nick of all) {
                 const n = nick.toLowerCase();
@@ -158,12 +196,13 @@ class Recruiter {
                 if (this.askedRecently(n)) { asked++; continue; }
                 if (/[~&@%]/.test(this.deps.prefixOf(chan, nick))) { ops++; continue; }
                 if (home.includes(n)) { already++; continue; }
+                if (this.unwelcome(nick)) { unwelcome++; continue; }
                 if (!this.mine(nick)) { unmatched++; continue; }
                 ok++;
             }
             lines.push(`${chan}: ${all.length} present — ${ok} eligible `
                 + `(${ops} ops, ${bots} bots, ${already} already home, ${asked} asked before, `
-                + `${unmatched} not my half)`);
+                + `${unmatched} not my half, ${unwelcome} would be banned on arrival)`);
         }
         if (lines.length) {
             lines.push(`I invite the "${this.target}" half `
