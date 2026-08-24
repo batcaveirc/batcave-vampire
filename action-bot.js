@@ -240,8 +240,13 @@ function isExempt(nick, chan) {
     // deleted??!!" in character. Kicking another operator's bot over its script
     // is embarrassing at best and how bot wars start at worst.
     if (PROTECTED_NICKS.has(n)) return true;
-    // Whitelisted users are NOT exempt any more: they get a warning quota
-    // instead, so genuine abuse from a trusted account is still caught.
+    // Whitelisted regulars are outside automated moderation entirely — owner's
+    // call, 2026-08-22. They previously got a warning quota so that genuine
+    // abuse from a trusted account was still caught; the trade now is that a
+    // borrowed or compromised regular account cannot be stopped by the bot.
+    // Human moderators still can: !!quiet, !!kick, !!ban and spoken orders all
+    // work on anyone, and the whitelist is a short, hand-curated list.
+    if (isTrusted(nick)) return true;
     return false;
 }
 
@@ -1053,9 +1058,9 @@ async function aiNickIsOffensive(nick) {
 // is a kick (they can just change nick); returning with the same nick is a ban.
 async function screenNick(chan, nick) {
     if (isExempt(nick, chan)) return;
-    // isExempt() deliberately excludes whitelisted users (they get a warn quota
-    // for what they SAY). But a trusted regular's NAME is settled — screening it
-    // banned a user seconds after the owner whitelisted them.
+    // Redundant with isExempt() above now that whitelisted users are fully
+    // exempt, but kept: a trusted regular's NAME is settled, and screening it
+    // once banned a user seconds after the owner whitelisted them.
     if (isTrusted(nick)) return;
     // A registered nick is an identity someone owns; leave those to a human.
     if (isRegistered(nick)) return;
