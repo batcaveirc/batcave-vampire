@@ -105,17 +105,17 @@ jobs:
           # Which half of a room this bot invites: feminine | other | all.
           # 'all' while only one bot recruits — otherwise ~90% of every
           # source room is unreachable and it reports 'nobody eligible'.
-          RECRUIT_TARGET: ${{ secrets.RECRUIT_TARGET || 'all' }}
+          RECRUIT_TARGET: ${{ secrets.RECRUIT_TARGET || 'feminine' }}
           RECRUIT_REASK_DAYS: ${{ secrets.RECRUIT_REASK_DAYS || '21' }}
-          RECRUIT_ON: ${{ secrets.RECRUIT_ON || 'on' }}
+          RECRUIT_ON: ${{ secrets.RECRUIT_ON || 'off' }}
           # Long, random gaps. A metronome is what a bot looks like; these
           # numbers are what keep it looking like a person being friendly.
           # The first attempt after startup. Short on purpose: the host
           # restarts this bot every six hours and every restart resets the
           # timer, so a long first gap means it can never fire.
           RECRUIT_FIRST_MIN: ${{ secrets.RECRUIT_FIRST_MIN || '1' }}
-          RECRUIT_MIN_GAP_MIN: ${{ secrets.RECRUIT_MIN_GAP_MIN || '1' }}
-          RECRUIT_MAX_GAP_MIN: ${{ secrets.RECRUIT_MAX_GAP_MIN || '2' }}
+          RECRUIT_MIN_GAP_MIN: ${{ secrets.RECRUIT_MIN_GAP_MIN || '20' }}
+          RECRUIT_MAX_GAP_MIN: ${{ secrets.RECRUIT_MAX_GAP_MIN || '45' }}
           RECRUIT_ANNOUNCE_MIN: ${{ secrets.RECRUIT_ANNOUNCE_MIN || '240' }}
           FEMININE_HINTS: ${{ secrets.FEMININE_HINTS }}
           # Channel scrollback: InspIRCd chanhistory, lines:duration.

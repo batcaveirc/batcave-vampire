@@ -133,7 +133,17 @@ let aiDayKey = '';
 let reconnectTimer = null;
 let lastRx = Date.now();           // last byte received — drives the health check
 let pingProbeSent = false;
-const connectTime = Date.now();
+// Reset on EVERY connect, not once at process start. Dracula reconnects
+// without restarting — a RecvQ drop mid-raid is routine — and a connectTime
+// hours old made the +H backlog look newer than "when we connected", so
+// isReplay() returned false and the whole replay was processed as live
+// traffic. One rejoin produced nine flood warnings against somebody who had
+// simply been chatting normally for the previous two minutes.
+//
+// The `ready` flag cannot cover this: it is set 2.5s after REGISTRATION,
+// while the replay arrives on JOIN, which happens later. isReplay() is the
+// only guard that actually sees the backlog.
+let connectTime = Date.now();
 
 // Hosts protected from being kicked by other moderators, independent of nick
 // (e.g. *!*@ku0.6ol.235.110.IP). The WHITELIST is protected automatically.
@@ -437,6 +447,37 @@ function moderatedQuotaFor(tier) {
 // words so ordinary chat isn't over-flagged, but a nick is a single token —
 // "stupidbot" would never match "stupid". Use substring matching here, with a
 // minimum length so short words can't cause false hits.
+/**
+ * A nick built out of one of our regulars' names plus something filthy.
+ *
+ * This is the actual attack the room is under: somebody clones a known user's
+ * name elsewhere and arrives wearing it — "NessieNangiBhabhi" is a regular's
+ * nick with sexual words bolted on. Generic word screening catches the filth
+ * but misses the point, which is that a specific person is being targeted, and
+ * that the room reads the name before it reads anything else.
+ *
+ * Requires BOTH halves — a regular's name AND a filtered word — because a nick
+ * merely containing a regular's name is usually that regular ("Nessie|away",
+ * "Nessie_afk"). Demanding the pair keeps a nick change by the real person from
+ * ever being read as an attack on themselves.
+ *
+ * @returns {{who:string, word:string}|null}
+ */
+function clonesARegular(nick) {
+    const n = normalize(nick).replace(/\s+/g, '');
+    if (!n) return null;
+    const word = [...severeWords].find((w) => w && w.length >= 3 && n.includes(w))
+        || [...badwords].find((w) => w && w.length >= 4 && n.includes(w));
+    if (!word) return null;
+    for (const who of whitelist) {
+        // Short names would match half the room by accident.
+        if (!who || who.length < 4) continue;
+        if (n === who) continue;                  // that IS them
+        if (n.includes(who)) return { who, word };
+    }
+    return null;
+}
+
 function badNick(nick) {
     const n = normalize(nick).replace(/\s+/g, '');
     for (const w of severeWords) if (w && w.length >= 3 && n.includes(w)) return w;
@@ -1131,6 +1172,17 @@ async function screenNick(chan, nick) {
     if (isTrusted(nick)) return;
     // A registered nick is an identity someone owns; leave those to a human.
     if (isRegistered(nick)) return;
+    // Impersonation is judged before ordinary screening and answered harder:
+    // a cloned name is aimed at one person, and asking the attacker to "pick a
+    // different nick" invites them to try the next variation.
+    const clone = clonesARegular(nick);
+    if (clone) {
+        banUser(chan, nick, `impersonating ${clone.who} with an abusive nick`);
+        say(chan, `\x0304[MOD]\x03 That nick was built to target \x02${clone.who}\x02. `
+            + `Banned on sight — ${clone.who}, you did not have to see that. 🦇`);
+        log('MOD', `Clone attack: ${nick} targeted ${clone.who} (matched "${clone.word}").`);
+        return;
+    }
     const listHit = badNick(nick);
     const fromList = !!listHit;
     let bad = listHit ? 'filtered word in nick' : null;
@@ -1812,6 +1864,7 @@ function handleCommand(chan, nick, message) {
 function connect() {
     if (connecting) return;
     connecting = true; hasJoined = false; ready = false; currentNick = config.nick;
+    connectTime = Date.now();          // the replay guard's reference point
     log('INFO', `Connecting to ${config.host}:${config.port} (${config.tls ? 'TLS' : 'plaintext'}) as ${config.nick}...`);
 
     const onReady = () => {
