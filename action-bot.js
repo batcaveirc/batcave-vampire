@@ -451,6 +451,11 @@ function deservesVoice(nick, chan) {
     // and not because ChanServ's autovoice already gave it back.
     const until = serving.get(`${chanKey(chan)}|${nick.toLowerCase()}`);
     if (until && Date.now() < until) return false;
+    // Already known to have been advertising us elsewhere. Without this the
+    // room watches the bot hand somebody voice and take it back one second
+    // later — which is what it looked like live, and reads as the bot arguing
+    // with itself rather than making a decision.
+    if (watch.isFlagged(nick)) return false;
     if (chan && moderatedRooms.has(chanKey(chan))) return true;
     return isTrusted(nick) || (voiceRegistered && isRegistered(nick));
 }
@@ -542,7 +547,15 @@ function clonesARegular(nick) {
     const word = [...severeWords].find((w) => w && w.length >= 3 && n.includes(w))
         || [...badwords].find((w) => w && w.length >= 4 && n.includes(w));
     if (!word) return null;
-    for (const who of whitelist) {
+    // The whitelist is not the list of people worth protecting from this. It is
+    // the list of people with privileges, and most regulars are on neither.
+    // NangiPoojaBhabhi was built out of a regular's name and a filtered word and
+    // went unrecognised for exactly that reason. Anyone actually seen speaking
+    // here recently counts as a regular for this purpose.
+    const regulars = new Set([...whitelist]);
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    for (const [k, at] of Object.entries(seenUsers)) if (at > cutoff) regulars.add(k);
+    for (const who of regulars) {
         // Short names would match half the room by accident.
         if (!who || who.length < 4) continue;
         if (n === who) continue;                  // that IS them
@@ -1395,6 +1408,105 @@ function opProvenPeers(only) {
             log('OK', `Opped proven peer ${m} in ${c}.`);
         }
     }
+}
+
+// People heard organising against us elsewhere, and when we heard it. This is
+// the difference between knowing and preparing: a single name is noted quietly,
+// but several inside one window means something is being assembled, and the
+// doors close before it arrives instead of during it.
+const incoming = new Map();
+const INCOMING_WINDOW_MS = 10 * 60000;
+const INCOMING_FOR_LOCK = Number(process.env.WATCH_LOCK_AT || 3);
+// How long a flagged arrival stays muted without a moderator acting. Long
+// enough to outlast the auto-voice sweep and the person's patience for
+// spamming, short enough that a false positive fixes itself.
+const watchMuteMin = Number(process.env.WATCH_MUTE_MIN || 30);
+
+function stageIncoming(nick, why) {
+    const now = Date.now();
+    incoming.set(nick.toLowerCase(), now);
+    for (const [n, at] of incoming) if (now - at > INCOMING_WINDOW_MS) incoming.delete(n);
+    if (incoming.size < INCOMING_FOR_LOCK) return;
+    for (const c of config.channels) {
+        if (game.isGameChannel(chanKey(c))) continue;
+        // lockDoors already announces itself in a way that explains the room's
+        // own experience — invite-only for a moment — without naming anybody.
+        lockDoors(c, `${incoming.size} people organising about this room elsewhere`);
+    }
+    incoming.clear();
+}
+
+/**
+ * Answer "who is X" / "whois X" / "who is cloning X" from what we actually know.
+ *
+ * Deliberately NOT the AI. Every fact here comes from a record: the host the
+ * server told us, the account ChanServ confirmed, strikes we counted,
+ * where the watcher heard them, and whether the nick is built out of somebody
+ * else's name. An invented answer to this question is worse than no answer,
+ * because it will be believed and acted on.
+ *
+ * @returns {boolean} true when it answered, so the caller stops
+ */
+function answerWhoIs(chan, asker, msg) {
+    const name = config.nick.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const lower = msg.toLowerCase();
+    if (!new RegExp(`(^|[^a-z0-9])${name}([^a-z0-9]|$)`).test(lower)) return false;
+
+    const body = lower.replace(new RegExp(name, 'gi'), ' ').replace(/[?.!,]+$/, '').trim();
+    // "who is cloning aloo" asks the opposite question: not about the name
+    // given, but about who is wearing it.
+    const cloning = body.match(/\bwho(?:'s| is| are)?\s+(?:cloning|copying|impersonating|pretending to be)\s+(\S+)/);
+    if (cloning) return answerCloning(chan, asker, cloning[1]);
+
+    const m = body.match(/\b(?:who(?:'s| is| was)?|whois|what about|tell me about|info(?: on| about)?)\s+(\S+)/);
+    if (!m) return false;
+    const who = m[1].replace(/^[@+~&%]/, '');
+    if (!who || who.length < 2 || who === name) return false;
+
+    const k = who.toLowerCase();
+    const bits = [];
+    const role = isOwner(who) ? 'owner' : isAdmin(who) ? 'admin'
+        : whitelist.has(k) ? 'whitelisted' : 'ordinary user';
+    bits.push(role);
+    const acct = accountOf.get(k);
+    bits.push(acct ? `logged in as ${acct}` : 'not identified to services');
+    const host = hostOf.get(k);
+    if (host) bits.push(`host ${host}`);
+    const here = [...(members.get(chanKey(chan)) || new Set())]
+        .some((n) => n.toLowerCase() === k);
+    bits.push(here ? 'here now' : (seenUsers[k] ? `last seen ${ago(seenUsers[k])}` : 'never seen by me'));
+    const strikes = warns.get(k) || 0;
+    if (strikes) bits.push(`${strikes} strike${strikes === 1 ? '' : 's'}`);
+
+    const clone = clonesARegular(who);
+    if (clone) bits.push(`\x0304nick is built from "${clone.who}" plus "${clone.word}"\x03`);
+    const bad = badNick(who);
+    if (bad && !clone) bits.push(`\x0304nick contains "${bad}"\x03`);
+    const seenElsewhere = watch.seenIn(who);
+    if (seenElsewhere.length) bits.push(`heard talking about this room in ${seenElsewhere.join(', ')}`);
+    if (ignored.has(k)) bits.push('ignored by me');
+
+    say(chan, `\x0306[who]\x03 \x02${who}\x02 — ${bits.join(' · ')}. 🦇`);
+    return true;
+}
+
+/** "who is cloning aloo" — search the room for nicks wearing someone's name. */
+function answerCloning(chan, asker, victim) {
+    const v = normalize(victim).replace(/\s+/g, '');
+    if (!v || v.length < 3) return false;
+    const hits = [];
+    for (const c of config.channels) {
+        for (const n of members.get(chanKey(c)) || []) {
+            const nn = normalize(n).replace(/\s+/g, '');
+            if (nn === v) continue;                       // that IS them
+            if (nn.includes(v)) hits.push(n);
+        }
+    }
+    say(chan, hits.length
+        ? `\x0306[who]\x03 wearing \x02${victim}\x02's name right now: `
+          + `\x02${[...new Set(hits)].join('\x02, \x02')}\x02. 🦇`
+        : `\x0306[who]\x03 nobody here is using \x02${victim}\x02's name at the moment. 🦇`);
+    return true;
 }
 
 /** Every operator across our channels, each listed once. */
@@ -2586,10 +2698,30 @@ function handleLine(line) {
             const where = watch.seenIn(nick).join(', ');
             watch.forget(nick);                  // one greeting, not every join
             noteHostileArrival(c, 'flagged arrival');
-            if (opped.has(c)) send(`MODE ${c} -v ${nick}`);
-            say(c, `\x0304[WATCH]\x03 \x02${nick}\x02 just arrived — I heard them `
-                + `advertising this room in ${where}. Speaking is off until a `
-                + `moderator says otherwise. \x02!!unwarn ${nick}\x02 to clear it. 🦇`);
+            // The de-voice MUST be recorded, or it does not survive five
+            // seconds. Observed live: Dracula took Bilal's voice at 14:58:33
+            // and handed it straight back at 14:58:38, because the room is
+            // moderated, deservesVoice() returns true for everyone in a
+            // moderated room, and only `serving` overrides that. The mute was
+            // real, announced, and completely undone before anyone read it.
+            if (opped.has(c)) {
+                serving.set(`${c}|${nick.toLowerCase()}`, Date.now() + watchMuteMin * 60000);
+                send(`MODE ${c} -v ${nick}`);
+            }
+            // Not announced to the room. The owner's objection stands here as
+            // much as before arrival: naming somebody to everybody, for what
+            // they said in a different channel, reads badly and gives the room
+            // nothing to do. The PERSON is told why they cannot speak, which is
+            // the only thing they actually need, and the moderators are told
+            // who walked in.
+            notice(nick, `\x0304[BatCave]\x03 You arrive without voice: you were heard `
+                + `advertising this room in ${where}. A moderator can restore it. `
+                + 'This is not a ban.');
+            for (const m of channelMods()) {
+                notice(m, `\x0304[WATCH]\x03 \x02${nick}\x02 just arrived in ${c} — heard `
+                    + `advertising this room in ${where}. Muted for ${watchMuteMin}m. `
+                    + `\x02!!unwarn ${nick}\x02 to clear it.`);
+            }
             log('MOD', `Watch: flagged arrival ${nick} in ${c} (seen in ${where})`);
         }
 
@@ -2630,11 +2762,24 @@ function handleLine(line) {
         });
         if (heard.level === 'alert') {
             const where = watch.seenIn(nick).join(', ') || tgt;
-            for (const home of config.channels) {
-                say(home, `\x0304[WATCH]\x03 \x02${nick}\x02 is ${heard.why} in `
-                    + `${where}. They are not here yet. 🦇`);
+            // NOT announced to the room any more. It named a stranger to
+            // everybody, about something they had done somewhere else, before
+            // they had even arrived — which reads as paranoid, tells the room
+            // nothing it can act on, and hands the person a grievance if they
+            // do turn up. The moderators get the detail privately; the room
+            // gets a quieter door instead of a warning.
+            const mods = channelMods().filter((m) => isAdmin(m) || isOwner(m));
+            for (const m of mods) {
+                notice(m, `\x0304[WATCH]\x03 \x02${nick}\x02 is ${heard.why} in ${where}. `
+                    + `Not here yet — they will arrive without voice. `
+                    + `\x02!!info ${nick}\x02 for detail, \x02!!unwarn ${nick}\x02 to clear it.`);
             }
             log('MOD', `Watch: ${nick} ${heard.why} in ${tgt}`);
+            // The precaution, which is the part that was missing. One hostile
+            // being assembled elsewhere is noted and nothing more; several at
+            // once is a raid forming, and the door closes BEFORE it lands
+            // rather than after the first twenty joins.
+            stageIncoming(nick, heard.why);
         }
         return;
     }
@@ -2670,6 +2815,15 @@ function handleLine(line) {
         // bot answering machines in character. Two bots holding a conversation
         // is noise nobody asked for, and it costs an AI call each time.
         if (PROTECTED_NICKS.has(nick.toLowerCase()) || handshake.isCandidate(nick)) return;
+        // "dracula who is telugu_m23" — a QUESTION about somebody, which is not
+        // an order and was therefore reaching the AI, which cheerfully invented
+        // an answer in character. Asking who is cloning aloo got a joke about
+        // potatoes. This is the one thing the bot genuinely knows and it was
+        // the one thing it would not say. Answered from real records, never
+        // from the model, and it works for people who have already left —
+        // orders require the target to be PRESENT, which is exactly backwards
+        // for a question about someone who just vanished.
+        if (answerWhoIs(tgt, nick, msg)) return;
         if (new RegExp(`\\b${config.nick}\\b`, 'i').test(msg)) {
             getAIResponse(msg, nick).then((r) => { if (r) say(tgt, `${nick}: ${r}`); });
             return;

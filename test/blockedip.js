@@ -1,9 +1,10 @@
 // A server that accepts the socket then hangs up — a blocked address.
 // The bot must retry, count, and EXIT so a fresh runner takes over.
 const net=require('net'); const {spawn}=require('child_process');
-const PORT=6716; let out=''; let exited=null; let accepts=0;
+let PORT = 0;   /* the OS assigns one on listen — see below */ let out=''; let exited=null; let accepts=0;
 const srv=net.createServer((s)=>{ accepts++; s.destroy(); });
-srv.listen(PORT,'127.0.0.1',()=>{
+srv.listen(0,'127.0.0.1', () => {
+  PORT = srv.address().port;
   const bot=spawn('node',['../action-bot.js'],{
     env:{...process.env,IRC_SERVER:'127.0.0.1',IRC_PORT:String(PORT),IRC_TLS:'off',
       IRC_NICK:'Dracula',IRC_CHANNEL:'#batcave',GROQ_API_KEY:'k',SENTIENT_ON:'off'},

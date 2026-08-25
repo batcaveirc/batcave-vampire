@@ -1,8 +1,9 @@
 // A server that accepts TCP and then says NOTHING — the zombie's exact shape.
 const net=require('net'); const {spawn}=require('child_process');
-const PORT=6710; let sawStuck=false, exited=null;
+let PORT = 0;   /* the OS assigns one on listen — see below */ let sawStuck=false, exited=null;
 const srv=net.createServer(()=>{ /* accept, then total silence */ });
-srv.listen(PORT,'127.0.0.1',()=>{
+srv.listen(0,'127.0.0.1', () => {
+  PORT = srv.address().port;
   const bot=spawn('node',['../action-bot.js'],{
     env:{...process.env,IRC_SERVER:'127.0.0.1',IRC_PORT:String(PORT),IRC_TLS:'off',
       IRC_NICK:'Dracula',IRC_CHANNEL:'#batcave',GROQ_API_KEY:'k',SENTIENT_ON:'off'},

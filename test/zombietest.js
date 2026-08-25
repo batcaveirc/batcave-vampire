@@ -1,7 +1,7 @@
 // The real zombie: register successfully, then have the server vanish and
 // refuse to come back. The process must EXIT, not retry forever.
 const net=require('net'); const {spawn}=require('child_process');
-const PORT=6712; let exited=null, out=''; let srv;
+let PORT = 0;   /* the OS assigns one on listen — see below */ let exited=null, out=''; let srv;
 let allowConnect = true;
 srv = net.createServer((s)=>{
   if (!allowConnect) { s.destroy(); return; }        // later: refuse everything
@@ -17,7 +17,8 @@ srv = net.createServer((s)=>{
   // Registered — now kill it and never accept again.
   setTimeout(()=>{ allowConnect=false; try{s.destroy();}catch(e){} }, 6000);
 });
-srv.listen(PORT,'127.0.0.1',()=>{
+srv.listen(0,'127.0.0.1', () => {
+  PORT = srv.address().port;
   const bot=spawn('node',['../action-bot.js'],{
     env:{...process.env,IRC_SERVER:'127.0.0.1',IRC_PORT:String(PORT),IRC_TLS:'off',
       IRC_NICK:'Dracula',IRC_CHANNEL:'#batcave',GROQ_API_KEY:'k',SENTIENT_ON:'off',

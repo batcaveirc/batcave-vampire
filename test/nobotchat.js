@@ -1,6 +1,6 @@
 // Dracula must never AI-reply to another bot, however often they name him.
 const net=require('net'); const {spawn}=require('child_process');
-const PORT=6722; const out=[]; let sock=null;
+let PORT = 0;   /* the OS assigns one on listen — see below */ const out=[]; let sock=null;
 const srv=net.createServer((s)=>{sock=s;let buf='';
  s.on('data',(d)=>{buf+=d.toString();const L=buf.split('\r\n');buf=L.pop();
   for(const l of L){if(!l.trim())continue;out.push(l);
@@ -11,7 +11,8 @@ const srv=net.createServer((s)=>{sock=s;let buf='';
      s.write(`:f 353 Dracula = ${c} :@Dracula Carmilla Luna1 bob\r\n:f 366 Dracula ${c} :End\r\n`);}
   }});
 });
-srv.listen(PORT,'127.0.0.1',async()=>{
+srv.listen(0,'127.0.0.1', async() => {
+  PORT = srv.address().port;
  const bot=spawn('node',['-r',`${__dirname}/groqstub.js`,
    '../action-bot.js'],{
    env:{...process.env,IRC_SERVER:'127.0.0.1',IRC_PORT:String(PORT),IRC_TLS:'off',

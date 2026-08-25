@@ -1,7 +1,7 @@
 // With ChanServ autovoicing everyone, +v must NOT confer trust — otherwise the
 // whole room is "trusted" and nobody can ever be punished.
 const net=require('net'); const {spawn}=require('child_process');
-const PORT=6706; const out=[]; let sock=null;
+let PORT = 0;   /* the OS assigns one on listen — see below */ const out=[]; let sock=null;
 // Everyone arrives already voiced, exactly as `*!*@* +V` produces.
 const NAMES = '@Dracula +joker +alice +bob +carol +dave';
 const srv=net.createServer((s)=>{sock=s;let buf='';
@@ -16,7 +16,8 @@ const srv=net.createServer((s)=>{sock=s;let buf='';
    if(/^WHO (\S+)/.test(l))s.write(`:f 315 Dracula ${l.match(/^WHO (\S+)/)[1]} :End\r\n`);
   }});
 });
-srv.listen(PORT,'127.0.0.1',async()=>{
+srv.listen(0,'127.0.0.1', async() => {
+  PORT = srv.address().port;
  const bot=spawn('node',['-r',`${__dirname}/groqstub.js`,
    '../action-bot.js'],{
    env:{...process.env,IRC_SERVER:'127.0.0.1',IRC_PORT:String(PORT),IRC_TLS:'off',
