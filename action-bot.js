@@ -8,6 +8,7 @@ const { Retort, shieldLine } = require('./retort');
 const { geminiChat } = require('./gemini');
 const { Guardian, victimOf } = require('./guardian');
 const { Watch } = require('./watch');
+const { Handshake } = require('./handshake');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
@@ -213,6 +214,14 @@ const bot = { send, say, notice, get nick() { return currentNick; } };
 const game = new FindIt(bot);
 // Off with RETORT=off; on by default, because a room that sees an abuser
 // answered reads very differently from one that only sees a mod log line.
+// Recognising the standby without services. He has no NickServ account by
+// design, so the name proves nothing — anyone may type /nick Renfield, and this
+// room is under attack by somebody who does exactly that for a living. He is
+// challenged instead, and gets ops only if he can answer.
+const handshake = new Handshake({
+    secret: process.env.PEER_SECRET || '',
+    peers: (process.env.PEER_BOTS || 'Renfield').split(',').map((x) => x.trim()).filter(Boolean),
+});
 const watch = new Watch({
     enabled: !/^(0|off|false|no)$/i.test(process.env.WATCH || 'on'),
     homes: config.channels,
@@ -2190,6 +2199,33 @@ function handleLine(line) {
     }
     // ChanServ talks back in NOTICEs. Both the history command and the services
     // health check listen here; each is inert unless it is actually waiting.
+    // The answer to a challenge. Only ever grants ops — never anything else,
+    // and only to a nick we ourselves challenged moments ago.
+    if (command === 'NOTICE' && nick && /^AUTH\s+\S+$/.test(msg.trim())) {
+        const answer = msg.trim().split(/\s+/)[1];
+        if (handshake.isPending(nick)) {
+            if (handshake.verify(nick, answer)) {
+                log('OK', `${nick} proved itself — granting ops.`);
+                for (const c of config.channels) {
+                    if (opped.has(chanKey(c))
+                        && [...(members.get(chanKey(c)) || [])].some((m) => m.toLowerCase() === nick.toLowerCase())) {
+                        send(`MODE ${c} +o ${nick}`);
+                    }
+                }
+            } else {
+                // Somebody wearing the standby's name who cannot answer for it.
+                // Worth saying out loud: nobody else should ever be receiving
+                // this challenge, so a wrong answer is an attempt, not a slip.
+                log('ERR', `${nick} FAILED the peer challenge — not our bot.`);
+                for (const c of config.channels) {
+                    say(c, `\x0304[MOD]\x03 \x02${nick}\x02 is using our standby's name and `
+                        + 'could not prove it. Granting nothing. 🦇');
+                }
+            }
+        }
+        return;
+    }
+
     if (command === 'NOTICE' && /^chanserv$/i.test(nick || '')) {
         if (servicesReport) servicesReport(msg);
     }
@@ -2388,6 +2424,16 @@ function handleLine(line) {
             }
         }
         // Strict mode: the NICK itself is screened - word list first, then AI.
+        // A nick claiming to be our standby. Ask it to prove that.
+        if (ready && handshake.isCandidate(nick)) {
+            const nonce = handshake.challenge(nick);
+            if (nonce) {
+                send(`NOTICE ${nick} :AUTH ${nonce}`);
+                log('INFO', `Challenged ${nick} in ${c}.`);
+            }
+            return;                      // never nick-screen a peer under test
+        }
+
         if (ready && strictNicks && !moderationOff(c)) { screenNick(c, nick); }
 
         // Somebody we heard organising this, arriving. Not a ban: advertising a

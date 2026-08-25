@@ -61,6 +61,11 @@ jobs:
           # Exit if the bot cannot hold a connection for this long, so the
           # queued run takes the slot instead of waiting behind a dead one.
           DOWN_EXIT_MIN: ${{ secrets.DOWN_EXIT_MIN || '12' }}
+          # Proving the standby is ours without a services account. Never
+          # trust the NAME alone — the nick is unregistered and anyone can
+          # take it. No secret set means no recognition at all.
+          PEER_SECRET: ${{ secrets.PEER_SECRET }}
+          PEER_BOTS: ${{ secrets.PEER_BOTS || 'Renfield' }}
           WATCH: ${{ secrets.WATCH || 'on' }}
           GUARDIAN: ${{ secrets.GUARDIAN || 'on' }}
           GUARDIAN_MINUTES: ${{ secrets.GUARDIAN_MINUTES || '10' }}
