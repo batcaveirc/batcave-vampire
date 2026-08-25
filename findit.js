@@ -127,7 +127,17 @@ class FindIt {
         this.active = true;
         this.phase = 'lobby';
         this.id = 1000 + rnd(9000);
-        this.room = chan;
+        // Host in the dedicated game room when one is configured, wherever the
+        // game was called from. The game borrows the topic line as a scoreboard
+        // and quiets players as they are killed — neither belongs in the room
+        // people are trying to talk in, and the topic-wiping this used to cause
+        // is exactly why the owner asked for it to move.
+        this.room = (process.env.FINDIT_ROOM || '').trim() || chan;
+        this.calledFrom = chan;
+        if (this.room !== chan) {
+            this.bot.send(`JOIN ${this.room}`);
+            this.bot.say(chan, `\x0306[FindIt]\x03 Starting in \x02${this.room}\x02 — join me there.`);
+        }
 
         // Creating a channel makes us its operator, which is how we get to run it.
         // One JOIN for all of them: seven separate lines is a burst the outbound
@@ -341,6 +351,16 @@ class FindIt {
         this.updateBoard();
     }
 
+    /** Remember the room's real topic before we borrow the topic line. */
+    rememberTopic(text) {
+        // Only the first one, and never our own scoreboard — otherwise the
+        // second update saves "Findit 3 · Tasks 1/5" as the room's topic and
+        // restores THAT at the end.
+        if (this.savedTopic === undefined && !/^Findit \d/.test(String(text || ''))) {
+            this.savedTopic = String(text || '');
+        }
+    }
+
     updateBoard() {
         if (!this.active) return;
         this.bot.send(`TOPIC ${this.room} :Findit ${this.id} · Tasks `
@@ -543,7 +563,15 @@ class FindIt {
         for (const p of this.players.values()) {
             this.bot.send(`MODE ${this.room} -q ${p.nick}!*@*`);
         }
-        if (this.room) this.bot.send(`TOPIC ${this.room} :`);
+        // Put the room's own topic BACK. Clearing it wiped whatever the
+        // channel had — its rules, its welcome, the bot prefixes — every time a
+        // game ended, and nobody connected the empty topic to the game that had
+        // just finished. A game is a guest in the room; it leaves things as it
+        // found them.
+        if (this.room) {
+            if (this.savedTopic) this.bot.send(`TOPIC ${this.room} :${this.savedTopic}`);
+            else this.bot.send(`TOPIC ${this.room} :`);
+        }
         for (const r of [...ROOMS, GHOSTS]) this.bot.send(`PART ${this.chan(r)} :game over`);
     }
 

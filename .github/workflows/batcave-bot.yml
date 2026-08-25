@@ -136,6 +136,10 @@ jobs:
           CHANNEL_HISTORY_SPEC: ${{ secrets.CHANNEL_HISTORY_SPEC || '50:3d' }}
 
           # ── Findit game pacing (seconds unless noted) ────────────────────
+          # Where FindIt runs. Its own room by default: the game borrows the
+          # topic line for a scoreboard and quiets players as they are killed,
+          # neither of which belongs in the room people are trying to chat in.
+          FINDIT_ROOM: ${{ secrets.FINDIT_ROOM || '#batcave-games' }}
           FINDIT_LOBBY_SECS: ${{ secrets.FINDIT_LOBBY_SECS || '90' }}
           FINDIT_GRACE_SECS: ${{ secrets.FINDIT_GRACE_SECS || '60' }}
           FINDIT_KILL_CD: ${{ secrets.FINDIT_KILL_CD || '45' }}

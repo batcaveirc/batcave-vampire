@@ -2352,6 +2352,15 @@ function handleLine(line) {
     // finished first, in which case the earlier sweep saw nobody as registered.
     if (command === '315') voiceSweep(chanKey(params[1] || ''));
 
+    // The room's real topic, so a game that borrows the topic line can put it
+    // back. Captured from both the reply on join (332) and any later change.
+    if (command === '332' && params[2] !== undefined) {
+        game.rememberTopic(params.slice(2).join(' ').replace(/^:/, ''));
+    }
+    if (command === 'TOPIC' && nick) {
+        game.rememberTopic(msg);
+    }
+
     if (command === '353') {                       // NAMES reply -> membership + our own status
         const ch = chanKey(params[2] || '');
         const set = members.get(ch) || new Set();
