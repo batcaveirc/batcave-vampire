@@ -138,6 +138,21 @@ let geminiNoted = false;   // log the switch once, not per message
 let aiDayKey = '';
 let reconnectTimer = null;
 let lastRx = Date.now();           // last byte received — drives the health check
+// When the current connection attempt began. Covers the narrow case where TCP
+// itself hangs before `onReady` runs — rare, but nothing else watches for it.
+// NOT the cause of the 2026-08-25 outage: onReady clears `connecting` as soon
+// as TCP connects, well before registration, so during a registration stall
+// this flag is already false. See lastHealthy below for what actually happened.
+let connectStartedAt = 0;
+// When we last had a working connection. The pre-registration exit only covers
+// a bot that has NEVER reached 001 — once it has, a permanently blocked address
+// means scheduleReconnect() retries on a five-minute cap forever. The job stays
+// alive with no bot attached and holds the workflow's concurrency slot shut
+// against the run that would replace it. That is the two-hour outage of
+// 2026-08-25: connected at 22:54, gone by 22:55, still "in_progress" at 01:14.
+let lastHealthy = Date.now();
+const DOWN_TOO_LONG_MS = parseInt(process.env.DOWN_EXIT_MIN || '12', 10) * 60000;
+const CONNECT_DEADLINE_MS = 90000;
 let pingProbeSent = false;
 // Reset on EVERY connect, not once at process start. Dracula reconnects
 // without restarting — a RecvQ drop mid-raid is routine — and a connectTime
@@ -1922,6 +1937,7 @@ function connect() {
     if (connecting) return;
     connecting = true; hasJoined = false; ready = false; currentNick = config.nick;
     connectTime = Date.now();          // the replay guard's reference point
+    connectStartedAt = Date.now();     // the stall watchdog's reference point
     log('INFO', `Connecting to ${config.host}:${config.port} (${config.tls ? 'TLS' : 'plaintext'}) as ${config.nick}...`);
 
     const onReady = () => {
@@ -2082,6 +2098,7 @@ function handleLine(line) {
     if (command === '001') {
         reconnectAttempts = 0;
         everRegistered = true;
+        lastHealthy = Date.now();
         preRegFailures = 0;
         // +g (callerid) refuses private messages from anyone not on our accept
         // list, +R from anyone unregistered. Enforced by the SERVER, so a DM
@@ -2492,9 +2509,49 @@ const RX_SILENCE_PROBE_MS = 180000;   // 3m quiet → send our own PING
 const RX_SILENCE_DEAD_MS = 260000;    // still quiet after that → declare it dead
 
 connect();
+// Last line of defence. Whatever else goes wrong, a process that has never
+// once registered is not a bot — it is a job holding the concurrency slot shut
+// against the run that would replace it. Exiting non-zero ends the job, frees
+// the slot, and the queued run starts within minutes on a different runner.
+// Five minutes is generous: a healthy start reaches 001 in under ten seconds.
+// A bot that cannot get back is worth no more than one that never arrived, and
+// the remedy is the same: end the job so a fresh runner — with a fresh address —
+// takes the slot. Checked on the health interval rather than once, because the
+// failure can begin at any point in a six-hour shift.
+setInterval(() => {
+    if (ready && socket && socket.writable) { lastHealthy = Date.now(); return; }
+    const down = Date.now() - lastHealthy;
+    if (down > DOWN_TOO_LONG_MS) {
+        log('ERR', `No working connection for ${Math.round(down / 60000)}m. Exiting so the `
+            + 'queued run takes the slot instead of waiting behind a bot that is not there.');
+        process.exit(1);
+    }
+}, 30000);
+
+setTimeout(() => {
+    if (!everRegistered) {
+        log('ERR', 'Five minutes without ever registering. Exiting so the queued '
+            + 'run can take the slot rather than waiting six hours behind a dead one.');
+        process.exit(1);
+    }
+}, 5 * 60000);
+
 setInterval(() => {
     if (!connecting && !reconnectTimer && (!socket || socket.destroyed || !socket.writable)) {
         connect();
+        return;
+    }
+    // Checked BEFORE the `connecting` guard below, because this is the one
+    // failure that happens while connecting is stuck true. Destroying the
+    // socket makes it fire 'close', which routes into scheduleReconnect() and
+    // the existing pre-registration counter — so a genuinely blocked address
+    // still exits after five tries and hands over to a fresh runner.
+    if (connecting && connectStartedAt && Date.now() - connectStartedAt > CONNECT_DEADLINE_MS) {
+        log('WARN', `Stuck connecting for ${Math.round((Date.now() - connectStartedAt) / 1000)}s `
+            + '— giving up on this attempt.');
+        connectStartedAt = 0;
+        connecting = false;
+        try { socket && socket.destroy(); } catch (e) { /* close handler takes it from here */ }
         return;
     }
     if (!socket || !socket.writable || connecting) return;

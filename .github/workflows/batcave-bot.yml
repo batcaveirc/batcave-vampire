@@ -58,6 +58,9 @@ jobs:
           # Temporary ops for a whitelisted regular who is being targeted.
           # Early warning: listen in the recruiting rooms for our channel
           # being advertised, and meet a flagged arrival at the door.
+          # Exit if the bot cannot hold a connection for this long, so the
+          # queued run takes the slot instead of waiting behind a dead one.
+          DOWN_EXIT_MIN: ${{ secrets.DOWN_EXIT_MIN || '12' }}
           WATCH: ${{ secrets.WATCH || 'on' }}
           GUARDIAN: ${{ secrets.GUARDIAN || 'on' }}
           GUARDIAN_MINUTES: ${{ secrets.GUARDIAN_MINUTES || '10' }}
