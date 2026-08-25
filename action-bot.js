@@ -2023,7 +2023,14 @@ function scheduleReconnect() {
             process.exit(1);
         }
         log('INFO', `Rejected before registering (${preRegFailures}/5) — retrying in 20s.`);
-        reconnectTimer = setTimeout(connect, 20000);
+        // Clear the handle before reconnecting. scheduleReconnect() opens with
+        // `if (reconnectTimer) return;`, so leaving it set means the FIRST
+        // pre-registration failure is also the last: every later close returns
+        // at that guard, the counter never advances, and the five-strike exit
+        // never fires. Observed 2026-08-25 on a blocked runner address — one
+        // retry, then four minutes of silence until the startup watchdog
+        // stepped in. The registered branch below always got this right.
+        reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 20000);
         return;
     }
 
