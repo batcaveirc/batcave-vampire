@@ -2548,7 +2548,12 @@ function handleLine(line) {
         // doing so silenced every reply once sentient mode became the default.
         if (sentientMode) sentientModeration(tgt, nick, msg);
 
-        // Reply if mentioned by name
+        // Reply if mentioned by name — but never to another bot. The standbys
+        // report their status as "dracula: here, luna1: here", which names us
+        // and so tripped this on every status command: the room filled with the
+        // bot answering machines in character. Two bots holding a conversation
+        // is noise nobody asked for, and it costs an AI call each time.
+        if (PROTECTED_NICKS.has(nick.toLowerCase()) || handshake.isCandidate(nick)) return;
         if (new RegExp(`\\b${config.nick}\\b`, 'i').test(msg)) {
             getAIResponse(msg, nick).then((r) => { if (r) say(tgt, `${nick}: ${r}`); });
             return;
