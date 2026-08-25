@@ -2128,6 +2128,14 @@ function handleLine(line) {
         // runner's real address in everyone's WHOIS. Hiding and unmasking are
         // opposite things and one letter apart.
         send(`MODE ${currentNick} +gIiR`);
+    // +g closes DMs against flood, which also blocks the peer handshake in BOTH
+    // directions: our challenge never arrives, and their answer would be
+    // refused coming back. ACCEPT lets exactly the standby bots through and
+    // nobody else, so the flood protection stays and the handshake works.
+    // The server advertises ACCEPT=30 in 005, so a short peer list fits easily.
+    for (const p of (process.env.PEER_BOTS || 'Renfield').split(',').map((x) => x.trim()).filter(Boolean)) {
+        send(`ACCEPT +${p}`);
+    }
         send('PRIVMSG HostServ :ON');        // reapply the vhost after a reconnect
         log('OK', `Registered as ${currentNick}.`);
         // Identify to the ACCOUNT immediately — the two-arg form works even if NickServ
