@@ -2371,7 +2371,23 @@ function handleLine(line) {
         // arrive, once, and survives every restart. Persistent things go to
         // services; the bot only says something when something happened.
     } else if (command === '366') {           // end of NAMES -> membership known
-        voiceSweep(chanKey(params[1] || ''));
+        const ch = chanKey(params[1] || '');
+        voiceSweep(ch);
+        // Challenge any standby ALREADY in the room. Challenging only on JOIN
+        // meant a peer that was here before we restarted was never asked at
+        // all — and since this bot restarts every six hours while the standbys
+        // persist, that is the normal case, not the edge one. Observed live:
+        // three standbys sat voiced and un-opped because they had simply
+        // arrived first.
+        for (const n of members.get(ch) || []) {
+            if (!handshake.isCandidate(n) || handshake.isPending(n)) continue;
+            if (/[~&@%]/.test(prefixIn(ch, n))) continue;      // already has status
+            const nonce = handshake.challenge(n);
+            if (nonce) {
+                send(`NOTICE ${n} :AUTH ${nonce}`);
+                log('INFO', `Challenged ${n}, already present in ${ch}.`);
+            }
+        }
     } else if (command === 'JOIN' && nick) {
         const c = chanKey((tgt || msg).replace(/^:/, ''));
         if (!isOurChannel(c)) return;
