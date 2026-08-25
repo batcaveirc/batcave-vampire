@@ -228,6 +228,20 @@ const handshake = new Handshake({
 // registration accepted nobody — the standbys had not connected yet — and
 // their answers were refused coming back, silently, for five hours.
 const acceptedPeers = new Set();
+// Peers that have ALREADY proved themselves. Ops used to be granted once, in
+// whatever rooms we happened to be opped in at that exact moment — so a standby
+// that joined a second channel a beat later never got ops there, and nothing
+// ever revisited the decision. Proof is remembered instead, and applied again
+// on every later join and every time we gain ops ourselves.
+const provenPeers = new Set();
+// A failed challenge is announced once per nick per ten minutes. A standby
+// stuck in a reconnect loop against a rotated key would otherwise repeat the
+// same accusation every few seconds for as long as the split lasted.
+const recentlyCalledOut = new Map();
+setInterval(() => {
+    const cutoff = Date.now() - 600000;
+    for (const [n, at] of recentlyCalledOut) if (at < cutoff) recentlyCalledOut.delete(n);
+}, 120000).unref?.();
 function acceptPeer(nick) {
     const n = (nick || '').toLowerCase();
     if (!handshake.isCandidate(n) || acceptedPeers.has(n)) return;
@@ -1355,6 +1369,34 @@ async function selfCheckAI() {
 let servicesDown = false;
 let servicesReport = null;      // set while awaiting ChanServ's INFO reply
 
+/**
+ * Give every proven peer ops in every room where we can.
+ *
+ * Called from three places on purpose — after a successful handshake, when a
+ * proven peer joins anywhere, and when WE gain ops — because any one of those
+ * three can be the last precondition to fall into place, and which one it is
+ * depends on join order and on how quickly ChanServ answers. Re-sending +o to
+ * somebody who already has it costs one line and the server ignores it, which
+ * is a far better failure than a bot silently unopped in one of two rooms.
+ *
+ * @param {string} [only] restrict to a single channel, when that is all that changed
+ */
+function opProvenPeers(only) {
+    if (!provenPeers.size) return;
+    for (const c of config.channels) {
+        const ch = chanKey(c);
+        if (only && ch !== chanKey(only)) continue;
+        if (!opped.has(ch)) continue;
+        for (const m of members.get(ch) || []) {
+            const low = m.toLowerCase();
+            if (!provenPeers.has(low)) continue;
+            if ((prefixOf.get(`${ch}|${low}`) || '').includes('@')) continue;   // already opped
+            send(`MODE ${c} +o ${m}`);
+            log('OK', `Opped proven peer ${m} in ${c}.`);
+        }
+    }
+}
+
 /** Every operator across our channels, each listed once. */
 function channelMods() {
     const seen = new Map();
@@ -1902,13 +1944,19 @@ function handleCommand(chan, nick, message) {
                 recruiter.start(log);       // idempotent; the timers may not exist yet
                 recruiter.soon();           // and don't inherit the gap rolled while it was off
                 reply(recruiter.enabled
-                    ? `Recruiting from ${recruiter.channels.join(', ')} — next attempt ${recruiter.dueIn()}.`
+                    ? `Recruiting from ${recruiter.channels.join(', ')} — ${recruiter.perRound} per attempt, `
+                      + `next attempt ${recruiter.dueIn()}.`
                     : 'No RECRUIT_CHANNELS set.');
             }
             else if (args[0] === 'off') { recruiter.enabled = false; reply('Recruiting off.'); }
             else if (args[0] === 'now') {
-                const r = recruiter.inviteOne();
-                if (r) { reply(`Invited ${r.target} from ${r.chan}.`); break; }
+                // A number invites that many at once: !!recruit now 10.
+                const want = Math.min(25, Math.max(0, parseInt(args[1] || '0', 10))) || undefined;
+                const sent = recruiter.inviteRound(want);
+                if (sent.length) {
+                    reply(`Invited ${sent.length}: ${sent.map((r) => `${r.target} (${r.chan})`).join(', ')}.`);
+                    break;
+                }
                 // Say WHY. "Nobody eligible" cannot tell four different
                 // problems apart, and each needs a different fix.
                 reply(`Nobody eligible. ${recruiter.enabled ? '' : 'Recruiting is OFF. '}`);
@@ -1916,8 +1964,9 @@ function handleCommand(chan, nick, message) {
             } else {
                 reply(`Recruiting is ${recruiter.enabled ? 'ON' : 'OFF'}`
                     + `${recruiter.channels.length ? ` from ${recruiter.channels.join(', ')}` : ' (no channels set)'}`
-                    + `; ${recruiter.invited.size} invited so far, next attempt ${recruiter.dueIn()}. `
-                    + '!!recruit on|off|now');
+                    + `; ${recruiter.invited.size} invited so far, ${recruiter.perRound} per attempt, `
+                    + `next attempt ${recruiter.dueIn()}. `
+                    + '!!recruit on|off|now [n]');
                 // An INVITE goes privately to whoever is invited, so the room
                 // sees nothing whether this is working perfectly or not at all.
                 // Show the last few by name, or say plainly that there are none.
@@ -2110,6 +2159,10 @@ function handleLine(line) {
     }
     if (command === 'NICK' && nick) {
         const newNick = (params[0] || '').replace(/^:/, '');
+        // Same reasoning as QUIT: whoever picks up the abandoned name has
+        // proved nothing, and proof does not travel to the new one either.
+        provenPeers.delete(nick.toLowerCase());
+        provenPeers.delete((newNick || '').toLowerCase());
         if (nick.toLowerCase() === currentNick.toLowerCase()) {
             currentNick = newNick || currentNick;
             // NickServ enforcement renames an unidentified protected nick to
@@ -2232,21 +2285,24 @@ function handleLine(line) {
         if (handshake.isPending(nick)) {
             if (handshake.verify(nick, answer)) {
                 log('OK', `${nick} proved itself — granting ops.`);
-                for (const c of config.channels) {
-                    if (opped.has(chanKey(c))
-                        && [...(members.get(chanKey(c)) || [])].some((m) => m.toLowerCase() === nick.toLowerCase())) {
-                        send(`MODE ${c} +o ${nick}`);
-                    }
-                }
+                provenPeers.add(nick.toLowerCase());
+                opProvenPeers();
             } else {
                 // Somebody wearing the standby's name who cannot answer for it.
                 // Worth saying out loud: nobody else should ever be receiving
                 // this challenge, so a wrong answer is an attempt, not a slip.
                 log('ERR', `${nick} failed the peer challenge: ${handshake.lastFailure}`);
-                for (const c of config.channels) {
-                    // Only shout if it looks like an intruder. A key rotation is
-                    // our own mess and does not belong in the channel.
-                    if (!/rotation/.test(handshake.lastFailure)) {
+                // This used to stay silent whenever the failure MIGHT have been
+                // a key rotation — which is every wrong answer, since the two
+                // are indistinguishable from here. The result was that a
+                // genuine attempt to wear a standby's name produced nothing in
+                // the room at all. Both cases are worth saying out loud: one is
+                // an impersonation, the other means our own mesh has split, and
+                // the owner needs to know either way. The wording is true of
+                // both, and accuses nobody.
+                if (!recentlyCalledOut.has(nick.toLowerCase())) {
+                    recentlyCalledOut.set(nick.toLowerCase(), Date.now());
+                    for (const c of config.channels) {
                         say(c, `\x0304[MOD]\x03 \x02${nick}\x02 is using our standby's name and `
                             + 'could not prove it. Granting nothing. 🦇');
                     }
@@ -2297,7 +2353,13 @@ function handleLine(line) {
                                              : cur.split(sym).join(''));
                 }
                 if (ch === 'o' && who.toLowerCase() === currentNick.toLowerCase()) {
-                    if (adding) { opped.add(chanKey(tgt)); log('OK', `Got ops in ${tgt}.`); }
+                    if (adding) {
+                        opped.add(chanKey(tgt));
+                        log('OK', `Got ops in ${tgt}.`);
+                        // Peers may have proved themselves while we were
+                        // powerless here. Now we can act on it.
+                        opProvenPeers(tgt);
+                    }
                     else { opped.delete(chanKey(tgt)); log('WARN', `Lost ops in ${tgt}.`); }
                 }
             }
@@ -2389,6 +2451,14 @@ function handleLine(line) {
     }
     if (command === 'QUIT' && nick) {
         for (const set of members.values()) set.delete(nick);
+        // Proof belongs to a CONNECTION, not to a name. These bots run on
+        // runners that die every six hours, and this room is under attack by
+        // somebody whose entire method is wearing other people's names — so a
+        // standby that leaves must prove itself again when it returns.
+        // Otherwise the first person to grab the freed nick is handed ops.
+        if (provenPeers.delete(nick.toLowerCase())) {
+            log('INFO', `${nick} left — it must prove itself again to be trusted.`);
+        }
         game.onQuit(nick);
     }
 
@@ -2483,6 +2553,19 @@ function handleLine(line) {
         // A nick claiming to be our standby. Ask it to prove that.
         if (ready && handshake.isCandidate(nick)) {
             acceptPeer(nick);              // so their answer can reach us
+            // The shortcut applies ONLY to a peer we can already see in a
+            // DIFFERENT room. That is the real case — one connection joining
+            // its second channel — and it is the one that races. An arrival we
+            // cannot already account for is challenged however familiar the
+            // name looks, because a familiar name is exactly what an impostor
+            // brings.
+            const seenElsewhere = [...members.entries()]
+                .some(([ch, set]) => ch !== chanKey(c)
+                    && [...set].some((m) => m.toLowerCase() === nick.toLowerCase()));
+            if (provenPeers.has(nick.toLowerCase()) && seenElsewhere) {
+                setTimeout(() => opProvenPeers(c), 1500);
+                return;
+            }
             const nonce = handshake.challenge(nick);
             if (nonce) {
                 send(`NOTICE ${nick} :AUTH ${nonce}`);
@@ -2661,9 +2744,18 @@ setInterval(() => {
     // socket makes it fire 'close', which routes into scheduleReconnect() and
     // the existing pre-registration counter — so a genuinely blocked address
     // still exits after five tries and hands over to a fresh runner.
-    if (connecting && connectStartedAt && Date.now() - connectStartedAt > CONNECT_DEADLINE_MS) {
+    // NOT gated on `connecting`. That flag is cleared the instant TCP
+    // connects, which is BEFORE registration — so the one zombie shape this
+    // was written for, a server that accepts the connection and then never
+    // says another word, sailed straight past it. The bot sat with a writable
+    // socket and an unfinished handshake, and every other check here saw a
+    // healthy connection. `ready` is the honest signal: it is reset per
+    // attempt in connect() and only set once the server has actually
+    // registered us, so this now covers a stalled TCP connect and a stalled
+    // registration with the same condition.
+    if (!ready && connectStartedAt && Date.now() - connectStartedAt > CONNECT_DEADLINE_MS) {
         log('WARN', `Stuck connecting for ${Math.round((Date.now() - connectStartedAt) / 1000)}s `
-            + '— giving up on this attempt.');
+            + '(no registration) — giving up on this attempt.');
         connectStartedAt = 0;
         connecting = false;
         try { socket && socket.destroy(); } catch (e) { /* close handler takes it from here */ }

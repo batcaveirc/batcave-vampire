@@ -34,6 +34,17 @@ const ANNOUNCE_GAP_MS = parseInt(process.env.RECRUIT_ANNOUNCE_MIN || '240', 10) 
 // mean it never fires at all. A short opening interval makes the feature
 // survive its own deployment; the long gaps take over from the second firing.
 const FIRST_GAP_MS = parseInt(process.env.RECRUIT_FIRST_MIN || '1', 10) * 60000;
+// How many people each firing invites. This was fixed at one, which is why
+// recruiting felt slow no matter how short the gap got: at one a minute, and
+// with most invitations simply ignored, an hour of recruiting reaches sixty
+// people and brings perhaps one. The gap controls how OFTEN we ask; this
+// controls how MANY, and it was the one that was actually limiting.
+//
+// Kept modest on purpose. An invite is delivered privately and costs the
+// recipient nothing, but a burst of them from one client is what invite-flood
+// protection is looking for, and this bot has been banned from a channel
+// before. Three a minute across several rooms is brisk without being a flood.
+const PER_ROUND = Math.max(1, parseInt(process.env.RECRUIT_PER_ROUND || '3', 10));
 // How long before somebody may be invited again. Long enough that a second
 // invitation reads as a fresh welcome rather than nagging.
 const REASK_AFTER_MS = parseInt(process.env.RECRUIT_REASK_DAYS || '21', 10) * 86400000;
@@ -215,8 +226,7 @@ class Recruiter {
      * Try the channels in random order and stop at the first with somebody in
      * it. Picking ONE at random and giving up when it was empty meant a room
      * the bot cannot even enter — #allindiachat.com bans it, so it yields zero
-     * every time — silently ate a third of all attempts. Still one invitation
-     * per firing; only the search is exhaustive, not the sending.
+     * every time — silently ate a third of all attempts.
      */
     inviteOne() {
         if (!this.enabled) return null;
@@ -235,6 +245,26 @@ class Recruiter {
             return { target, chan };
         }
         return null;
+    }
+
+    /**
+     * One firing's worth of invitations.
+     *
+     * Drawn one at a time rather than as a batch from a single room, so the
+     * picks spread across whichever channels currently have eligible people —
+     * eligible() re-runs each time and invited() is updated between draws, so
+     * nobody is asked twice in the same round.
+     *
+     * @param {number} [n] how many to send; defaults to RECRUIT_PER_ROUND
+     */
+    inviteRound(n = PER_ROUND) {
+        const sent = [];
+        for (let i = 0; i < n; i++) {
+            const r = this.inviteOne();
+            if (!r) break;                      // nobody left anywhere
+            sent.push(r);
+        }
+        return sent;
     }
 
     announce() {
@@ -288,8 +318,14 @@ class Recruiter {
         this.timers[name] = setTimeout(() => {
             try {
                 if (name === 'invite') {
-                    const r = this.inviteOne();
-                    if (r) this.log('INFO', `Invited ${r.target} from ${r.chan}.`);
+                    const sent = this.inviteRound();
+                    if (sent.length) {
+                        this.log('INFO', `Invited ${sent.map((r) => `${r.target}(${r.chan})`).join(', ')}.`);
+                    } else {
+                        // Silence here used to be indistinguishable from working:
+                        // no invite, no log, and the room simply stayed empty.
+                        this.log('WARN', 'Nobody eligible in any recruit channel this round.');
+                    }
                 } else {
                     const c = this.announce();
                     if (c) this.log('INFO', `Announced in ${c}.`);
@@ -310,6 +346,9 @@ class Recruiter {
         if (!this.started) return;
         this.loop('invite', FIRST_GAP_MS);
     }
+
+    /** How many each firing sends, so !!recruit can report it truthfully. */
+    get perRound() { return PER_ROUND; }
 
     /** Roughly how long until the next attempt, for !!recruit to report. */
     dueIn() {

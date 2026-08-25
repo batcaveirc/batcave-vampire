@@ -53,8 +53,17 @@ class Handshake {
     /** A fresh challenge for this nick, or null if we would not challenge it. */
     challenge(nick) {
         if (!this.isCandidate(nick)) return null;
+        const k = (nick || '').toLowerCase();
+        // A peer that joins TWO channels triggers two challenges within
+        // milliseconds. Overwriting the nonce meant their answer to the first
+        // was checked against the second and failed — so adding the emoji room
+        // broke a handshake that had worked fine with one channel, and the bot
+        // announced its own standbys as impostors. An in-flight challenge is
+        // left alone; the caller sends nothing and waits for the first answer.
+        const live = this.pending.get(k);
+        if (live && Date.now() - live.at < NONCE_TTL_MS) return null;
         const nonce = crypto.randomBytes(16).toString('hex');
-        this.pending.set(nick.toLowerCase(), { nonce, at: Date.now() });
+        this.pending.set(k, { nonce, at: Date.now() });
         return nonce;
     }
 
