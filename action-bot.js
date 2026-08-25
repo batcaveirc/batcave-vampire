@@ -319,6 +319,12 @@ function isExempt(nick, chan) {
     // deleted??!!" in character. Kicking another operator's bot over its script
     // is embarrassing at best and how bot wars start at worst.
     if (PROTECTED_NICKS.has(n)) return true;
+    // The standby bots, which live in PEER_BOTS rather than the bot list. Left
+    // out, they got moderated like strangers: Carmilla answered "$$tr harami"
+    // with the English word for it and was de-voiced by Dracula three seconds
+    // later, in front of the room. A bot policing another bot is nobody's idea
+    // of moderation, and the standby cannot argue back.
+    if (handshake.isCandidate(n)) return true;
     // Whitelisted regulars are outside automated moderation entirely — owner's
     // call, 2026-08-22. They previously got a warning quota so that genuine
     // abuse from a trusted account was still caught; the trade now is that a
