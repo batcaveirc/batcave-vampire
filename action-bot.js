@@ -222,6 +222,18 @@ const handshake = new Handshake({
     secret: process.env.PEER_SECRET || '',
     peers: (process.env.PEER_BOTS || 'Renfield').split(',').map((x) => x.trim()).filter(Boolean),
 });
+// Let a peer through our own CALLERID, but only once we can SEE them: an
+// ACCEPT for a nick that is not online does not stick. Doing it at
+// registration accepted nobody — the standbys had not connected yet — and
+// their answers were refused coming back, silently, for five hours.
+const acceptedPeers = new Set();
+function acceptPeer(nick) {
+    const n = (nick || '').toLowerCase();
+    if (!handshake.isCandidate(n) || acceptedPeers.has(n)) return;
+    acceptedPeers.add(n);
+    send(`ACCEPT +${nick}`);
+}
+
 const watch = new Watch({
     enabled: !/^(0|off|false|no)$/i.test(process.env.WATCH || 'on'),
     homes: config.channels,
@@ -2133,9 +2145,8 @@ function handleLine(line) {
     // refused coming back. ACCEPT lets exactly the standby bots through and
     // nobody else, so the flood protection stays and the handshake works.
     // The server advertises ACCEPT=30 in 005, so a short peer list fits easily.
-    for (const p of (process.env.PEER_BOTS || 'Renfield').split(',').map((x) => x.trim()).filter(Boolean)) {
-        send(`ACCEPT +${p}`);
-    }
+    // NOT here — see acceptPeer(). The server can only accept a nick that
+    // exists, and at registration the standbys may not have connected yet.
         send('PRIVMSG HostServ :ON');        // reapply the vhost after a reconnect
         log('OK', `Registered as ${currentNick}.`);
         // Identify to the ACCOUNT immediately — the two-arg form works even if NickServ
@@ -2390,6 +2401,7 @@ function handleLine(line) {
         for (const n of members.get(ch) || []) {
             if (!handshake.isCandidate(n) || handshake.isPending(n)) continue;
             if (/[~&@%]/.test(prefixIn(ch, n))) continue;      // already has status
+            acceptPeer(n);                 // so their answer can reach us
             const nonce = handshake.challenge(n);
             if (nonce) {
                 send(`NOTICE ${n} :AUTH ${nonce}`);
@@ -2450,6 +2462,7 @@ function handleLine(line) {
         // Strict mode: the NICK itself is screened - word list first, then AI.
         // A nick claiming to be our standby. Ask it to prove that.
         if (ready && handshake.isCandidate(nick)) {
+            acceptPeer(nick);              // so their answer can reach us
             const nonce = handshake.challenge(nick);
             if (nonce) {
                 send(`NOTICE ${nick} :AUTH ${nonce}`);
