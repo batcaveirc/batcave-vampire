@@ -220,6 +220,7 @@ const game = new FindIt(bot);
 // challenged instead, and gets ops only if he can answer.
 const handshake = new Handshake({
     secret: process.env.PEER_SECRET || '',
+    prevSecret: process.env.PEER_SECRET_PREV || '',
     peers: (process.env.PEER_BOTS || 'Renfield').split(',').map((x) => x.trim()).filter(Boolean),
 });
 // Let a peer through our own CALLERID, but only once we can SEE them: an
@@ -2241,10 +2242,14 @@ function handleLine(line) {
                 // Somebody wearing the standby's name who cannot answer for it.
                 // Worth saying out loud: nobody else should ever be receiving
                 // this challenge, so a wrong answer is an attempt, not a slip.
-                log('ERR', `${nick} FAILED the peer challenge — not our bot.`);
+                log('ERR', `${nick} failed the peer challenge: ${handshake.lastFailure}`);
                 for (const c of config.channels) {
-                    say(c, `\x0304[MOD]\x03 \x02${nick}\x02 is using our standby's name and `
-                        + 'could not prove it. Granting nothing. 🦇');
+                    // Only shout if it looks like an intruder. A key rotation is
+                    // our own mess and does not belong in the channel.
+                    if (!/rotation/.test(handshake.lastFailure)) {
+                        say(c, `\x0304[MOD]\x03 \x02${nick}\x02 is using our standby's name and `
+                            + 'could not prove it. Granting nothing. 🦇');
+                    }
                 }
             }
         }

@@ -31,6 +31,16 @@ class Handshake {
      */
     constructor(opts = {}) {
         this.secret = opts.secret || '';
+        // The PREVIOUS secret, still accepted. Secrets bind when a workflow run
+        // is CREATED, and these bots restart independently every six hours — so
+        // rotating one splits the mesh for as long as the oldest run lives.
+        // Observed: the secret was rewritten at 12:25 while Dracula's job had
+        // been created at 12:11 and one standby's at 12:21; the bots created in
+        // the same window still agreed, the others were refused for hours.
+        // Accepting the last key as well makes a rotation a slow fade instead
+        // of a cliff, and costs nothing — an attacker needs a valid secret
+        // either way, and the old one is no easier to obtain than the new.
+        this.prevSecret = opts.prevSecret || '';
         this.peers = (opts.peers || []).map((p) => p.toLowerCase());
         this.pending = new Map();   // nick(lower) -> {nonce, at}
     }
@@ -65,13 +75,22 @@ class Handshake {
         const rec = this.pending.get(k);
         this.pending.delete(k);
         if (!rec || !this.secret) return false;
-        if (Date.now() - rec.at > NONCE_TTL_MS) return false;
-        const expected = Handshake.answer(this.secret, rec.nonce);
-        const a = Buffer.from(String(response || ''));
-        const b = Buffer.from(expected);
-        // Constant-time, and length-checked first because timingSafeEqual
-        // throws on a length mismatch rather than returning false.
-        return a.length === b.length && crypto.timingSafeEqual(a, b);
+        if (Date.now() - rec.at > NONCE_TTL_MS) { this.lastFailure = 'challenge expired'; return false; }
+        const given = Buffer.from(String(response || ''));
+        for (const key of [this.secret, this.prevSecret]) {
+            if (!key) continue;
+            const want = Buffer.from(Handshake.answer(key, rec.nonce));
+            // Constant-time, length-checked first because timingSafeEqual
+            // throws on a mismatch rather than returning false.
+            if (given.length === want.length && crypto.timingSafeEqual(given, want)) {
+                this.lastFailure = '';
+                return true;
+            }
+        }
+        // Say WHICH failure it was. "could not prove it" reads as an intruder
+        // and sent the owner hunting for one, when it was our own key rotation.
+        this.lastFailure = 'wrong secret (key rotation, or genuinely not ours)';
+        return false;
     }
 
     /** Are we still waiting on this nick? */
