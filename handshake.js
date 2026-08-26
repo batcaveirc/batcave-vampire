@@ -47,7 +47,13 @@ class Handshake {
 
     /** Is this a nick we would even bother challenging? */
     isCandidate(nick) {
-        return Boolean(this.secret) && this.peers.includes((nick || '').toLowerCase());
+        // Trailing underscores are stripped: a standby whose nick was taken
+        // falls back to Name_ and would otherwise stop being recognised at the
+        // exact moment it is standing in for somebody. This only decides WHO
+        // gets challenged — they still have to prove it, so widening it costs
+        // nothing.
+        const n = (nick || '').toLowerCase().replace(/_+$/, '');
+        return Boolean(this.secret) && this.peers.includes(n);
     }
 
     /** A fresh challenge for this nick, or null if we would not challenge it. */

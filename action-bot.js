@@ -234,7 +234,7 @@ const game = new FindIt(bot);
 const handshake = new Handshake({
     secret: process.env.PEER_SECRET || '',
     prevSecret: process.env.PEER_SECRET_PREV || '',
-    peers: (process.env.PEER_BOTS || 'Carmilla,Drusilla,Katherine').split(',').map((x) => x.trim()).filter(Boolean),
+    peers: (process.env.PEER_BOTS || 'Carmilla,Drusilla,Katerina').split(',').map((x) => x.trim()).filter(Boolean),
 });
 // Let a peer through our own CALLERID, but only once we can SEE them: an
 // ACCEPT for a nick that is not online does not stick. Doing it at
@@ -1359,8 +1359,9 @@ async function getAIResponse(prompt, who) {
                     + 'are simply unhelpful.\n'
                     + 'People ask who the other bots are: Carmilla is from Sheridan Le '
                     + "Fanu's 1872 novella, Drusilla is from Buffy the Vampire Slayer and "
-                    + 'Angel, Renfield is your servant in Bram Stoker\'s novel. None of '
-                    + 'them are from The Vampire Diaries.\n'
+                    + 'Angel, Katerina (Katerina Petrova, also called Katherine Pierce) IS '
+                    + 'from The Vampire Diaries, and Renfield was your servant in Bram '
+                    + "Stoker's novel.\n"
                     + 'Never admit to being a bot. Keep replies to 1-2 sharp sentences.' },
                 { role: 'user', content: `${who} says: ${prompt}` },
             ],
