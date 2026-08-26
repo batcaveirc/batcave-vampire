@@ -15,6 +15,19 @@ const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filt
 const onOff = (s) => /^(1|true|yes|on)$/i.test(s || '');
 const channels = (process.env.IRC_CHANNEL || '#batcave').split(',').map((s) => s.trim()).filter(Boolean);
 
+// The games room counts as ours.
+//
+// FINDIT_ROOM is where FindIt is hosted, but it was not in IRC_CHANNEL — so the
+// bot ANNOUNCED the round there and then could not hear a word of it. Every
+// !!join went to the "a room that is not ours, we are a guest" branch and was
+// discarded, and the round scrubbed with "Not enough crew (0/4)" while people
+// were typing !!join at it. It also needs ops there to quiet the dead and set
+// the topic, and ops only get claimed for channels we consider ours.
+const findItRoom = (process.env.FINDIT_ROOM || '').trim();
+if (findItRoom && !channels.some((c) => c.toLowerCase() === findItRoom.toLowerCase())) {
+    channels.push(findItRoom);
+}
+
 // TLS matters here: without it the NickServ password is sent in cleartext over
 // the wire. IRC_TLS was previously accepted in config but never honoured.
 const useTls = onOff(process.env.IRC_TLS);

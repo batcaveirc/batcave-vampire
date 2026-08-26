@@ -192,6 +192,12 @@ class Fun {
     /** An action ("/me ..."), which is how IRC does slapstick. */
     action(chan, text) { this.bot.send(`PRIVMSG ${chan} :\x01ACTION ${text}\x01`); }
 
+    /** Who has already been told they are on cooldown, and when. */
+    get toldCooldown() {
+        if (!this._toldCooldown) this._toldCooldown = new Map();
+        return this._toldCooldown;
+    }
+
     cooldownOk(chan, nick) {
         const now = Date.now();
         const n = nick.toLowerCase();
@@ -211,7 +217,20 @@ class Fun {
             'hug', 'pat', 'icebreaker', 'ask', 'hotseat', 'story', 'toast'];
         if (!commands.includes(cmd)) return false;
         if (!this.enabled || this.isGameChannel(chan)) return true;   // swallow, stay quiet
-        if (!this.cooldownOk(chan, nick)) return true;
+        if (!this.cooldownOk(chan, nick)) {
+            // Silence here is why these read as broken. Somebody types !!hug a
+            // few seconds after !!bite, gets nothing at all, and reasonably
+            // concludes the command does not exist. Told privately, so the
+            // cooldown does not itself become the spam it exists to prevent,
+            // and only once per window rather than per attempt.
+            const k = (nick || '').toLowerCase();
+            if (Date.now() - (this.toldCooldown.get(k) || 0) > COOLDOWN_NICK_MS) {
+                this.toldCooldown.set(k, Date.now());
+                const wait = Math.ceil((COOLDOWN_NICK_MS - (Date.now() - (this.lastByNick.get(k) || 0))) / 1000);
+                this.bot.send(`NOTICE ${nick} :one at a time — try again in ${Math.max(1, wait)}s.`);
+            }
+            return true;
+        }
 
         // Default target is the caller, so "!!bite" alone still does something.
         const target = (args[0] || nick).replace(/[^\w\[\]\\`^{}|-]/g, '').slice(0, 30) || nick;
