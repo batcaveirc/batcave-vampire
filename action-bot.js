@@ -234,7 +234,7 @@ const game = new FindIt(bot);
 const handshake = new Handshake({
     secret: process.env.PEER_SECRET || '',
     prevSecret: process.env.PEER_SECRET_PREV || '',
-    peers: (process.env.PEER_BOTS || 'Renfield').split(',').map((x) => x.trim()).filter(Boolean),
+    peers: (process.env.PEER_BOTS || 'Carmilla,Drusilla,Katherine').split(',').map((x) => x.trim()).filter(Boolean),
 });
 // Let a peer through our own CALLERID, but only once we can SEE them: an
 // ACCEPT for a nick that is not online does not stick. Doing it at
@@ -1350,7 +1350,18 @@ async function getAIResponse(prompt, who) {
         const data = await groqChat({
             model: config.groqModel, temperature: 0.9, max_tokens: 120,
             messages: [
-                { role: 'system', content: 'You are Dracula, a witty gothic vampire haunting an IRC channel. Never admit to being a bot. Keep replies to 1-2 sharp sentences.' },
+                { role: 'system', content:
+                    'You are Dracula, a witty gothic vampire haunting an IRC channel. '
+                    + 'ANSWER THE QUESTION FIRST, truthfully and specifically, in plain '
+                    + 'words; add the gothic flourish afterwards and only if it fits. If '
+                    + 'you do not know, say so plainly. Never dodge a factual question '
+                    + 'with atmosphere — asked something real and answered with mood, you '
+                    + 'are simply unhelpful.\n'
+                    + 'People ask who the other bots are: Carmilla is from Sheridan Le '
+                    + "Fanu's 1872 novella, Drusilla is from Buffy the Vampire Slayer and "
+                    + 'Angel, Renfield is your servant in Bram Stoker\'s novel. None of '
+                    + 'them are from The Vampire Diaries.\n'
+                    + 'Never admit to being a bot. Keep replies to 1-2 sharp sentences.' },
                 { role: 'user', content: `${who} says: ${prompt}` },
             ],
         });
@@ -1520,6 +1531,37 @@ function answerCloning(chan, asker, victim) {
           + `\x02${[...new Set(hits)].join('\x02, \x02')}\x02. 🦇`
         : `\x0306[who]\x03 nobody here is using \x02${victim}\x02's name at the moment. 🦇`);
     return true;
+}
+
+/**
+ * Is this message ADDRESSED to `me`, or does it merely mention me?
+ *
+ * A name in the middle of a sentence is being talked ABOUT; a name at the start
+ * or the very end is being talked TO. Getting this wrong is how a bot ends up
+ * interrupting two people discussing it.
+ */
+function addressedTo(text, me) {
+    const n = String(me || '').replace(/[^a-z0-9]/gi, '');
+    if (!n) return false;
+    const t = String(text || '').trim();
+    // "carmilla n drusilla me se" starts with a name and is not addressed to
+    // anybody — it is two names being LISTED while somebody explains which is
+    // which. A conjunction and a second bot name right after ours is a list,
+    // not a greeting.
+    if (new RegExp(`^${n}\\s*(,|&|\\bn\\b|\\band\\b|\\bor\\b)\\s*[a-z0-9_]{3,}`, 'i').test(t)) return false;
+    return new RegExp(`^${n}\\b[\\s,:;–-]*`, 'i').test(t)
+        || new RegExp(`\\b${n}\\s*[?!.]*$`, 'i').test(t);
+}
+
+/** When several bots are named, the first one named answers and the rest do not. */
+function firstNamed(text, names) {
+    let best = null;
+    let at = Infinity;
+    for (const n of names) {
+        const m = String(text || '').toLowerCase().indexOf(String(n).toLowerCase());
+        if (m >= 0 && m < at) { at = m; best = String(n).toLowerCase(); }
+    }
+    return best;
 }
 
 /** Every operator across our channels, each listed once. */
@@ -2837,8 +2879,20 @@ function handleLine(line) {
         // orders require the target to be PRESENT, which is exactly backwards
         // for a question about someone who just vanished.
         if (answerWhoIs(tgt, nick, msg)) return;
-        if (new RegExp(`\\b${config.nick}\\b`, 'i').test(msg)) {
-            getAIResponse(msg, nick).then((r) => { if (r) say(tgt, `${nick}: ${r}`); });
+        // ADDRESSED, not merely mentioned — and only one of us answers.
+        //
+        // Matching the name anywhere in the message meant the bots barged into
+        // a conversation ABOUT them: somebody explaining to a newcomer which of
+        // Carmilla and Drusilla was which had two bots interrupt to say nothing.
+        // And a question naming all three produced three replies in the same
+        // second. Whoever is named first takes it; every bot reaches the same
+        // answer from the same text without needing to agree on anything.
+        if (addressedTo(msg, config.nick)) {
+            const everyBot = [...PROTECTED_NICKS, ...(handshake.peers || [])];
+            const speaker = firstNamed(msg, everyBot);
+            if (!speaker || speaker === config.nick.toLowerCase()) {
+                getAIResponse(msg, nick).then((r) => { if (r) say(tgt, `${nick}: ${r}`); });
+            }
             return;
         }
         fun.ambient(tgt, nick, msg);          // rare unprompted quip on greetings

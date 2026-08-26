@@ -65,7 +65,7 @@ jobs:
           # trust the NAME alone — the nick is unregistered and anyone can
           # take it. No secret set means no recognition at all.
           PEER_SECRET: ${{ secrets.PEER_SECRET }}
-          PEER_BOTS: ${{ secrets.PEER_BOTS || 'Renfield' }}
+          PEER_BOTS: ${{ secrets.PEER_BOTS || 'Carmilla,Drusilla,Katherine' }}
           WATCH: ${{ secrets.WATCH || 'on' }}
           GUARDIAN: ${{ secrets.GUARDIAN || 'on' }}
           GUARDIAN_MINUTES: ${{ secrets.GUARDIAN_MINUTES || '10' }}
