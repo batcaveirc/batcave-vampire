@@ -54,6 +54,35 @@ jobs:
           # Names subtracted from WHITELIST. Removing somebody otherwise means
           # rewriting a secret you cannot read; this needs no knowledge of it.
           UNTRUST: ${{ secrets.UNTRUST }}
+          # Where trust actually LIVES once set: a registered channel whose
+          # ChanServ access list is the whitelist. Editable from the room with
+          # !!trust, survives restarts, and readable — which a secret is not.
+          # Empty or unregistered and the two secrets above hold, unchanged.
+          TRUST_CHANNEL: ${{ secrets.TRUST_CHANNEL }}
+          TRUST_FLAG: ${{ secrets.TRUST_FLAG || 'V' }}
+          # Standing that follows behaviour. Off makes trust manual again.
+          AUTO_TRUST: ${{ secrets.AUTO_TRUST || 'on' }}
+          TRUST_EARN_DAYS: ${{ secrets.TRUST_EARN_DAYS || '30' }}
+          TRUST_EARN_MESSAGES: ${{ secrets.TRUST_EARN_MESSAGES || '40' }}
+          TRUST_LOSE_STRIKES: ${{ secrets.TRUST_LOSE_STRIKES || '3' }}
+          # Two regulars fighting: how long each is quiet, and how much longer
+          # the one who started it is quiet for.
+          FEUD_DEVOICE_MIN: ${{ secrets.FEUD_DEVOICE_MIN || '2' }}
+          FEUD_INSTIGATOR_BONUS: ${{ secrets.FEUD_INSTIGATOR_BONUS || '3' }}
+          # How many people organising about us elsewhere before the door shuts.
+          WATCH_LOCK_AT: ${{ secrets.WATCH_LOCK_AT || '3' }}
+          WATCH_MUTE_MIN: ${{ secrets.WATCH_MUTE_MIN || '30' }}
+          RECRUIT_PER_ROUND: ${{ secrets.RECRUIT_PER_ROUND || '3' }}
+          # The SPARE Groq key. groqChat() already tries each key in turn, and
+          # this secret has existed since 14 August — it was simply never passed
+          # in, so the fallback the code was written around has never once been
+          # available. With the primary key failing, this is the difference
+          # between an AI layer and no AI layer.
+          GROQ_API_KEY1: ${{ secrets.GROQ_API_KEY1 }}
+          # Accepted alongside PEER_SECRET during a rotation, so changing the
+          # shared secret is a fade rather than a cliff.
+          PEER_SECRET_PREV: ${{ secrets.PEER_SECRET_PREV }}
+          FUN_ON: ${{ secrets.FUN_ON || 'on' }}
 
           # ── Moderation tuning ────────────────────────────────────────────
           GROQ_MODEL: ${{ secrets.GROQ_MODEL || 'openai/gpt-oss-20b' }}

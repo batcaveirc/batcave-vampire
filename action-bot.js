@@ -2456,9 +2456,18 @@ function handleCommand(chan, nick, message) {
         case 'trust': {
             if (!admin) { reply('Access denied.'); break; }
             if (!trust.enabled) {
-                reply('No TRUST_CHANNEL configured. Set it to a registered channel '
-                    + 'this bot holds +f on, and trust becomes editable from here '
-                    + 'instead of from a secret.');
+                // Tell them the actual commands, with our own account filled
+                // in. "Set it to a registered channel this bot holds +f on" is
+                // true and completely unactionable if you do not already know
+                // what this bot's account is called.
+                const me = config.nsAccount || currentNick;
+                reply('Trust is still in the WHITELIST secret. To move it somewhere '
+                    + 'you can edit from here, three steps:');
+                reply(`1. \x02/msg ChanServ REGISTER #batcave-trust\x02`);
+                reply(`2. \x02/msg ChanServ FLAGS #batcave-trust ${me} +Af\x02`);
+                reply('3. set the \x02TRUST_CHANNEL\x02 secret to \x02#batcave-trust\x02 and restart me.');
+                reply('Then \x02!!trust seed\x02 copies the current whitelist across, and '
+                    + '\x02!!trust add|del\x02 works from the room.');
                 break;
             }
             const who = args[1];
@@ -2471,9 +2480,22 @@ function handleCommand(chan, nick, message) {
             } else if (args[0] === 'reload') {
                 trust.refresh();
                 reply(`Re-reading ${trust.channel}…`);
+            } else if (args[0] === 'seed') {
+                // The migration step. Without it, moving to a trust channel
+                // means every regular loses their standing until somebody adds
+                // them back by hand, one at a time, from a list nobody can read.
+                const names = [...whitelist];
+                if (!names.length) { reply('Nothing to seed — the whitelist is empty.'); break; }
+                for (const n of names) trust.add(n);
+                refreshTrust();
+                reply(`Copied ${names.length} name${names.length === 1 ? '' : 's'} into `
+                    + `${trust.channel}: ${names.join(', ')}. They are stored on the server now.`);
             } else {
+                const live = trust.loaded && trust.size > 0;
                 reply(`Trusted (${trust.size}, from ${trust.channel}`
-                    + `${trust.loaded ? '' : ' — NOT yet read, using the WHITELIST secret'}): `
+                    + `${live ? '' : trust.loaded
+                        ? ' — EMPTY, so the WHITELIST secret is still in charge; run !!trust seed'
+                        : ' — NOT yet read, using the WHITELIST secret'}): `
                     + `${trust.list().join(', ') || '(empty)'}.`);
             }
             break;

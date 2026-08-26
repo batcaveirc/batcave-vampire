@@ -65,4 +65,19 @@ c('and NOT marked loaded, so the secret still holds', bad.t.loaded === false);
 c('and it says why, with the remedy', bad.logs.some(l=>/WHITELIST secret/.test(l)), bad.logs.join(' | '));
 c('so the room keeps its regulars', effective(bad.t, secret, untrust).size === 3);
 
+console.log('\n— an EMPTY channel must not strip the room —');
+// Registering the channel is step one of three. If handover happened on the
+// first read, every regular would lose their standing between step one and
+// step three — silently, because losing an exemption looks exactly like never
+// having had one.
+const {t:empty} = mk();
+empty.refresh();
+empty.absorb('End of #batcave-trust FLAGS listing.');
+c('the listing IS marked read', empty.loaded === true);
+c('but an empty one does not take over', effective(empty, secret, untrust).size === 3,
+  [...effective(empty, secret, untrust)].join(', ')||'(everyone lost their standing)');
+empty.add('Vikram');
+c('and the moment somebody is in it, it does', effective(empty, secret, untrust).size === 1,
+  [...effective(empty, secret, untrust)].join(', '));
+
 console.log(f?`\n${f} FAILED`:'\nALL PASS'); process.exit(f?1:0);

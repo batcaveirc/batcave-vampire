@@ -163,7 +163,14 @@ class TrustList {
  * @param {Set<string>} untrust    UNTRUST
  */
 function effective(trust, fromSecret, untrust) {
-    const base = trust && trust.enabled && trust.loaded ? trust.names : fromSecret;
+    // An EMPTY trust channel means "not set up yet" far more often than it
+    // means "nobody in this room is trusted". Handing over to it on the first
+    // read would strip every regular of their standing the moment the channel
+    // was registered — silently, because losing an exemption looks exactly like
+    // never having had one. The secret keeps the room until somebody is
+    // actually in the channel; `!!trust seed` is how you get there.
+    const useChannel = trust && trust.enabled && trust.loaded && trust.names.size > 0;
+    const base = useChannel ? trust.names : fromSecret;
     return new Set([...base].filter((n) => !untrust.has(n)));
 }
 
