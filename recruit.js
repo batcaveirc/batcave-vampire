@@ -100,7 +100,21 @@ const FEM_MARK = /(^|[^a-z0-9])f([^a-z0-9]|$)/i;
 // people the channel instantly bans.
 const UNWELCOME = ['horny', 'slut', 'whore', 'milf', 'incest', 'porn', 'nangi',
     'chudai', 'bhosdi', 'madarchod', 'gaand', 'chudwao', 'bitch', 'cuck', 'randi',
-    'lund', 'paid', 'cam4', 'f4m', 'm4f', 'nude', 'escort', 'bull4', 'sexy'];
+    'lund', 'paid', 'cam4', 'f4m', 'm4f', 'nude', 'escort', 'bull4', 'sexy',
+    // Added after the recruiter invited "Varun-Singh-love-teen-girl" into the
+    // owner's room. Nothing in the list covered it, so a nick advertising an
+    // interest in teenagers was read as an ordinary person and sent an
+    // invitation. This is the one category where a false positive costs
+    // nothing and a false negative is unforgivable.
+    'teen', 'teenage', 'jailbait', 'lolita', 'loli', 'schoolgirl', 'schoolboy',
+    'underage', 'minor', 'preteen', 'kiddie', 'childs', 'child', 'yngg',
+    'daddysgirl', 'stepdaughter', 'stepson', 'rape', 'molest'];
+
+// A nick that advertises being under eighteen. Never invited, whatever else it
+// says: "f16", "16f", "17yo", "15 y". The feminine-marker patterns match these
+// too, which is exactly why this has to be checked FIRST — "f16" reads as a
+// woman to the classifier and as a child to anybody else.
+const UNDERAGE = /(^|[^a-z0-9])((f|m)\s?(1[0-7]|[1-9])|(1[0-7]|[1-9])\s?(f|m|yo|yrs?|y)|age\s?1[0-7])([^a-z0-9]|$)/i;
 
 const NEVER = new Set(['chanserv', 'nickserv', 'operserv', 'hostserv', 'memoserv',
     'botserv', 'global', 'chanbot', 'luna1', 'vampire', 'dracula', 'notsobot']);
@@ -179,6 +193,10 @@ class Recruiter {
      * morning is the reason the room was attacked tonight.
      */
     unwelcome(nick) {
+        // Age first. The feminine classifier reads "f16" as a woman; it is a
+        // child, and inviting one into an adult room is the single worst thing
+        // this code could do.
+        if (UNDERAGE.test(String(nick || ''))) return 'underage';
         const n = nick.toLowerCase().replace(/[^a-z0-9]/g, '');
         return UNWELCOME.some((w) => n.includes(w));
     }

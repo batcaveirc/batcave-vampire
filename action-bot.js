@@ -999,6 +999,22 @@ function warnUser(chan, nick, reason) {
 // moderation in another, and a deliberate escalation (kick, then ban when they
 // come back with the same nick) is a different action, not a duplicate.
 function actionKey(chan, nick, action) { return `${chanKey(chan)}|${nick.toLowerCase()}|${action}`; }
+// Who the AI has already given one chance to, and when. Deliberately NOT
+// actedRecently(), whose window is ten seconds — long enough to stop a double
+// action on one message and far too short to mean "we already warned them".
+// With that, a second offence a minute later reads as a first offence and the
+// ladder never climbs.
+const aiWarned = new Map();
+const AI_WARN_MEMORY_MS = 30 * 60000;
+function aiWarnedRecently(nick) {
+    const at = aiWarned.get(nick.toLowerCase()) || 0;
+    return Date.now() - at < AI_WARN_MEMORY_MS;
+}
+setInterval(() => {
+    const cutoff = Date.now() - AI_WARN_MEMORY_MS;
+    for (const [n, at] of aiWarned) if (at < cutoff) aiWarned.delete(n);
+}, 5 * 60000).unref?.();
+
 function actedRecently(chan, nick, action) {
     return Date.now() - (recentlyActioned.get(actionKey(chan, nick, action)) || 0) < 10000;
 }
@@ -1086,7 +1102,13 @@ function kickUser(chan, nick, reason) {
     if (!requireOps(chan, `kick ${nick}`)) return;
     retortBefore(chan, nick, reason);
     send(`KICK ${chan} ${nick} :${reason}`);
-    say(chan, `\x0304[MOD]\x03 ${nick} banished — ${reason}. 🦇`);
+    // "Banished" is what a BAN is. Saying it for a kick told the room somebody
+    // was gone for good when they could have walked straight back in —
+    // observed live: one regular asked "how can he re enter", another
+    // concluded the bot had banned their friend and took them to a different
+    // room over it. The person kicked cannot see this line at all, so it is
+    // written for the people who stayed.
+    say(chan, `\x0304[MOD]\x03 ${nick} removed — ${reason}. They can rejoin. 🦇`);
 }
 
 // A "nick!*@*" ban stops nobody — they rejoin under any other nick two seconds
@@ -1293,6 +1315,20 @@ function aiBudgetLeft() {
 const REASONING_MIN_TOKENS = 320;
 function needsRoomToThink(model) { return /gpt-oss|qwen3|reason/i.test(model || ''); }
 
+// The actual fix, measured against the live API rather than guessed at.
+//
+// These models think before they answer, and on a hard prompt they think
+// FOREVER: the moderation call returned empty at 320 tokens, at 800, at 1200
+// and at 1600 — every one of them finish_reason=length, the whole budget spent
+// reasoning with nothing emitted. Raising max_tokens does not fix it, it just
+// costs more before failing.
+//
+// reasoning_effort:"low" answers the same prompt in 73 tokens. Without it, a
+// call like the moderation one below — max_tokens 80 — could never have
+// returned anything at all, which is why "AI healthy" and "the model returned
+// nothing" were both true at once.
+const REASONING_EFFORT = process.env.GROQ_REASONING_EFFORT || 'low';
+
 async function groqChat(body) {
     const keys = [config.groqKey, config.groqKey2].filter(Boolean);
     const models = [...new Set([body.model || config.groqModel, config.groqModelFallback])];
@@ -1309,6 +1345,7 @@ async function groqChat(body) {
                         max_tokens: needsRoomToThink(model)
                             ? Math.max(body.max_tokens || 0, REASONING_MIN_TOKENS)
                             : body.max_tokens,
+                        ...(needsRoomToThink(model) ? { reasoning_effort: REASONING_EFFORT } : {}),
                     }),
                 });
                 // Both mean "try the other key", but they are NOT the same
@@ -1468,6 +1505,22 @@ async function sentientModeration(chan, nick, message) {
         // enough context to tell the difference.
         if (message.trim().split(/\s+/).length < 4) {
             log('AI', `Ignoring ${action} on a ${message.trim().split(/\s+/).length}-word message from ${nick}.`);
+            return;
+        }
+
+        // Gate 4b — an OPINION about a group is the category this model gets
+        // wrong most often, and the one where being wrong is most visible.
+        // Observed live: somebody generalising about how Indians argue was
+        // removed on a first offence, in a room of Indians who read it as
+        // commentary rather than hate — one of them left with him. Threats,
+        // sexual harassment and doxxing are unambiguous and still act at once.
+        // Everything else gets the room's own ladder: a warning first, and
+        // removal only if they do it again.
+        const unambiguous = /threat|sexual|doxx|slur/i.test(String(verdict.reason || ''));
+        if (!unambiguous && action !== 'warn' && !aiWarnedRecently(nick)) {
+            aiWarned.set(nick.toLowerCase(), Date.now());
+            log('MOD', `AI wanted to ${action} ${nick} on a first ${verdict.reason} — warning instead.`);
+            warnUser(chan, nick, reason);
             return;
         }
 
