@@ -10,6 +10,8 @@ const { Guardian, victimOf } = require('./guardian');
 const { Watch } = require('./watch');
 const { Handshake } = require('./handshake');
 const { Feuds, severityOf, aimedAt } = require('./feud');
+const { TrustList, effective } = require('./trust');
+const { Reputation } = require('./reputation');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
@@ -106,7 +108,11 @@ const severeWords = new Set(list(process.env.SEVERE_WORDS));
 // A subtraction list needs no knowledge of what it subtracts from, and it is
 // auditable: the reason someone lost trust is a name in one short variable.
 const untrust = new Set(list(process.env.UNTRUST));
-const whitelist = new Set(list(process.env.WHITELIST).filter((n) => !untrust.has(n)));
+// The SEED. Once a trust channel answers, its access list replaces this — see
+// trust.js. Until then, and forever if no channel is configured, this is the
+// whitelist exactly as before.
+const seedWhitelist = new Set(list(process.env.WHITELIST));
+let whitelist = new Set([...seedWhitelist].filter((n) => !untrust.has(n)));
 
 // IRC channel names are case-insensitive: the server may echo "#BatCave" while
 // the secret says "#batcave". Comparing them with === / includes() silently
@@ -347,6 +353,21 @@ function ago(ts) {
 
 function isOwner(nick) { return config.owners.includes(nick.toLowerCase()); }
 function isAdmin(nick) { const n = nick.toLowerCase(); return config.owners.includes(n) || config.admins.includes(n); }
+/**
+ * Never moderated, whoever they are and whatever they do: us, the operators,
+ * services, and other people's bots. Trust is NOT in here — a regular is
+ * exempt from the ordinary ladder (see isExempt) but is still watched, because
+ * standing you cannot lose is not standing, it is immunity.
+ */
+function isUntouchable(nick, chan) {
+    const n = nick.toLowerCase();
+    if (n === config.nick.toLowerCase() || isAdmin(nick)) return true;
+    if (chan && isChannelMod(chan, nick)) return true;
+    if (PROTECTED_NICKS.has(n)) return true;
+    if (handshake.isCandidate(n)) return true;
+    return false;
+}
+
 function isExempt(nick, chan) {
     const n = nick.toLowerCase();
     if (n === config.nick.toLowerCase() || isAdmin(nick)) return true;
@@ -698,6 +719,124 @@ function noteHostileArrival(chan, why) {
     if (hist.length >= hostileLimit) lockDoors(chan, `${hist.length} hostile arrivals in ${Math.round(hostileWindowMs / 60000)}m`);
 }
 
+// Trust, held somewhere it can actually be edited. See trust.js.
+const trust = new TrustList({
+    channel: (process.env.TRUST_CHANNEL || '').trim(),
+    flag: (process.env.TRUST_FLAG || 'V').replace(/[^A-Za-z]/g, '') || 'V',
+    send: (l) => send(l),
+    log,
+});
+
+/** Recompute the effective whitelist after anything changes. */
+function refreshTrust() {
+    whitelist = effective(trust, seedWhitelist, untrust);
+}
+
+// What people have actually been doing. See reputation.js for why earning
+// leans on the services account rather than on anything this process counted.
+const reputation = new Reputation({
+    minAccountDays: Number(process.env.TRUST_EARN_DAYS || 30),
+    minMessages: Number(process.env.TRUST_EARN_MESSAGES || 40),
+    maxStrikes: Number(process.env.TRUST_LOSE_STRIKES || 3),
+});
+const autoTrust = onOff(process.env.AUTO_TRUST || 'on');
+const promoted = new Set();     // announced once, not once per message
+
+// When each account was registered, as NickServ reports it. This is the one
+// fact that cannot be rushed: a process that restarts every forty minutes has
+// no way to know somebody has behaved for a month, but the network does.
+const registeredAt = new Map();
+const askedRegistration = new Set();
+
+/**
+ * Ask NickServ how old an account is — once per nick per run.
+ *
+ * Only for people who might actually be promoted, because this is a services
+ * round trip and asking about everybody who speaks would be a flood.
+ */
+function askRegistration(nick) {
+    const k = nick.toLowerCase();
+    if (askedRegistration.has(k) || registeredAt.has(k)) return;
+    if (!accountOf.get(k)) return;                 // unregistered: nothing to ask
+    askedRegistration.add(k);
+    send(`PRIVMSG NickServ :INFO ${nick}`);
+}
+
+/**
+ * Read NickServ's reply.
+ *
+ *   Information on Vikram (account Vikram):
+ *   Registered : Aug 14 03:22:08 2026 (1 week, 5 days, 04:11:22 ago)
+ *
+ * The nick is remembered from the "Information on" line, because the
+ * "Registered" line that follows does not repeat it.
+ */
+let nickInfoFor = '';
+function readNickInfo(text) {
+    const who = text.match(/Information on\s+(\S+)/i);
+    if (who) { nickInfoFor = who[1].toLowerCase(); return; }
+    if (!nickInfoFor) return;
+    const reg = text.match(/Registered\s*:\s*([A-Za-z]{3}\s+\d{1,2}\s+[\d:]+\s+\d{4})/i);
+    if (!reg) return;
+    const at = Date.parse(`${reg[1]} UTC`);
+    if (Number.isFinite(at)) {
+        registeredAt.set(nickInfoFor, at);
+        log('INFO', `${nickInfoFor} registered ${new Date(at).toISOString().slice(0, 10)}.`);
+    }
+    nickInfoFor = '';
+}
+
+/**
+ * Take somebody's standing away for what they just did.
+ *
+ * Immediate and permanent-ish: it writes to the trust channel when one is
+ * configured, so it survives the restart that lands within the hour. Without
+ * that it can only hold for this run, and says so — a punishment that quietly
+ * expires in forty minutes is worse than none, because everyone assumes it
+ * stuck.
+ */
+function loseTrust(nick, what, chan) {
+    if (!autoTrust) return;
+    const reason = reputation.forfeits(nick, what);
+    if (!reason) return;
+    const k = nick.toLowerCase();
+    if (!whitelist.has(k)) return;               // nothing to take
+
+    if (trust.enabled && trust.loaded) {
+        trust.remove(nick);
+        refreshTrust();
+    } else {
+        whitelist.delete(k);
+    }
+    log('MOD', `Trust withdrawn from ${nick}: ${reason}`);
+    for (const m of channelMods()) {
+        notice(m, `\x0304[TRUST]\x03 \x02${nick}\x02 is no longer a trusted regular — ${reason}. `
+            + (trust.enabled && trust.loaded
+                ? `Stored on ${trust.channel}. \x02!!trust add ${nick}\x02 to undo.`
+                : 'THIS RUN ONLY — set TRUST_CHANNEL to make it stick.'));
+    }
+}
+
+/** Give somebody standing for having earned it, and say why. */
+function gainTrust(nick, chan) {
+    if (!autoTrust || !trust.enabled || !trust.loaded) return;
+    const k = nick.toLowerCase();
+    if (whitelist.has(k) || promoted.has(k) || isExempt(nick, chan)) return;
+    const why = reputation.earns(nick, {
+        account: accountOf.get(k) || '',
+        registeredAt: registeredAt.get(k) || 0,
+    });
+    if (!why) return;
+    promoted.add(k);
+    trust.add(nick);
+    refreshTrust();
+    log('MOD', `Trust granted to ${nick}: ${why}`);
+    for (const m of channelMods()) {
+        notice(m, `\x0306[TRUST]\x03 \x02${nick}\x02 is now a trusted regular — ${why}. `
+            + `\x02!!trust del ${nick}\x02 if you disagree.`);
+    }
+}
+
 // Two regulars going at each other. See feud.js for why this judges the SHAPE
 // of an exchange rather than the words in it.
 const feuds = new Feuds({
@@ -715,7 +854,11 @@ const feuds = new Feuds({
  * tear into each other.
  */
 function watchForFeud(chan, nick, message) {
-    if (isExempt(nick, chan) || moderationOff(chan)) return false;
+    // isUntouchable, NOT isExempt. The exemption covers trusted regulars, and
+    // two trusted regulars tearing into each other is precisely the case this
+    // was written for — guarding it with isExempt made the whole thing inert
+    // for the only people it was meant to catch.
+    if (isUntouchable(nick, chan) || moderationOff(chan)) return false;
     const here = members.get(chanKey(chan)) || new Set();
     const isPresent = (n) => [...here].some((m) => m.toLowerCase() === n.toLowerCase());
     const target = aimedAt(message, isPresent);
@@ -737,6 +880,12 @@ function watchForFeud(chan, nick, message) {
         log('MOD', `Feud nudge in ${chan}: ${verdict.a} vs ${verdict.b}`);
         return true;
     }
+
+    // The one who STARTED it loses standing as well as voice. The one who
+    // answered does not — being provoked is not an offence, and treating it as
+    // one is how a room learns that defending yourself costs the same as
+    // attacking somebody.
+    loseTrust(verdict.instigator, 'feud', chan);
 
     // They carried on. Both lose voice; the instigator for longer, because
     // punishing the provoked exactly as hard as the provoker is unfair in a way
@@ -1034,6 +1183,16 @@ function rescueFromKick(chan, victim, kicker, reason) {
 
 // --- Scripted moderation (ALWAYS on): severe, badwords, links, caps, flood, repeat ---
 function scriptedModeration(chan, nick, message) {
+    // Severe language is checked for EVERYONE who is not an operator — trusted
+    // regulars included. They used to be waved through before this line, which
+    // meant a slur from a regular was not merely unpunished but INVISIBLE: no
+    // log, no notice, and no way for standing to follow behaviour because the
+    // behaviour was never seen. Losing trust is the response; the ordinary
+    // ladder below then applies to them like anybody else, because by that
+    // point they are no longer trusted.
+    if (!isUntouchable(nick, chan) && wordHit(severeWords, message)) {
+        loseTrust(nick, 'severe', chan);
+    }
     if (isExempt(nick, chan)) return false;
 
     // Severe language is always actioned — including inside a game. Switching
@@ -1059,7 +1218,12 @@ function scriptedModeration(chan, nick, message) {
         banUser(chan, nick, `sustained abuse (${hits.length} slurs in one message)`);
         return true;
     }
-    if (hits.length) { warnUser(chan, nick, 'watch your language'); return true; }
+    if (hits.length) {
+        reputation.offended(nick);
+        loseTrust(nick, 'strikes', chan);
+        warnUser(chan, nick, 'watch your language');
+        return true;
+    }
 
     if (config.linkFilter && /(https?:\/\/|www\.)\S+/i.test(message)) {
         warnUser(chan, nick, 'no links'); return true;
@@ -1848,7 +2012,9 @@ function handleCommand(chan, nick, message) {
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!history on|off, '
                 + '!!access, !!unwarn <nick>, !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
-                + '!!whitelist add|remove <nick>, !!announce <msg>.');
+                + '!!trust add|del|reload <nick> (sticks), !!untrust add|del <nick>, '
+            + '!!whitelist add|remove <nick> (this run only), '
+            + '!!announce <msg>.');
             break;
         case 'seen': {
             if (!target) { reply( 'Usage: !!seen <nick>'); break; }
@@ -2285,6 +2451,55 @@ function handleCommand(chan, nick, message) {
             else if (args[0] === 'remove' && args[1]) { badwords.delete(args[1].toLowerCase()); reply( `Removed "${args[1]}" (${badwords.size} total).`); }
             else reply( `Filter holds ${badwords.size} words.`);
             break;
+        // Trust, edited from the room and kept on the server. `!!whitelist`
+        // still works and still only lasts the run; this is the one that sticks.
+        case 'trust': {
+            if (!admin) { reply('Access denied.'); break; }
+            if (!trust.enabled) {
+                reply('No TRUST_CHANNEL configured. Set it to a registered channel '
+                    + 'this bot holds +f on, and trust becomes editable from here '
+                    + 'instead of from a secret.');
+                break;
+            }
+            const who = args[1];
+            if (args[0] === 'add' && who) {
+                trust.add(who); refreshTrust();
+                reply(`${who} is trusted — stored on ${trust.channel}, survives restarts. 🩸`);
+            } else if ((args[0] === 'del' || args[0] === 'remove') && who) {
+                trust.remove(who); refreshTrust();
+                reply(`${who} is no longer trusted — stored on ${trust.channel}.`);
+            } else if (args[0] === 'reload') {
+                trust.refresh();
+                reply(`Re-reading ${trust.channel}…`);
+            } else {
+                reply(`Trusted (${trust.size}, from ${trust.channel}`
+                    + `${trust.loaded ? '' : ' — NOT yet read, using the WHITELIST secret'}): `
+                    + `${trust.list().join(', ') || '(empty)'}.`);
+            }
+            break;
+        }
+        // Kept deliberately alongside !!trust: this is the fast, blunt one for
+        // "not this person, not today", and it does not need a trust channel.
+        case 'untrust': {
+            if (!admin) { reply('Access denied.'); break; }
+            const who = (args[1] || '').toLowerCase();
+            if (args[0] === 'add' && who) {
+                untrust.add(who);
+                if (trust.enabled && trust.loaded) trust.remove(who);
+                refreshTrust();
+                reply(`${args[1]} is untrusted`
+                    + `${trust.enabled && trust.loaded ? ` — removed from ${trust.channel} too, so it sticks.`
+                        : ' for THIS run. Add them to the UNTRUST secret, or set TRUST_CHANNEL, to make it stick.'}`);
+            } else if ((args[0] === 'del' || args[0] === 'remove') && who) {
+                untrust.delete(who);
+                refreshTrust();
+                reply(`${args[1]} is no longer on the untrust list.`);
+            } else {
+                reply(`Untrusted (${untrust.size}): ${[...untrust].join(', ') || '(nobody)'}. `
+                    + '!!untrust add|del <nick>');
+            }
+            break;
+        }
         case 'whitelist':
             if (!admin) { reply('Access denied.'); break; }
             if (args[0] === 'add' && args[1]) { whitelist.add(args[1].toLowerCase()); reply( `${args[1]} is trusted now — immune to auto-mod. 🩸`); }
@@ -2533,6 +2748,15 @@ function handleLine(line) {
             // through it. Prove it works at startup, and tell the operators if
             // it does not.
             selfCheckAI();
+            if (trust.enabled) {
+                // After registration, not before: a FLAGS request fired during
+                // the join burst sits behind twenty other lines and times out
+                // on our own traffic.
+                setTimeout(() => trust.refresh(), 8000);
+                // Re-read occasionally, because somebody may edit the list
+                // through ChanServ directly rather than through the bot.
+                setInterval(() => trust.refresh(), 15 * 60000).unref?.();
+            }
             // Not immediately: registration queues joins, WHO, NAMES, mode
             // sets and the quiet-list request through a 5-lines/second
             // limiter, so a probe fired now sits behind twenty other lines and
@@ -2611,7 +2835,9 @@ function handleLine(line) {
 
     if (command === 'NOTICE' && /^chanserv$/i.test(nick || '')) {
         if (servicesReport) servicesReport(msg);
+        if (trust.absorb(msg)) refreshTrust();
     }
+    if (command === 'NOTICE' && /^nickserv$/i.test(nick || '')) readNickInfo(msg);
     // The server's verdict on a !!history MODE change: 472 unknown mode char
     // (chanhistory not loaded), 482 not opped, 467/461 malformed. Silence means
     // it was accepted.
@@ -2973,6 +3199,13 @@ function handleLine(line) {
     if (command === 'PRIVMSG' && isOurChannel(tgt) && nick) {
         if (isReplay(tags)) return;                       // +H backlog, not live
         seenUsers[nick.toLowerCase()] = Date.now();
+        // Standing follows behaviour. Counting happens for everyone; the
+        // promotion check only does anything once they are past the bar.
+        reputation.spoke(nick);
+        if (reputation.messages(nick) >= Number(process.env.TRUST_EARN_MESSAGES || 40)) {
+            askRegistration(nick);
+            gainTrust(nick, tgt);
+        }
         if (!ready) return;                                   // ignore replayed backlog
         if (ignored.has(nick.toLowerCase())) return;          // !!ignore
 
