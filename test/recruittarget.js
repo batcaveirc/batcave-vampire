@@ -37,5 +37,18 @@ console.log('\n— explain() names the split —');
 c('says which half it covers', make('feminine').explain().some(l=>/feminine.*half/.test(l)),
   JSON.stringify(make('feminine').explain()));
 
+
+
+console.log('\n— real nicks counted in #allindiachat.com, 2026-08-26 —');
+// The owner counted the room by hand: 85 of 100 people were being written off
+// as "not my half", including these three. A recruiter ignoring five sixths of
+// a room is not being selective, it is broken.
+for (const n of ['_______F_Delhi', '_Esha18', '_Shruti_', 'f25delhi', '24f_pune', 'Riya|F|22'])
+  c(`${n} is recognised`, r.looksFeminine(n), 'still being skipped');
+
+console.log('\n— and it has not become a yes-machine —');
+for (const n of ['Aakash', 'RajCanada', 'soul', 'hunterrrrrr', 'JAILER', 'wolf25', 'Ashish'])
+  c(`${n} is NOT counted`, !r.looksFeminine(n), 'false positive');
+
 console.log(fails?`\n${fails} FAILED`:'\nALL PASS');
 process.exit(fails?1:0);

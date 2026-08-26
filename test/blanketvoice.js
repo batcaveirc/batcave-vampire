@@ -4,7 +4,7 @@ const net=require('net'); const {spawn}=require('child_process');
 let PORT = 0;   /* the OS assigns one on listen — see below */ const out=[]; let sock=null;
 // Everyone arrives already voiced, exactly as `*!*@* +V` produces.
 const NAMES = '@Dracula +joker +alice +bob +carol +dave';
-const srv=net.createServer((s)=>{sock=s;let buf='';
+const srv=net.createServer((s)=>{sock=s; s.on('error',()=>{});let buf='';
  s.on('data',(d)=>{buf+=d.toString();const L=buf.split('\r\n');buf=L.pop();
   for(const l of L){if(!l.trim())continue;out.push(l);
    if(/^CAP REQ/.test(l))s.write(':f CAP * ACK :extended-join account-notify multi-prefix server-time\r\n');
@@ -32,7 +32,7 @@ srv.listen(0,'127.0.0.1', async() => {
 
  // joker is voiced by ChanServ like everyone else, and is NOT whitelisted.
  out.length=0;
- sock.write(':joker!j@2.2.2.2 PRIVMSG #batcave :you are an idiot\r\n');
+ sock.write(':joker!j@2.2.2.2 PRIVMSG #batcave :you are a fucking bastard\r\n');
  await wait(1600);
  check('a blanket-voiced stranger is still punished',
        out.some(l=>/^MODE #batcave -v joker$/.test(l)) || out.some(l=>/^KICK #batcave joker/.test(l)),
@@ -43,7 +43,7 @@ srv.listen(0,'127.0.0.1', async() => {
 
  // alice IS on the WHITELIST secret -> still gets the privilege.
  out.length=0;
- sock.write(':alice!a@3.3.3.3 PRIVMSG #batcave :you are an idiot\r\n');
+ sock.write(':alice!a@3.3.3.3 PRIVMSG #batcave :you are a fucking bastard\r\n');
  await wait(1600);
  check('a genuinely whitelisted regular is untouched entirely',
        !out.some(l=>/^MODE #batcave -v alice$/.test(l)) && !out.some(l=>/KICK #batcave alice/.test(l))

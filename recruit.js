@@ -59,6 +59,24 @@ const DEFAULT_HINTS = [
     'pooja', 'priya', 'radha', 'riya', 'rose', 'sakhi', 'sana', 'sara',
     'shweta', 'simran', 'sneha', 'sonia', 'sweety', 'tanu', 'tina', 'zara',
     'angel', 'baby', 'barbie', 'doll', 'gudia', 'queen', 'princess', 'ladki',
+
+    // Widened after a live count: 85 of 100 people in #allindiachat.com were
+    // being written off as "not my half", including _Esha18 and _Shruti_ —
+    // names simply missing from a list of forty-eight. A recruiter that ignores
+    // five sixths of a room is not selective, it is broken.
+    'esha', 'shruti', 'kavya', 'ritu', 'meera', 'aarti', 'swati', 'rekha',
+    'sunita', 'jyoti', 'preeti', 'preity', 'manisha', 'nikita', 'sakshi',
+    'ishita', 'tanya', 'komal', 'kirti', 'bhavna', 'deepa', 'deepika', 'madhu',
+    'nidhi', 'pallavi', 'rashmi', 'seema', 'shalini', 'sonal', 'vandana',
+    'varsha', 'yamini', 'bhumi', 'gauri', 'heena', 'juhi', 'kajal', 'lata',
+    'namrata', 'pinky', 'rani', 'ruchi', 'sapna', 'shilpa', 'smita', 'sonam',
+    'suman', 'trisha', 'usha', 'vidya', 'asha', 'anita', 'archana', 'bina',
+    'chandni', 'geeta', 'hema', 'indu', 'kanchan', 'kiran', 'kusum', 'mala',
+    'mamta', 'mona', 'neelam', 'nisha', 'poonam', 'rachna', 'rekha', 'renu',
+    'roshni', 'sadhna', 'sarita', 'savita', 'shanti', 'sheetal', 'shobha',
+    'sudha', 'sushma', 'urmila', 'vaishali', 'vinita', 'aisha', 'ayesha',
+    'farah', 'fatima', 'nazia', 'rukhsar', 'sadia', 'saira', 'shabnam',
+    'zoya', 'noor', 'mehak', 'anushka', 'alia', 'kareena', 'katrina',
 ];
 
 // Self-description, which is how people in these rooms actually signal gender.
@@ -68,8 +86,14 @@ const DEFAULT_HINTS = [
 // to match as a substring or it misses the obvious cases. The AGE-and-letter
 // form cannot: bare "f" or two digits appear in half the nicks on the network,
 // so those keep their boundaries.
-const FEM_WORD = /(female|girl|ladki|bhabhi|behen|aunty|didi)/i;
-const FEM_AGE  = /(^|[^a-z0-9])(f\s?\d{2}|\d{2}\s?f)([^a-z0-9]|$)/i;
+const FEM_WORD = /(female|girl|ladki|bhabhi|behen|aunty|didi|lady|mrs|miss|queen|princess)/i;
+// "f25delhi" was rejected because the age had to be followed by a NON-letter,
+// so every "f23mumbai" and "24fpune" in the room read as somebody else's half.
+// The trailing boundary is gone; the leading one stays, or "wolf25" matches.
+const FEM_AGE  = /(^|[^a-z0-9])(f\s?\d{2}|\d{2}\s?f)/i;
+// A bare F between separators — "_______F_Delhi", "Riya|F|22", "(f)" — is the
+// commonest marker of all in these rooms and was not being read at all.
+const FEM_MARK = /(^|[^a-z0-9])f([^a-z0-9]|$)/i;
 
 // Nicks the room's own AKICK list would reject on sight. Mirrors the patterns
 // set on ChanServ — keep the two in step, or the recruiter will keep inviting
@@ -138,7 +162,7 @@ class Recruiter {
         // name list: people in these rooms label themselves "f29", "21f",
         // "IndianGirlUSA". Guessing from a name's ending does not work — it
         // reads Aakash, Aditya and RajCanada as feminine.
-        if (FEM_WORD.test(nick) || FEM_AGE.test(nick)) return true;
+        if (FEM_WORD.test(nick) || FEM_AGE.test(nick) || FEM_MARK.test(nick)) return true;
         const n = nick.toLowerCase().replace(/[^a-z]/g, '');
         if (!n) return false;
         return this.hints.some((h) => n.includes(h));

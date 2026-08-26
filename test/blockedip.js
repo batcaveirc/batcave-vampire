@@ -2,7 +2,7 @@
 // The bot must retry, count, and EXIT so a fresh runner takes over.
 const net=require('net'); const {spawn}=require('child_process');
 let PORT = 0;   /* the OS assigns one on listen — see below */ let out=''; let exited=null; let accepts=0;
-const srv=net.createServer((s)=>{ accepts++; s.destroy(); });
+const srv=net.createServer((s)=>{  s.on('error',()=>{});accepts++; s.destroy(); });
 srv.listen(0,'127.0.0.1', () => {
   PORT = srv.address().port;
   const bot=spawn('node',['../action-bot.js'],{

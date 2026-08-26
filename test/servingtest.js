@@ -2,7 +2,7 @@
 //   the bot's own 30s voice sweep, and ChanServ re-voicing on rejoin.
 const net=require('net'); const {spawn}=require('child_process');
 let PORT = 0;   /* the OS assigns one on listen — see below */ const out=[]; let sock=null;
-const srv=net.createServer((s)=>{sock=s;let buf='';
+const srv=net.createServer((s)=>{sock=s; s.on('error',()=>{});let buf='';
  s.on('data',(d)=>{buf+=d.toString();const L=buf.split('\r\n');buf=L.pop();
   for(const l of L){if(!l.trim())continue;out.push(l);
    if(/^CAP REQ/.test(l))s.write(':f CAP * ACK :extended-join account-notify multi-prefix server-time\r\n');
@@ -30,7 +30,7 @@ srv.listen(0,'127.0.0.1', async() => {
 
  // Offend once -> de-voiced for 2 minutes.
  out.length=0;
- sock.write(':joker!j@2.2.2.2 PRIVMSG #batcave :you are an idiot\r\n');
+ sock.write(':joker!j@2.2.2.2 PRIVMSG #batcave :you are a fucking bastard\r\n');
  await wait(1500);
  check('the de-voice happens', out.some(l=>/^MODE #batcave -v joker$/.test(l)),
        out.filter(l=>/MODE/.test(l)).join(' | ')||'(nothing)');

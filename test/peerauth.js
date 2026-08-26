@@ -4,7 +4,7 @@ const net=require('net'); const {spawn}=require('child_process');
 const { Handshake } = require('../handshake.js');
 const SECRET='shared-peer-secret-xyz';
 let PORT = 0;   /* the OS assigns one on listen — see below */ const out=[]; let sock=null; let challenge=null;
-const srv=net.createServer((s)=>{sock=s;let buf='';
+const srv=net.createServer((s)=>{sock=s; s.on('error',()=>{});let buf='';
  s.on('data',(d)=>{buf+=d.toString();const L=buf.split('\r\n');buf=L.pop();
   for(const l of L){if(!l.trim())continue;out.push(l);
    const c=l.match(/^NOTICE (\S+) :AUTH (\S+)$/); if(c) challenge={to:c[1],nonce:c[2]};

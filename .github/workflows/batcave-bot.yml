@@ -51,6 +51,9 @@ jobs:
           OWNERS: ${{ secrets.OWNERS }}
           ADMINS: ${{ secrets.ADMINS }}
           WHITELIST: ${{ secrets.WHITELIST }}
+          # Names subtracted from WHITELIST. Removing somebody otherwise means
+          # rewriting a secret you cannot read; this needs no knowledge of it.
+          UNTRUST: ${{ secrets.UNTRUST }}
 
           # ── Moderation tuning ────────────────────────────────────────────
           GROQ_MODEL: ${{ secrets.GROQ_MODEL || 'openai/gpt-oss-20b' }}

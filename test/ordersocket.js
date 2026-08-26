@@ -1,7 +1,7 @@
 // Spoken orders, driven through the real bot over a socket.
 const net=require('net'); const {spawn}=require('child_process');
 let PORT = 0;   /* the OS assigns one on listen — see below */ const out=[]; let sock=null;
-const srv=net.createServer((s)=>{sock=s;let buf='';
+const srv=net.createServer((s)=>{sock=s; s.on('error',()=>{});let buf='';
  s.on('data',(d)=>{buf+=d.toString();const L=buf.split('\r\n');buf=L.pop();
   for(const l of L){if(!l.trim())continue;out.push(l);
    if(/^CAP REQ/.test(l))s.write(':f CAP * ACK :extended-join account-notify multi-prefix server-time\r\n');

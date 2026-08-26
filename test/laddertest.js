@@ -1,7 +1,7 @@
 // The voice ladder: nobody is kicked for a first offence in a moderated room.
 const net=require('net'); const {spawn}=require('child_process');
 let PORT = 0;   /* the OS assigns one on listen — see below */ const out=[]; let sock=null;
-const srv=net.createServer((s)=>{sock=s;let buf='';
+const srv=net.createServer((s)=>{sock=s; s.on('error',()=>{});let buf='';
  s.on('data',(d)=>{buf+=d.toString();const L=buf.split('\r\n');buf=L.pop();
   for(const l of L){if(!l.trim())continue;out.push(l);
    if(/^CAP REQ/.test(l))s.write(':f CAP * ACK :extended-join account-notify multi-prefix server-time\r\n');
@@ -48,7 +48,7 @@ srv.listen(0,'127.0.0.1', async() => {
 
  // first offence: devoiced, NOT kicked
  out.length=0;
- sock.write(':joker!j@2.2.2.2 PRIVMSG #batcave :you are an idiot\r\n');
+ sock.write(':joker!j@2.2.2.2 PRIVMSG #batcave :you are a fucking bastard\r\n');
  await wait(1500);
  check('first offence takes the VOICE, not the room',
        sent(/^MODE #batcave -v joker$/) && !sent(/^KICK #batcave joker/),
@@ -60,7 +60,7 @@ srv.listen(0,'127.0.0.1', async() => {
  // unregistered guest gets the floor taken once, which is what moderating the
  // room buys them, and no more runway than that.
  out.length=0;
- sock.write(':joker!j@2.2.2.2 PRIVMSG #batcave :you are an idiot\r\n');
+ sock.write(':joker!j@2.2.2.2 PRIVMSG #batcave :you are a fucking bastard\r\n');
  await wait(1500);
  check('a stranger is kicked on the SECOND offence, not the first',
        sent(/^KICK #batcave joker/),
@@ -70,7 +70,7 @@ srv.listen(0,'127.0.0.1', async() => {
  // never quieted, never kicked, however many times they trip the filter.
  out.length=0;
  for(let i=0;i<4;i++){
-   sock.write(':vikram!v@3.3.3.3 PRIVMSG #batcave :you are an idiot\r\n');
+   sock.write(':vikram!v@3.3.3.3 PRIVMSG #batcave :you are a fucking bastard\r\n');
    await wait(1200);
  }
  check('a whitelisted regular is untouched by the filter',
@@ -83,7 +83,7 @@ srv.listen(0,'127.0.0.1', async() => {
  // A strike must be forgivable. Without this the ladder could park somebody one
  // word from a kick with no way back short of restarting the bot.
  out.length=0;
- sock.write(':joker2!j@4.4.4.4 PRIVMSG #batcave :you are an idiot\r\n');
+ sock.write(':joker2!j@4.4.4.4 PRIVMSG #batcave :you are a fucking bastard\r\n');
  await wait(1400);
  out.length=0;
  sock.write(':boss!b@5.5.5.5 PRIVMSG #batcave :!!unwarn joker2\r\n');
@@ -92,8 +92,24 @@ srv.listen(0,'127.0.0.1', async() => {
        sent(/slate wiped clean/) && sent(/^MODE #batcave \+v joker2$/),
        out.filter(l=>/MODE|PRIVMSG #batcave/.test(l)).join(' | '));
 
+ console.log('\n— and the words that are NOT offences —');
+ // The change that prompted this: regulars were being warned for "stupid" and
+ // "idiot", which in this room is how friends talk. A single light word must
+ // now do nothing at all.
+ out.length=0;
+ sock.write(':joker3!j@6.6.6.6 PRIVMSG #batcave :you are an idiot\r\n');
+ await wait(1500);
+ check('a single light word is left alone',
+       !sent(/MODE #batcave -v joker3/) && !sent(/KICK #batcave joker3/),
+       out.filter(l=>/joker3/.test(l)).join(' | ')||'(nothing — correct)');
+ out.length=0;
+ sock.write(':joker3!j@6.6.6.6 PRIVMSG #batcave :you stupid dumb idiot\r\n');
+ await wait(1500);
+ check('but three at once is still a pile-on', sent(/MODE #batcave -v joker3/),
+       out.filter(l=>/joker3/.test(l)).join(' | ')||'(nothing)');
  console.log('\n=== voice ladder ===');
  let ok=true;for(const[n,p,d]of R){ok=ok&&p;console.log(`  [${p?'PASS':'FAIL'}] ${n}${!p&&d?' — '+d:''}`);}
  console.log(ok?'\nALL PASS':'\nFAILURES');bot.kill('SIGKILL');process.exit(ok?0:1);
 });
+
 setTimeout(()=>{console.log('timeout');process.exit(1)},60000);

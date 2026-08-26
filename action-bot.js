@@ -9,6 +9,7 @@ const { geminiChat } = require('./gemini');
 const { Guardian, victimOf } = require('./guardian');
 const { Watch } = require('./watch');
 const { Handshake } = require('./handshake');
+const { Feuds, severityOf, aimedAt } = require('./feud');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
@@ -94,7 +95,18 @@ const DEFAULT_BADWORDS = ['fuck', 'shit', 'bitch', 'bastard', 'asshole', 'dick',
     'fuc', 'fuk', 'fck', 'phuck', 'azz', 'btch'];
 const badwords = new Set([...DEFAULT_BADWORDS, ...list(process.env.BADWORDS)]);
 const severeWords = new Set(list(process.env.SEVERE_WORDS));
-const whitelist = new Set(list(process.env.WHITELIST));
+// Trust, minus anyone explicitly withdrawn.
+//
+// UNTRUST exists because taking one name OFF the whitelist otherwise means
+// rewriting the whole WHITELIST secret, and a secret is write-only — you
+// cannot read the current list to edit it. `!!whitelist remove` mutates memory
+// only, so a name removed that way is trusted again the moment the six-hourly
+// restart lands, which is not what anybody means by "remove".
+//
+// A subtraction list needs no knowledge of what it subtracts from, and it is
+// auditable: the reason someone lost trust is a name in one short variable.
+const untrust = new Set(list(process.env.UNTRUST));
+const whitelist = new Set(list(process.env.WHITELIST).filter((n) => !untrust.has(n)));
 
 // IRC channel names are case-insensitive: the server may echo "#BatCave" while
 // the secret says "#batcave". Comparing them with === / includes() silently
@@ -686,6 +698,72 @@ function noteHostileArrival(chan, why) {
     if (hist.length >= hostileLimit) lockDoors(chan, `${hist.length} hostile arrivals in ${Math.round(hostileWindowMs / 60000)}m`);
 }
 
+// Two regulars going at each other. See feud.js for why this judges the SHAPE
+// of an exchange rather than the words in it.
+const feuds = new Feuds({
+    devoiceMin: Number(process.env.FEUD_DEVOICE_MIN || 2),
+    instigatorBonus: Number(process.env.FEUD_INSTIGATOR_BONUS || 3),
+});
+
+/**
+ * Watch for a fight, and answer it the way the owner asked: a private word
+ * first, and only then a visible one — with whoever started it serving longer.
+ *
+ * This deliberately DOES act on whitelisted regulars, which the ordinary ladder
+ * never does. The exemption exists so a regular is not silenced mid-joke; it
+ * was never meant to make two of them untouchable while the room watches them
+ * tear into each other.
+ */
+function watchForFeud(chan, nick, message) {
+    if (isExempt(nick, chan) || moderationOff(chan)) return false;
+    const here = members.get(chanKey(chan)) || new Set();
+    const isPresent = (n) => [...here].some((m) => m.toLowerCase() === n.toLowerCase());
+    const target = aimedAt(message, isPresent);
+    if (!target) return false;
+
+    const sev = severityOf(message, { severe: severeWords, heavy: badwords });
+    const verdict = feuds.see(chan, nick, message, { severity: sev, target });
+    if (!verdict) return false;
+
+    if (verdict.action === 'nudge') {
+        // Privately, and to BOTH. Naming one of them in the room would pick a
+        // side in front of an audience, which is the thing that turns an
+        // argument into a grudge.
+        for (const who of [verdict.a, verdict.b]) {
+            notice(who, `\x0304[MOD]\x03 You and \x02${who === verdict.a ? verdict.b : verdict.a}\x02 `
+                + 'are going at each other in front of the room. Take it to DM. '
+                + 'Nothing has been done to either of you yet.');
+        }
+        log('MOD', `Feud nudge in ${chan}: ${verdict.a} vs ${verdict.b}`);
+        return true;
+    }
+
+    // They carried on. Both lose voice; the instigator for longer, because
+    // punishing the provoked exactly as hard as the provoker is unfair in a way
+    // the room can see.
+    for (const [who, mins] of [[verdict.instigator, verdict.instigatorMin],
+                               [verdict.other, verdict.otherMin]]) {
+        const key = `${chanKey(chan)}|${who.toLowerCase()}`;
+        serving.set(key, Date.now() + mins * 60000);
+        if (opped.has(chanKey(chan))) send(`MODE ${chan} -v ${who}`);
+        notice(who, `\x0304[MOD]\x03 Voice off for ${mins} minutes. `
+            + (who === verdict.instigator
+                ? 'Longer, because you started it.'
+                : 'Shorter, because you answered rather than started it.'));
+        setTimeout(() => {
+            serving.delete(key);
+            if (opped.has(chanKey(chan)) && (members.get(chanKey(chan)) || new Set()).has(who)) {
+                send(`MODE ${chan} +v ${who}`);
+            }
+        }, mins * 60000);
+    }
+    // The room is told only that it is over, and neither name is used.
+    say(chan, '\x0306[MOD]\x03 That is enough — two of you are quiet for a few minutes. 🦇');
+    log('MOD', `Feud devoice in ${chan}: ${verdict.instigator} ${verdict.instigatorMin}m, `
+        + `${verdict.other} ${verdict.otherMin}m`);
+    return true;
+}
+
 // --- Punishment / escalation ---
 function warnUser(chan, nick, reason) {
     const tier = tierOf(chan, nick);
@@ -964,6 +1042,13 @@ function scriptedModeration(chan, nick, message) {
     if (severe) { banUser(chan, nick, 'severe language'); return true; }
 
     if (moderationOff(chan)) return false;
+
+    // "stupid" and "idiot" are on the filter list and are NOT abuse in this
+    // room — people were being warned for the way their friends talk to them.
+    // A single light word is left alone entirely; three of them at once is
+    // still a pile-on and falls through to the count below.
+    const sev = severityOf(message, { severe: severeWords, heavy: badwords });
+    if (sev === 'light') return false;
 
     // Count DISTINCT filtered words. One swear is someone being rude; a message
     // carrying several is a tirade, and treating it as "watch your language"
@@ -1372,23 +1457,48 @@ async function getAIResponse(prompt, who) {
 
 /** One real AI call at startup. Silence from this layer is indistinguishable
  *  from an absence of abuse, so its health has to be asserted, not assumed. */
+// What the AI layer's health actually is, so it can be reported late and on
+// demand rather than only shouted once into an empty room.
+let aiHealth = 'unknown';
+let aiHealthTold = false;
+
+/** Tell the moderators the AI is down — once, and only when there IS one to tell. */
+function reportAiHealth() {
+    if (aiHealthTold || !aiHealth.startsWith('down')) return;
+    const mods = channelMods();
+    if (!mods.length) return;                       // nobody here yet; try again later
+    aiHealthTold = true;
+    for (const n of mods) {
+        notice(n, `\x0304[ALERT]\x03 AI moderation is offline (${aiHealth.slice(5, 70)}). `
+            + 'The word filter still stands, but anything it does not list gets through. '
+            + 'Check the Groq key.');
+    }
+}
+
 async function selfCheckAI() {
-    if (!config.groqKey) { log('WARN', 'No Groq key — AI moderation is OFF.'); return; }
+    if (!config.groqKey) {
+        aiHealth = 'down: no Groq key configured';
+        log('WARN', 'No Groq key — AI moderation is OFF.');
+        reportAiHealth();
+        return;
+    }
     try {
         const data = await groqChat({
             model: config.groqModel, temperature: 0, max_tokens: 8,
             messages: [{ role: 'user', content: 'reply with the single word: ok' }],
         });
         const txt = (data?.choices?.[0]?.message?.content || '').trim();
-        if (txt) { log('OK', `AI layer healthy (${config.groqModel}).`); return; }
+        if (txt) { aiHealth = 'ok'; log('OK', `AI layer healthy (${config.groqModel}).`); return; }
         throw new Error('empty response');
     } catch (e) {
+        // This used to shout once, immediately after joining — BEFORE NAMES had
+        // arrived, so channelMods() was empty and the alert reached nobody at
+        // all. A dead key then looked exactly like a quiet room: the AI simply
+        // stopped having opinions and the first anyone knew was abuse walking
+        // straight through the word list.
+        aiHealth = `down: ${e.message}`;
         log('ERR', `AI layer FAILED at startup: ${e.message}`);
-        // Tell the people who can do something about it, without alarming the room.
-        for (const n of channelMods()) {
-            notice(n, `\x0304[ALERT]\x03 AI moderation is offline (${e.message.slice(0, 60)}). `
-                + 'The word filter still stands. Check the Groq key.');
-        }
+        reportAiHealth();
     }
 }
 
@@ -1475,6 +1585,10 @@ function stageIncoming(nick, why) {
 function answerWhoIs(chan, asker, msg) {
     const name = config.nick.toLowerCase().replace(/[^a-z0-9]/g, '');
     const lower = msg.toLowerCase();
+    // Only when WE are the one being asked. Merely containing our name meant a
+    // question put to Drusilla was answered by Dracula instead — and answered
+    // wrongly, which is worse than not answering.
+    if (!addressedTo(msg, config.nick)) return false;
     if (!new RegExp(`(^|[^a-z0-9])${name}([^a-z0-9]|$)`).test(lower)) return false;
 
     const body = lower.replace(new RegExp(name, 'gi'), ' ').replace(/[?.!,]+$/, '').trim();
@@ -1483,10 +1597,18 @@ function answerWhoIs(chan, asker, msg) {
     const cloning = body.match(/\bwho(?:'s| is| are)?\s+(?:cloning|copying|impersonating|pretending to be)\s+(\S+)/);
     if (cloning) return answerCloning(chan, asker, cloning[1]);
 
-    const m = body.match(/\b(?:who(?:'s| is| was)?|whois|what about|tell me about|info(?: on| about)?)\s+(\S+)/);
+    // "who is X" — NOT a bare "who". Making the verb optional meant "who wrote
+    // dracula and in what year" was read as a lookup for a user called
+    // "wrote", and the bot answered a literary question with "ordinary user,
+    // never seen by me". Twice, in front of the room.
+    const m = body.match(/\b(?:who(?:'s|\s+(?:is|was|are))|whois|what about|tell me about|info(?:\s+(?:on|about))?)\s+(\S+)/);
     if (!m) return false;
     const who = m[1].replace(/^[@+~&%]/, '');
     if (!who || who.length < 2 || who === name) return false;
+    // Common words that follow "who is" in an ordinary question and are never
+    // nicknames. Without this, "who is the author of dracula" answers about a
+    // user called "the".
+    if (/^(the|a|an|this|that|it|he|she|they|your|my|our|going|coming|here|there|best|worst)$/.test(who)) return false;
 
     const k = who.toLowerCase();
     const bits = [];
@@ -1740,7 +1862,7 @@ function handleCommand(chan, nick, message) {
             reply( `Online ${h}h${m}m. Sentient: ${sentientMode ? 'ON' : 'OFF'}. `
                 + `Strict: ${strictNicks ? 'ON' : 'OFF'}. `
                 + `Raidguard: ${raidGuard ? 'ON' : 'OFF'}. Filter: ${badwords.size} words. `
-                + `AI budget: ${aiBudgetLeft()}. `
+                + `AI: ${aiHealth === 'ok' ? 'healthy' : aiHealth} (budget ${aiBudgetLeft()}). `
                 + `Autoban masks: ${autobanMasks.size}. Ops here: ${opped.has(chanKey(chan)) ? 'yes' : 'NO'}.`);
             break;
         }
@@ -2166,7 +2288,14 @@ function handleCommand(chan, nick, message) {
         case 'whitelist':
             if (!admin) { reply('Access denied.'); break; }
             if (args[0] === 'add' && args[1]) { whitelist.add(args[1].toLowerCase()); reply( `${args[1]} is trusted now — immune to auto-mod. 🩸`); }
-            else if (args[0] === 'remove' && args[1]) { whitelist.delete(args[1].toLowerCase()); reply( `${args[1]} removed from the whitelist.`); }
+            else if (args[0] === 'remove' && args[1]) {
+                whitelist.delete(args[1].toLowerCase());
+                // Say plainly that this does not survive a restart. Somebody
+                // removing a name and assuming it stuck would find them trusted
+                // again within the hour, with nothing to explain why.
+                reply(`${args[1]} removed from the whitelist — for THIS run only. `
+                    + `Add them to the UNTRUST secret to make it stick.`);
+            }
             else reply( `Whitelist (${whitelist.size}): ${[...whitelist].join(', ') || '(empty)'}.`);
             break;
         case 'announce':
@@ -2603,6 +2732,7 @@ function handleLine(line) {
             // ~ owner, & admin, @ op, % halfop all carry kick rights here.
             if (n.toLowerCase() === currentNick.toLowerCase() && /[~&@%]/.test(pfx)) {
                 if (!opped.has(ch)) log('OK', `Already opped in ${ch} (seen as "${pfx}" in NAMES).`);
+                setTimeout(reportAiHealth, 1500);   // now there is somebody to tell
                 opped.add(ch);
             }
         }
@@ -2860,6 +2990,10 @@ function handleLine(line) {
                 (n) => [...(members.get(chanKey(tgt)) || new Set())].some((m) => m.toLowerCase() === n.toLowerCase()));
             if (shield && !isTrusted(nick) && !isAdmin(nick)) { say(tgt, shield); return; }
         }
+        // Before the ordinary ladder: a fight between two people is its own
+        // thing, and answering it with a generic "watch your language" at
+        // whichever of them happened to speak last misses what is happening.
+        if (watchForFeud(tgt, nick, msg)) return;
         if (scriptedModeration(tgt, nick, msg)) { guardVictim(tgt, nick, msg); return; }
         // Sentient screening runs in the background. It must NOT return here:
         // doing so silenced every reply once sentient mode became the default.

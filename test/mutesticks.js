@@ -10,7 +10,7 @@ const modes=()=>out.filter(l=>/^MODE #batcave [-+]v Bilal/i.test(l));
 const pub=()=>out.filter(l=>/^PRIVMSG #batcave/.test(l));
 const notices=()=>out.filter(l=>/^NOTICE /.test(l));
 
-const srv=net.createServer((s)=>{ sock=s;
+const srv=net.createServer((s)=>{ sock=s; s.on('error',()=>{});
   s.on('data',(d)=>{ for(const l of String(d).split('\r\n')) { if(!l) continue; out.push(l);
     if(l.startsWith('NICK')) { say(':srv 001 Dracula :hi'); say(':srv 376 Dracula :End'); }
   }});

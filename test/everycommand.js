@@ -18,7 +18,7 @@ const ARG = { seen:'LiBu', info:'LiBu', unwarn:'LiBu', badword:'list', whitelist
   moderate:'', autovoice:'', fun:'', recruit:'', hotseat:'LiBu', toast:'LiBu' };
 const SKIP = new Set(['join','part','mass','hardban','announce','history','endgame']);
 
-const srv=net.createServer((s)=>{ sock=s;
+const srv=net.createServer((s)=>{ sock=s; s.on('error',()=>{});
   s.on('data',(d)=>{ for(const l of String(d).split('\r\n')) { if(!l) continue; out.push(l);
     if(l.startsWith('NICK')) sock.write(':srv 001 Dracula :hi\r\n:srv 376 Dracula :End\r\n');
   }});

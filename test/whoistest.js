@@ -8,7 +8,7 @@ let f=0; const c=(n,ok,d='')=>{if(!ok)f++;console.log(`  [${ok?'PASS':'FAIL'}] $
 const said=(re)=>out.filter(l=>l.startsWith('PRIVMSG #batcave')).some(l=>re.test(l));
 const lastSaid=()=>out.filter(l=>l.startsWith('PRIVMSG #batcave')).slice(-1)[0]||'(nothing)';
 
-const srv=net.createServer((s)=>{ sock=s;
+const srv=net.createServer((s)=>{ sock=s; s.on('error',()=>{});
   s.on('data',(d)=>{ for(const l of String(d).split('\r\n')) { if(!l) continue; out.push(l);
     if(l.startsWith('NICK')) {
       say(':srv 001 Dracula :Welcome'); say(':srv 376 Dracula :End of MOTD');
@@ -59,6 +59,27 @@ srv.listen(0,'127.0.0.1', async () => {
   say(':Vikram!v@h PRIVMSG #batcave :dracula who is cloning aloo');
   await wait(2500);
   c('names the impostor', said(/aloo_official/), lastSaid());
+
+  console.log('\n— a literary question is not a user lookup —');
+  out.length=0;
+  say(':Vikram!v@h PRIVMSG #batcave :drusilla who wrote dracula and in what year ?');
+  await wait(2000);
+  c('a question addressed to somebody ELSE is left alone', !said(/\[who\]/), lastSaid());
+  out.length=0;
+  say(':Vikram!v@h PRIVMSG #batcave :dracula who wrote dracula and in what year ?');
+  await wait(2000);
+  c('and "who wrote X" is never read as a user called "wrote"',
+    !said(/\[who\].*wrote/), lastSaid());
+  out.length=0;
+  say(':Vikram!v@h PRIVMSG #batcave :dracula who is the author of dracula ?');
+  await wait(2000);
+  c('nor "who is the ..." as a user called "the"', !said(/\[who\].*\bthe\b/), lastSaid());
+
+  console.log('\n— but a real lookup still works —');
+  out.length=0;
+  say(':Vikram!v@h PRIVMSG #batcave :dracula who is NangiPoojaBhabhi');
+  await wait(2000);
+  c('who is <nick> still answers', said(/\[who\].*NangiPoojaBhabhi/i), lastSaid());
 
   console.log('\n— an ordinary mention is NOT hijacked —');
   out.length=0;
