@@ -1,8 +1,8 @@
 // Trust you can edit from IRC instead of from a write-only secret.
 const { TrustList, effective, parseFlagRow, isEndOfList } = require('../trust.js');
 let f=0; const c=(n,ok,d='')=>{if(!ok)f++;console.log(`  [${ok?'PASS':'FAIL'}] ${n}${!ok&&d?' — '+d:''}`);};
-const mk=(chan='#batcave-trust')=>{const sent=[],logs=[];
-  return {sent,logs,t:new TrustList({channel:chan,send:l=>sent.push(l),log:(a,b)=>logs.push(a+' '+b)})};};
+const mk=(chan='#batcave-trust',self='')=>{const sent=[],logs=[];
+  return {sent,logs,t:new TrustList({channel:chan,self,send:l=>sent.push(l),log:(a,b)=>logs.push(a+' '+b)})};};
 
 console.log('— reading an Atheme FLAGS listing —');
 c('a numbered row is an entry', JSON.stringify(parseFlagRow('1     Vikram                 +AFORVefiorstv (FOUNDER)'))
@@ -103,5 +103,37 @@ two.sent.length = 0;
 two.t.allow('LiBu');
 c('allowing clears only the deny', two.sent[0].includes('-b'), two.sent[0]);
 c('and does not silently re-trust them', !two.t.has('libu'), 'trust must be granted deliberately');
+
+
+console.log('\n— a refused write must not be silent —');
+// This is the bug that cost three attempts at `!!trust seed` with nothing
+// stored and no reason given. ChanServ was refusing every write because
+// Atheme only lets a non-founder hand out flags it HOLDS — the bot had +Af,
+// so +f let it edit the list while every +V grant bounced. absorb() only
+// examined notices while a LISTING was open, so the refusals fell through a
+// branch that discarded them and the whole failure was invisible.
+const r = mk('#batcave-trust', 'vlkram');
+c('a refusal with no write pending is not ours', r.t.writeRefused('You are not authorized to perform this operation.') === null);
+r.t.add('Nessie');
+const why = r.t.writeRefused('You are not authorized to perform this operation.');
+c('after a write, the refusal is caught', Boolean(why), String(why));
+c('it names who we were writing', /Nessie/.test(why||''), String(why));
+c('it explains the actual Atheme rule', /hand out flags I hold/.test(why||''), String(why));
+c('and it gives the exact fix', /FLAGS #batcave-trust vlkram \+AfVb/.test(why||''), String(why));
+r.t.add('Almond');
+c('the ChanServ wording is caught too', Boolean(r.t.writeRefused('You may only manipulate flags you have.')));
+c('ordinary ChanServ chatter is not', r.t.writeRefused('Vikram has been opped on #batcave.') === null);
+
+console.log('\n— the bot must not read itself back —');
+// Holding +V and +b is the PRICE of being able to grant them, so we appear in
+// our own listing. Reading that back would put the bot in its own denied list.
+const s = mk('#batcave-trust', 'vlkram');
+s.t.refresh();
+['1  Vampire  +AFORefiorstv', '2  Vlkram  +AfVb', '3  Nessie  +V', '4  JAILER  +b',
+ 'End of #batcave-trust FLAGS listing.'].forEach(l => s.t.absorb(l));
+c('our own +V is not trust', !s.t.has('vlkram'), s.t.list().join(','));
+c('our own +b is not a denial', !s.t.isDenied('vlkram'), s.t.deniedList().join(','));
+c('everyone else still reads normally', s.t.has('nessie') && s.t.isDenied('jailer'));
+c('and the founder, holding neither marker, is absent', !s.t.has('vampire'));
 
 console.log(f?`\n${f} FAILED`:'\nALL PASS'); process.exit(f?1:0);

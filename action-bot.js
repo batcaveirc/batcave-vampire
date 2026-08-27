@@ -724,9 +724,21 @@ function noteHostileArrival(chan, why) {
 const trust = new TrustList({
     channel: (process.env.TRUST_CHANNEL || '').trim(),
     flag: (process.env.TRUST_FLAG || 'V').replace(/[^A-Za-z]/g, '') || 'V',
+    self: config.nsAccount || '',
     send: (l) => send(l),
     log,
 });
+
+// A refusal is worth saying ONCE, not once per name in a seed of thirty.
+let lastTrustGripe = 0;
+function reportTrustRefusal(line) {
+    const why = trust.writeRefused(line);
+    if (!why) return;
+    log('WARN', why.replace(/\x02/g, ''));
+    if (Date.now() - lastTrustGripe < 60000) return;
+    lastTrustGripe = Date.now();
+    for (const o of config.owners) notice(o, `\x0304[TRUST]\x03 ${why}`);
+}
 
 /** Recompute the effective whitelist after anything changes. */
 function refreshTrust() {
@@ -2975,6 +2987,9 @@ function handleLine(line) {
     if (command === 'NOTICE' && /^chanserv$/i.test(nick || '')) {
         if (servicesReport) servicesReport(msg);
         if (trust.absorb(msg)) refreshTrust();
+        // absorb() only looks at notices while a LISTING is open, so a refused
+        // WRITE used to fall straight through here and vanish.
+        reportTrustRefusal(msg);
     }
     if (command === 'NOTICE' && /^nickserv$/i.test(nick || '')) readNickInfo(msg);
     // The server's verdict on a !!history MODE change: 472 unknown mode char

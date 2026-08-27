@@ -88,6 +88,12 @@ class TrustList {
         this.pending = new Set();       // trusted, while a listing is in flight
         this.pendingDeny = new Set();   // denied, likewise
         this.lastRead = 0;
+        // Our own services account. It has to HOLD +V and +b to be
+        // allowed to hand them out (see writeRefused), which would
+        // otherwise put the bot in its own trusted and denied lists.
+        this.self = String(opts.self || '').toLowerCase();
+        this.lastWrite = 0;      // when we last asked ChanServ to change something
+        this.lastWriteWho = '';  // and about whom, so a refusal can name them
     }
 
     get enabled() { return Boolean(this.channel); }
@@ -128,8 +134,13 @@ class TrustList {
             // speaker against, so it is kept out of the name list rather than
             // silently trusting everybody via *!*@*.
             const plain = !row.who.includes('!') && !row.who.includes('@') && !row.who.includes('*');
-            if (plain && row.flags.includes(this.flag)) this.pending.add(row.who.toLowerCase());
-            if (plain && row.flags.includes(this.denyFlag)) this.pendingDeny.add(row.who.toLowerCase());
+            const key = row.who.toLowerCase();
+            // We must hold +V and +b to be able to grant them, so we
+            // appear in our own listing. Reading that back would put the
+            // bot in its own denied list and have it distrust itself.
+            const mine = this.self && key === this.self;
+            if (plain && !mine && row.flags.includes(this.flag)) this.pending.add(key);
+            if (plain && !mine && row.flags.includes(this.denyFlag)) this.pendingDeny.add(key);
             return false;
         }
         if (isEndOfList(line)) {
@@ -145,16 +156,54 @@ class TrustList {
         return false;
     }
 
+    /** Every write goes through here so a later refusal can be attributed. */
+    write(nick, change) {
+        this.lastWrite = Date.now();
+        this.lastWriteWho = String(nick);
+        this.send(`PRIVMSG ChanServ :FLAGS ${this.channel} ${nick} ${change}`);
+    }
+
+    /**
+     * ChanServ refusing a write we just made.
+     *
+     * This existed as a silent path and cost three attempts at `!!trust
+     * seed` with no explanation offered: absorb() only looked at notices
+     * while a LISTING was open, so every refusal of a write landed in a
+     * branch that discarded it. ChanServ was saying exactly what was
+     * wrong the whole time and nobody was reading it.
+     *
+     * The cause it was hiding: Atheme lets a non-founder hand out only
+     * the flags it HOLDS. +f is permission to edit the list, not
+     * permission to grant +V, so a bot with +Af silently writes nothing.
+     *
+     * @returns {string|null} a sentence worth showing an owner
+     */
+    writeRefused(line) {
+        const t = String(line || '');
+        // Only interpret a refusal as ours if we just wrote. ChanServ
+        // talks for many reasons and most are nothing to do with us.
+        if (!this.lastWrite || Date.now() - this.lastWrite > 20000) return null;
+        if (!/not authorized|access denied|insufficient|you may only manipulate|is not registered|no such/i.test(t)) return null;
+        const who = this.lastWriteWho ? ` (writing \x02${this.lastWriteWho}\x02)` : '';
+        if (/you may only manipulate|not authorized|access denied|insufficient/i.test(t)) {
+            return `ChanServ refused a change to ${this.channel}${who}: ${t.slice(0, 90)} `
+                + `— I hold +f but Atheme only lets me hand out flags I hold myself. `
+                + `Fix: \x02/msg ChanServ FLAGS ${this.channel} ${this.self || '<my account>'} `
+                + `+Af${this.flag}${this.denyFlag}\x02`;
+        }
+        return `ChanServ refused a change to ${this.channel}${who}: ${t.slice(0, 110)}`;
+    }
+
     add(nick) {
         if (!this.enabled) return false;
-        this.send(`PRIVMSG ChanServ :FLAGS ${this.channel} ${nick} +${this.flag}`);
+        this.write(nick, `+${this.flag}`);
         this.names.add(String(nick).toLowerCase());
         return true;
     }
 
     remove(nick) {
         if (!this.enabled) return false;
-        this.send(`PRIVMSG ChanServ :FLAGS ${this.channel} ${nick} -${this.flag}`);
+        this.write(nick, `-${this.flag}`);
         this.names.delete(String(nick).toLowerCase());
         return true;
     }
@@ -165,7 +214,7 @@ class TrustList {
         const k = String(nick).toLowerCase();
         // Remove any trust they hold in the same breath, or the two lists
         // disagree and whichever is read last wins.
-        this.send(`PRIVMSG ChanServ :FLAGS ${this.channel} ${nick} -${this.flag}+${this.denyFlag}`);
+        this.write(nick, `-${this.flag}+${this.denyFlag}`);
         this.names.delete(k);
         this.denied.add(k);
         return true;
@@ -174,7 +223,7 @@ class TrustList {
     /** Undo that. */
     allow(nick) {
         if (!this.enabled) return false;
-        this.send(`PRIVMSG ChanServ :FLAGS ${this.channel} ${nick} -${this.denyFlag}`);
+        this.write(nick, `-${this.denyFlag}`);
         this.denied.delete(String(nick).toLowerCase());
         return true;
     }
