@@ -110,6 +110,49 @@ const UNWELCOME = ['horny', 'slut', 'whore', 'milf', 'incest', 'porn', 'nangi',
     'underage', 'minor', 'preteen', 'kiddie', 'childs', 'child', 'yngg',
     'daddysgirl', 'stepdaughter', 'stepson', 'rape', 'molest'];
 
+// Solicitation, learned from 95 nicknames actually seen in #allindiachat.com
+// on 2026-08-27. The substring list above caught 7 of them; these fourteen
+// would have been INVITED into #batcave that day, among them
+// "Daddy_Will_Use_U_Deep_Secretly" and "jeerrk_on_wife_pic".
+//
+// Matched as WHOLE TOKENS, not substrings, because these words are short and
+// live inside innocent ones — "host" is in ghost, "dom" is in freedom, "cam"
+// is in Camila, "rp" is in Sharp. A nick is split on separators and on
+// camelCase, which is how these names are actually built.
+const SOLICIT = new Set([
+    'bull', 'bulls', 'cam', 'cams', 'camsex', 'host', 'hosting', 'hosts',
+    'rp', 'roleplay', 'daddy', 'daddies', 'f2f', 'hw', 'hotwife', 'cock',
+    'cocks', 'dick', 'dicks', 'feet', 'dom', 'doms', 'domme', 'kinky', 'kink',
+    'sissy', 'cuckold', 'jerk', 'jerkoff', 'wank', 'horny', 'naughty',
+    'meetup', 'realmeet', 'sexchat', 'dirtychat', 'onlyfans', 'snap',
+    // Abbreviated in the room itself. "shower" alone stays innocent —
+    // "Shower_Thoughts" is an ordinary name and must keep working.
+    'gshower', 'goldenshower', 'ws',
+]);
+
+// Words that give themselves away as a SUFFIX with no separator in front —
+// "Muslimbull", "BongHw". Kept to a short list and matched only at the end of
+// the nick, so "bullet" and "bulletin" are untouched.
+const SOLICIT_SUFFIX = ['bull', 'bulls', 'cam', 'cams', 'hw', 'cock', 'dick'];
+
+// Individually innocent, damning together. "wife" is ordinary and "pic" is
+// ordinary; "jeerrk_on_wife_pic" is not. One word from each group is the
+// signal — a subject and something to do with it — which leaves names like
+// "Priya_Chat_Fun" alone because they carry no subject at all.
+const SUBJECT = new Set(['wife', 'wifes', 'bhabhi', 'aunty', 'aunti', 'milf',
+    'gf', 'girlfriend', 'girls', 'ladies', 'housewife']);
+const OFFER = new Set(['pic', 'pics', 'vid', 'vids', 'video', 'videos', 'cam',
+    'show', 'jerk', 'jeerrk', 'fap', 'nude', 'nudes', 'leak', 'leaks', 'sell']);
+
+/** Split a nickname the way it was actually built: separators and camelCase. */
+function nickTokens(nick) {
+    return String(nick || '')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .split(/[^A-Za-z]+/)
+        .filter(Boolean)
+        .map((t) => t.toLowerCase());
+}
+
 // A nick that advertises being under eighteen. Never invited, whatever else it
 // says: "f16", "16f", "17yo", "15 y". The feminine-marker patterns match these
 // too, which is exactly why this has to be checked FIRST — "f16" reads as a
@@ -197,6 +240,17 @@ class Recruiter {
         // child, and inviting one into an adult room is the single worst thing
         // this code could do.
         if (UNDERAGE.test(String(nick || ''))) return 'underage';
+        const tok = nickTokens(nick);
+        const hit = tok.find((t) => SOLICIT.has(t));
+        if (hit) return `solicitation ("${hit}")`;
+
+        const low = String(nick || '').toLowerCase().replace(/[^a-z]/g, '');
+        const tail = SOLICIT_SUFFIX.find((w) => low.endsWith(w));
+        if (tail) return `solicitation ("${tail}")`;
+
+        const subject = tok.find((t) => SUBJECT.has(t));
+        const offer = tok.find((t) => OFFER.has(t));
+        if (subject && offer) return `solicitation ("${subject}" + "${offer}")`;
         const n = nick.toLowerCase().replace(/[^a-z0-9]/g, '');
         return UNWELCOME.some((w) => n.includes(w));
     }
