@@ -804,7 +804,11 @@ function loseTrust(nick, what, chan) {
     if (!whitelist.has(k)) return;               // nothing to take
 
     if (trust.enabled && trust.loaded) {
-        trust.remove(nick);
+        // deny(), not remove(). Somebody who lost standing for abuse should
+        // stay on record — otherwise the auto-promotion in gainTrust() can
+        // quietly hand it back a month later, having forgotten why it was
+        // taken away.
+        trust.deny(nick);
         refreshTrust();
     } else {
         whitelist.delete(k);
@@ -823,6 +827,10 @@ function gainTrust(nick, chan) {
     if (!autoTrust || !trust.enabled || !trust.loaded) return;
     const k = nick.toLowerCase();
     if (whitelist.has(k) || promoted.has(k) || isExempt(nick, chan)) return;
+    // The deny list is a memory, and this is what it is for: without it,
+    // somebody who lost trust for a slur is eligible again the moment their
+    // account is old enough and they have said forty quiet things.
+    if (untrust.has(k) || trust.isDenied(k)) return;
     const why = reputation.earns(nick, {
         account: accountOf.get(k) || '',
         registeredAt: registeredAt.get(k) || 0,
@@ -2093,7 +2101,7 @@ function handleCommand(chan, nick, message) {
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!history on|off, '
                 + '!!access, !!unwarn <nick>, !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
-                + '!!trust add|del|reload <nick> (sticks), !!untrust add|del <nick>, '
+                + '!!trust add|del|seed|reload <nick> (sticks), !!untrust add|del <nick>, '
             + '!!whitelist add|remove <nick> (this run only), '
             + '!!announce <msg>.');
             break;
@@ -2569,8 +2577,29 @@ function handleCommand(chan, nick, message) {
                 if (!names.length) { reply('Nothing to seed — the whitelist is empty.'); break; }
                 for (const n of names) trust.add(n);
                 refreshTrust();
-                reply(`Copied ${names.length} name${names.length === 1 ? '' : 's'} into `
-                    + `${trust.channel}: ${names.join(', ')}. They are stored on the server now.`);
+                reply(`Sent ${names.length} name${names.length === 1 ? '' : 's'} to `
+                    + `${trust.channel}: ${names.join(', ')}.`);
+                // ChanServ access lists work on ACCOUNTS, not nicks. A regular
+                // who has never registered with NickServ cannot be added by
+                // name, and ChanServ says so per name rather than failing the
+                // batch — so the count sent is not the count stored. Read it
+                // back rather than assuming, and say which ones landed.
+                reply('ChanServ works on ACCOUNTS, so any of those who never '
+                    + 'registered a nick will have been refused. Checking what '
+                    + 'actually landed…');
+                setTimeout(() => {
+                    trust.refresh();
+                    setTimeout(() => {
+                        const got = trust.list();
+                        const missing = names.filter((n) => !got.includes(n.toLowerCase()));
+                        reply(`Stored (${got.length}): ${got.join(', ') || '(none)'}.`);
+                        if (missing.length) {
+                            reply(`NOT stored — no services account: ${missing.join(', ')}. `
+                                + 'They stay covered by the WHITELIST secret; ask them to '
+                                + 'register their nick to move them across.');
+                        }
+                    }, 4000);
+                }, 2500);
             } else {
                 const live = trust.loaded && trust.size > 0;
                 reply(`Trusted (${trust.size}, from ${trust.channel}`
@@ -2588,17 +2617,24 @@ function handleCommand(chan, nick, message) {
             const who = (args[1] || '').toLowerCase();
             if (args[0] === 'add' && who) {
                 untrust.add(who);
-                if (trust.enabled && trust.loaded) trust.remove(who);
+                // Written to the channel as a +b entry, so a repeat offender
+                // stays known across every restart and every bot — not just
+                // for this run, and not in a secret nobody can read back.
+                const stuck = trust.enabled && trust.loaded && trust.deny(args[1]);
                 refreshTrust();
                 reply(`${args[1]} is untrusted`
-                    + `${trust.enabled && trust.loaded ? ` — removed from ${trust.channel} too, so it sticks.`
-                        : ' for THIS run. Add them to the UNTRUST secret, or set TRUST_CHANNEL, to make it stick.'}`);
+                    + (stuck ? ` — recorded on ${trust.channel}, survives restarts.`
+                             : ' for THIS run. Set TRUST_CHANNEL to make it stick.'));
             } else if ((args[0] === 'del' || args[0] === 'remove') && who) {
                 untrust.delete(who);
+                if (trust.enabled && trust.loaded) trust.allow(args[1]);
                 refreshTrust();
                 reply(`${args[1]} is no longer on the untrust list.`);
             } else {
-                reply(`Untrusted (${untrust.size}): ${[...untrust].join(', ') || '(nobody)'}. `
+                const onChannel = trust.enabled && trust.loaded ? trust.deniedList() : [];
+                reply(`Untrusted (${onChannel.length || untrust.size}): `
+                    + `${(onChannel.length ? onChannel : [...untrust]).join(', ') || '(nobody)'}`
+                    + `${onChannel.length ? ` — from ${trust.channel}` : ''}. `
                     + '!!untrust add|del <nick>');
             }
             break;

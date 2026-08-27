@@ -65,7 +65,13 @@ srv.listen(0,'127.0.0.1', async () => {
   c('!!untrust still exists', notices().some(l=>/soul is untrusted/.test(l)), notices().join(' | '));
   out.length=0; say('boss','!!untrust');
   await wait(1200);
-  c('and lists who is on it', notices().some(l=>/Untrusted \(1\).*soul/.test(l)), notices().join(' | '));
+  // Asserts the INTENT, not a count. The listing now reads from the trust
+  // channel's deny entries rather than the runtime set, so the number depends
+  // on what the channel already holds — which is the point of storing it there.
+  c('and lists who is on it', notices().some(l=>/Untrusted \(\d+\).*soul/.test(l)),
+    notices().join(' | '));
+  c('and says where the list came from',
+    notices().some(l=>/from #batcave-trust/.test(l)), notices().join(' | '));
 
   try{bot.kill('SIGKILL');}catch(e){}
   console.log(f?`\n${f} FAILED`:'\nALL PASS');

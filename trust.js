@@ -69,12 +69,24 @@ class TrustList {
         // being a regular means here anyway, so the two stay in step and the
         // list is meaningful to a human reading it in ChanServ.
         this.flag = opts.flag || 'V';
+        // The SECOND list, in the same channel. Atheme marks an access entry
+        // with +b as an auto-kick, which is exactly the right meaning for
+        // "this person has forfeited standing" — and its only side effect is
+        // keeping them out of a secret channel they would never join anyway.
+        //
+        // Two lists in one readable place beats a trusted list on the server
+        // and an untrusted one in a write-only secret, which is what this
+        // replaces. Both are auditable: ChanServ records who changed each
+        // entry and when.
+        this.denyFlag = opts.denyFlag || 'b';
         this.send = opts.send;
         this.log = opts.log || (() => {});
         this.names = new Set();
+        this.denied = new Set();
         this.loading = false;
         this.loaded = false;
-        this.pending = new Set();     // collected while a listing is in flight
+        this.pending = new Set();       // trusted, while a listing is in flight
+        this.pendingDeny = new Set();   // denied, likewise
         this.lastRead = 0;
     }
 
@@ -85,6 +97,7 @@ class TrustList {
         if (!this.enabled || this.loading) return;
         this.loading = true;
         this.pending = new Set();
+        this.pendingDeny = new Set();
         this.send(`PRIVMSG ChanServ :FLAGS ${this.channel}`);
         // If ChanServ never answers — not registered, no access, services
         // split — the listing must not stay open forever holding an empty
@@ -114,10 +127,9 @@ class TrustList {
             // A hostmask entry is real access but not a name we can match a
             // speaker against, so it is kept out of the name list rather than
             // silently trusting everybody via *!*@*.
-            if (!row.who.includes('!') && !row.who.includes('@') && !row.who.includes('*')
-                && row.flags.includes(this.flag)) {
-                this.pending.add(row.who.toLowerCase());
-            }
+            const plain = !row.who.includes('!') && !row.who.includes('@') && !row.who.includes('*');
+            if (plain && row.flags.includes(this.flag)) this.pending.add(row.who.toLowerCase());
+            if (plain && row.flags.includes(this.denyFlag)) this.pendingDeny.add(row.who.toLowerCase());
             return false;
         }
         if (isEndOfList(line)) {
@@ -125,7 +137,9 @@ class TrustList {
             this.loaded = true;
             this.lastRead = Date.now();
             this.names = this.pending;
-            this.log('OK', `Trust list from ${this.channel}: ${this.names.size} names.`);
+            this.denied = this.pendingDeny;
+            this.log('OK', `Trust list from ${this.channel}: ${this.names.size} trusted, `
+                + `${this.denied.size} denied.`);
             return true;
         }
         return false;
@@ -144,6 +158,29 @@ class TrustList {
         this.names.delete(String(nick).toLowerCase());
         return true;
     }
+
+    /** Mark somebody as having forfeited standing, durably. */
+    deny(nick) {
+        if (!this.enabled) return false;
+        const k = String(nick).toLowerCase();
+        // Remove any trust they hold in the same breath, or the two lists
+        // disagree and whichever is read last wins.
+        this.send(`PRIVMSG ChanServ :FLAGS ${this.channel} ${nick} -${this.flag}+${this.denyFlag}`);
+        this.names.delete(k);
+        this.denied.add(k);
+        return true;
+    }
+
+    /** Undo that. */
+    allow(nick) {
+        if (!this.enabled) return false;
+        this.send(`PRIVMSG ChanServ :FLAGS ${this.channel} ${nick} -${this.denyFlag}`);
+        this.denied.delete(String(nick).toLowerCase());
+        return true;
+    }
+
+    isDenied(nick) { return this.denied.has(String(nick || '').toLowerCase()); }
+    deniedList() { return [...this.denied].sort(); }
 
     has(nick) { return this.names.has(String(nick || '').toLowerCase()); }
     get size() { return this.names.size; }
@@ -171,7 +208,11 @@ function effective(trust, fromSecret, untrust) {
     // actually in the channel; `!!trust seed` is how you get there.
     const useChannel = trust && trust.enabled && trust.loaded && trust.names.size > 0;
     const base = useChannel ? trust.names : fromSecret;
-    return new Set([...base].filter((n) => !untrust.has(n)));
+    // Denied wins over trusted, from either source. The channel's deny list is
+    // the durable one; the UNTRUST secret stays as a fallback for rooms with
+    // no trust channel configured.
+    const denied = new Set([...untrust, ...(trust && trust.denied ? trust.denied : [])]);
+    return new Set([...base].filter((n) => !denied.has(n)));
 }
 
 module.exports = { TrustList, effective, parseFlagRow, isEndOfList };

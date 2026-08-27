@@ -80,4 +80,28 @@ empty.add('Vikram');
 c('and the moment somebody is in it, it does', effective(empty, secret, untrust).size === 1,
   [...effective(empty, secret, untrust)].join(', '));
 
+console.log('\n— two lists, one channel —');
+// The owner's idea, and the right one: the channel holds who IS trusted and
+// who has FORFEITED it, in one readable place with an audit trail, instead of
+// a server-side list plus a write-only secret that cannot be read back.
+const two = mk();
+two.t.refresh();
+['1  Vikram  +AFORVefiorstv', '2  LiBu  +V', '3  JAILER  +b', '4  soul  +b',
+ 'End of #batcave-trust FLAGS listing.'].forEach(l => two.t.absorb(l));
+c('trusted are read from +V', two.t.list().join(',') === 'libu,vikram', two.t.list().join(','));
+c('denied are read from +b', two.t.deniedList().join(',') === 'jailer,soul', two.t.deniedList().join(','));
+
+const eff = effective(two.t, new Set(['vikram','libu','jailer','soul','almond']), new Set());
+c('denied beats trusted', !eff.has('jailer') && !eff.has('soul'), [...eff].join(','));
+c('and the trusted survive', eff.has('vikram') && eff.has('libu'));
+
+two.sent.length = 0;
+two.t.deny('LiBu');
+c('denying writes BOTH flags at once', two.sent[0].includes('-V+b'), two.sent[0]);
+c('so the two lists cannot disagree', !two.t.has('libu') && two.t.isDenied('libu'));
+two.sent.length = 0;
+two.t.allow('LiBu');
+c('allowing clears only the deny', two.sent[0].includes('-b'), two.sent[0]);
+c('and does not silently re-trust them', !two.t.has('libu'), 'trust must be granted deliberately');
+
 console.log(f?`\n${f} FAILED`:'\nALL PASS'); process.exit(f?1:0);
