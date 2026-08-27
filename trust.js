@@ -255,12 +255,25 @@ function effective(trust, fromSecret, untrust) {
     // was registered — silently, because losing an exemption looks exactly like
     // never having had one. The secret keeps the room until somebody is
     // actually in the channel; `!!trust seed` is how you get there.
-    const useChannel = trust && trust.enabled && trust.loaded && trust.names.size > 0;
+    //
+    // "Somebody is in the channel" is not enough on its own. We must HOLD +V
+    // and +b to be allowed to hand them out, so our own entry carries both —
+    // and on a channel that had not been seeded yet that lone self-entry was
+    // sufficient to flip the takeover on, whereupon the matching deny filtered
+    // it straight back out and left NOBODY trusted. Every regular lost their
+    // standing the moment the flags were granted, silently, which is the exact
+    // failure the guard above was written to prevent.
+    //
+    // So the takeover needs a name that is not ours, and the result has to be
+    // non-empty. A channel that yields nothing is a channel that is not ready.
+    const fromChannel = trust && trust.names ? trust.names : new Set();
+    const denied = new Set([...untrust, ...(trust && trust.denied ? trust.denied : [])]);
+    const channelGives = new Set([...fromChannel].filter((n) => !denied.has(n)));
+    const useChannel = Boolean(trust && trust.enabled && trust.loaded && channelGives.size > 0);
     const base = useChannel ? trust.names : fromSecret;
     // Denied wins over trusted, from either source. The channel's deny list is
     // the durable one; the UNTRUST secret stays as a fallback for rooms with
     // no trust channel configured.
-    const denied = new Set([...untrust, ...(trust && trust.denied ? trust.denied : [])]);
     return new Set([...base].filter((n) => !denied.has(n)));
 }
 

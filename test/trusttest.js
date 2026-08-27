@@ -136,4 +136,42 @@ c('our own +b is not a denial', !s.t.isDenied('vlkram'), s.t.deniedList().join('
 c('everyone else still reads normally', s.t.has('nessie') && s.t.isDenied('jailer'));
 c('and the founder, holding neither marker, is absent', !s.t.has('vampire'));
 
+
+console.log('\n— the channel must not take over on our own entry alone —');
+// The live failure, exactly. Granting the bot +V and +b so it could hand them
+// out put ONE name in the channel: its own, in both lists. names.size was 1,
+// so the channel took over from the WHITELIST secret, and then the deny
+// removed the only name — leaving nobody trusted at all. `!!trust seed` then
+// answered "Nothing to seed — the whitelist is empty", which was true and
+// completely unhelpful, and every regular had quietly lost their standing.
+const self = mk('#batcave-trust', 'vlkram');
+self.t.refresh();
+['1  Vampire  +AFORefiorstv', '2  Vlkram  +AVbf',
+ 'End of #batcave-trust FLAGS listing.'].forEach(l => self.t.absorb(l));
+const secretList = new Set(['vikram', 'nessie', 'almond', 'libu']);
+const kept = effective(self.t, secretList, new Set());
+c('a channel holding only US is not ready', kept.size === secretList.size, [...kept].join(','));
+c('so the secret still holds the room', kept.has('nessie') && kept.has('almond'));
+c('and nobody is silently stripped', kept.size > 0);
+
+// Same shape, on a build that has not yet learnt to skip its own account:
+// the deny must still win, so the result is empty and the guard has to catch
+// it rather than believing the channel is authoritative.
+const raw = mk('#batcave-trust');   // no `self` — reads itself back
+raw.t.refresh();
+['1  Vlkram  +AVbf', 'End of #batcave-trust FLAGS listing.'].forEach(l => raw.t.absorb(l));
+const kept2 = effective(raw.t, secretList, new Set());
+c('a channel that yields nobody never takes over', kept2.size === secretList.size, [...kept2].join(','));
+
+console.log('\n— but a real seeded channel does take over —');
+const real = mk('#batcave-trust', 'vlkram');
+real.t.refresh();
+['1  Vampire  +AFORefiorstv', '2  Vlkram  +AVbf', '3  Nessie  +V', '4  Almond  +V',
+ '5  JAILER  +b', 'End of #batcave-trust FLAGS listing.'].forEach(l => real.t.absorb(l));
+const kept3 = effective(real.t, new Set(['vikram', 'jailer']), new Set());
+c('the channel now wins over the secret', kept3.has('nessie') && kept3.has('almond'), [...kept3].join(','));
+c('the secret-only name is dropped', !kept3.has('vikram'), 'channel is authoritative once real');
+c('the denied stay denied', !kept3.has('jailer'));
+c('and we are still not in our own list', !kept3.has('vlkram'));
+
 console.log(f?`\n${f} FAILED`:'\nALL PASS'); process.exit(f?1:0);
