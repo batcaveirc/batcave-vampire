@@ -12,6 +12,7 @@ const { Handshake } = require('./handshake');
 const { Feuds, severityOf, aimedAt } = require('./feud');
 const { TrustList, effective } = require('./trust');
 const { Reputation } = require('./reputation');
+const { solicits } = require('./solicit');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
@@ -1215,7 +1216,34 @@ function scriptedModeration(chan, nick, message) {
     if (!isUntouchable(nick, chan) && wordHit(severeWords, message)) {
         loseTrust(nick, 'severe', chan);
     }
+
+    // Solicitation, which the word list cannot see. Learned from the rooms the
+    // recruiter invites from, where one message in five is an advert and
+    // almost none of it contains a swear word. See solicit.js.
+    const sol = solicits(message);
+    if (sol.level === 'child' && !isUntouchable(nick, chan)) {
+        // Checked BEFORE the trusted exemption, like severe language. There is
+        // no standing in this room that makes soliciting around children a
+        // matter for a warning.
+        loseTrust(nick, 'severe', chan);
+        banUser(chan, nick, 'soliciting, referring to minors');
+        for (const m of channelMods()) {
+            notice(m, `\x0304[ALERT]\x03 \x02${nick}\x02 banned — solicitation referring to `
+                + `minors: "${String(message).slice(0, 80)}"`);
+        }
+        return true;
+    }
+
     if (isExempt(nick, chan)) return false;
+
+    if (sol.level === 'solicit') {
+        // Advertising, not conversation. Removed rather than warned: nobody
+        // posts a rate card by accident, and the ladder exists for people who
+        // might have been joking.
+        log('MOD', `Solicitation from ${nick}: ${sol.why.join(', ')} — "${message.slice(0, 60)}"`);
+        kickUser(chan, nick, `advertising (${sol.why.slice(0, 2).join(', ')})`);
+        return true;
+    }
 
     // Severe language is always actioned — including inside a game. Switching
     // moderation off is about avoiding accidental kicks, not tolerating slurs.
