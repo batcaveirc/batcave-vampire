@@ -219,4 +219,28 @@ plain.t.refresh();
 ['1  Nessie  +V', 'End of #batcave-trust FLAGS listing.'].forEach(l => plain.t.absorb(l));
 c('holding no entry at all is safe', plain.t.canSit().ok === true, plain.t.canSit().why);
 
+
+console.log('\n— hostmask entries, which is how the unregistered get stored —');
+// Verified against the live server: "Flags +V were set on Carmilla!*@* in
+// #batcave-trust." ChanServ keys on the ACCOUNT, so somebody who never
+// registered cannot be stored by name — a mask is the only way, and it is why
+// a 73-name whitelist became 18 entries.
+const mk2 = mk('#batcave-trust', 'vlkram');
+mk2.t.refresh();
+['1  Vlkram  +ASVbef', '2  Nessie  +V', '3  Carmilla!*@*  +V',
+ '4  *!*@some.isp.net  +V', '5  JAILER  +b', '6  *!*@bad.host  +b',
+ 'End of #batcave-trust FLAGS listing.'].forEach(l => mk2.t.absorb(l));
+c('named accounts stay names', mk2.t.list().join(',') === 'nessie', mk2.t.list().join(','));
+c('masks are kept apart from names', mk2.t.masks.size === 2, [...mk2.t.masks].join(','));
+c('a mask is never treated as a name', !mk2.t.has('carmilla!*@*') && !mk2.t.has('*!*@some.isp.net'));
+c('denied masks are separate too', mk2.t.denyMasks.size === 1, [...mk2.t.denyMasks].join(','));
+c('and denied names still read', mk2.t.deniedList().join(',') === 'jailer');
+c('our own row is still skipped', !mk2.t.has('vlkram') && !mk2.t.isDenied('vlkram'));
+
+// The danger this separation exists to prevent.
+const wild = mk('#batcave-trust', 'vlkram');
+wild.t.refresh();
+['1  *!*@*  +V', 'End of #batcave-trust FLAGS listing.'].forEach(l => wild.t.absorb(l));
+c('a catch-all mask never becomes a trusted NAME', wild.t.size === 0, [...wild.t.list()].join(','));
+
 console.log(f?`\n${f} FAILED`:'\nALL PASS'); process.exit(f?1:0);

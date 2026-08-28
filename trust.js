@@ -87,6 +87,10 @@ class TrustList {
         this.loaded = false;
         this.pending = new Set();       // trusted, while a listing is in flight
         this.pendingDeny = new Set();   // denied, likewise
+        this.masks = new Set();         // trusted by hostmask (unregistered people)
+        this.denyMasks = new Set();     // denied by hostmask
+        this.pendingMasks = new Set();
+        this.pendingDenyMasks = new Set();
         this.lastRead = 0;
         // Our own services account. It has to HOLD +V and +b to be
         // allowed to hand them out (see writeRefused), which would
@@ -138,6 +142,8 @@ class TrustList {
         this.loading = true;
         this.pending = new Set();
         this.pendingDeny = new Set();
+        this.pendingMasks = new Set();
+        this.pendingDenyMasks = new Set();
         this.send(`PRIVMSG ChanServ :FLAGS ${this.channel}`);
         // If ChanServ never answers — not registered, no access, services
         // split — the listing must not stay open forever holding an empty
@@ -180,6 +186,15 @@ class TrustList {
             if (mine) this.selfFlags = row.flags;
             if (plain && !mine && row.flags.includes(this.flag)) this.pending.add(key);
             if (plain && !mine && row.flags.includes(this.denyFlag)) this.pendingDeny.add(key);
+            // A hostmask entry is real access and ChanServ accepts it —
+            // verified live: "Flags +V were set on Carmilla!*@*". It is the
+            // ONLY way to store somebody who has never registered a nick,
+            // because an account is the only other key ChanServ has. Kept in
+            // separate sets: a name is matched exactly, a mask is matched
+            // against nick!user@host, and conflating the two would let a
+            // `*!*@*` entry trust the entire network.
+            if (!plain && !mine && row.flags.includes(this.flag)) this.pendingMasks.add(row.who);
+            if (!plain && !mine && row.flags.includes(this.denyFlag)) this.pendingDenyMasks.add(row.who);
             return false;
         }
         if (isEndOfList(line)) {
@@ -188,8 +203,12 @@ class TrustList {
             this.lastRead = Date.now();
             this.names = this.pending;
             this.denied = this.pendingDeny;
+            this.masks = this.pendingMasks;
+            this.denyMasks = this.pendingDenyMasks;
             this.log('OK', `Trust list from ${this.channel}: ${this.names.size} trusted, `
-                + `${this.denied.size} denied.`);
+                + `${this.denied.size} denied`
+                + (this.masks.size || this.denyMasks.size
+                    ? `, plus ${this.masks.size} trusted and ${this.denyMasks.size} denied by mask.` : '.'));
             return true;
         }
         return false;

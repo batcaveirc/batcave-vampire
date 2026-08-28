@@ -467,10 +467,24 @@ function isRegistered(nick) { return !!accountOf.get(nick.toLowerCase()); }
 
 /** True if this nick's host matches a TRUSTED_MASKS entry. */
 function hostIsTrusted(nick) {
-    if (!trustedMasks.size) return false;
     const uh = hostOf.get(nick.toLowerCase());
     if (!uh) return false;
-    for (const m of trustedMasks) if (globToRe(m).test(`${nick}!${uh}`)) return true;
+    const full = `${nick}!${uh}`;
+    for (const m of trustedMasks) if (globToRe(m).test(full)) return true;
+    // Masks stored in the trust channel count the same. This is the only way
+    // somebody who has never registered a nick can be stored at all — ChanServ
+    // keys on the account and they have none.
+    for (const m of trust.masks) if (globToRe(m).test(full)) return true;
+    return false;
+}
+
+/** Denied by a hostmask entry in the trust channel. */
+function hostIsDenied(nick) {
+    if (!trust.denyMasks.size) return false;
+    const uh = hostOf.get(nick.toLowerCase());
+    if (!uh) return false;
+    const full = `${nick}!${uh}`;
+    for (const m of trust.denyMasks) if (globToRe(m).test(full)) return true;
     return false;
 }
 /**
@@ -496,7 +510,8 @@ function isForfeited(nick) {
     const k = String(nick || '').toLowerCase();
     if (untrust.has(k) || trust.isDenied(k)) return true;
     const acct = accountOf.get(k);
-    return Boolean(acct && (untrust.has(acct.toLowerCase()) || trust.isDenied(acct)));
+    if (acct && (untrust.has(acct.toLowerCase()) || trust.isDenied(acct))) return true;
+    return hostIsDenied(nick);
 }
 
 /**
@@ -761,6 +776,52 @@ function reportTrustRefusal(line) {
     for (const o of config.owners) notice(o, `\x0304[TRUST]\x03 ${why}`);
 }
 
+/**
+ * How should this person be written into the trust channel?
+ *
+ * ChanServ keys on the services ACCOUNT and nothing else, so a regular who
+ * never registered a nick cannot be stored under their name at all — which is
+ * why a 73-name whitelist became 18 entries. It DOES accept a hostmask
+ * (verified live: "Flags +V were set on Carmilla!*@*"), and that is the only
+ * way to store the rest.
+ *
+ * Preference order, strongest identity first:
+ *   1. their account          — cannot be impersonated
+ *   2. *!*@their host         — survives a nick change, but a shared ISP cloak
+ *                               covers more people than you meant
+ *   3. nick!*@*               — last resort: an UNREGISTERED nick is free for
+ *                               anyone to take, so this trusts whoever takes it
+ *
+ * @returns {{key:string, how:string, weak:boolean}}
+ */
+function trustKeyFor(nick) {
+    const k = String(nick || '').toLowerCase();
+    const acct = accountOf.get(k);
+    if (acct) return { key: acct, how: `account ${acct}`, weak: false };
+    // NOT a mask. We only know accounts for people we have SEEN; ChanServ
+    // knows them for everybody, and resolves a nick to its account by itself —
+    // that is how `Nessie` was stored as `MinaL`. Guessing a mask because WE
+    // are ignorant would write a weak entry for somebody perfectly registered
+    // who simply happens to be offline. Send the name and let ChanServ answer.
+    return { key: nick, how: `name ${nick} (ChanServ resolves it to an account)`, weak: false };
+}
+
+/**
+ * The fallback for somebody ChanServ genuinely cannot store: a hostmask.
+ *
+ * Only reached after ChanServ has actually refused the name, never on a guess.
+ * A mask is not an identity — an unregistered nick is free for anyone to take,
+ * so this trusts whoever takes it — which is why it is a second pass with the
+ * owner told what happened, rather than a silent default.
+ */
+function maskKeyFor(nick) {
+    const uh = hostOf.get(String(nick || '').toLowerCase());
+    const host = uh && uh.includes('@') ? uh.split('@')[1] : '';
+    return host
+        ? { key: `*!*@${host}`, how: `*!*@${host} (their host)` }
+        : { key: `${nick}!*@*`, how: `${nick}!*@* (nick only — anyone may take it)` };
+}
+
 /** Recompute the effective whitelist after anything changes. */
 function refreshTrust() {
     whitelist = effective(trust, seedWhitelist, untrust);
@@ -870,7 +931,12 @@ function gainTrust(nick, chan) {
     });
     if (!why) return;
     promoted.add(k);
-    trust.add(nick);
+    // Deliberately the ACCOUNT, never a mask. reputation.earns() already
+    // requires a registered account, and a mask is not an identity — auto
+    // promotion writing `nick!*@*` would hand standing to whoever next takes
+    // an unregistered nick, without a human ever seeing it happen. The mask
+    // fallback belongs to the commands a person types.
+    trust.add(accountOf.get(k) || nick);
     refreshTrust();
     log('MOD', `Trust granted to ${nick}: ${why}`);
     for (const m of channelMods()) {
@@ -2594,8 +2660,9 @@ function handleCommand(chan, nick, message) {
             }
             const who = args[1];
             if (args[0] === 'add' && who) {
-                trust.add(who); refreshTrust();
-                reply(`${who} is trusted — stored on ${trust.channel}, survives restarts. 🩸`);
+                trust.add(trustKeyFor(who).key); refreshTrust();
+                reply(`${who} is trusted as ${trustKeyFor(who).how} — stored on `
+                    + `${trust.channel}, survives restarts. 🩸`);
             } else if ((args[0] === 'del' || args[0] === 'remove') && who) {
                 trust.remove(who); refreshTrust();
                 reply(`${who} is no longer trusted — stored on ${trust.channel}.`);
@@ -2608,7 +2675,7 @@ function handleCommand(chan, nick, message) {
                 // them back by hand, one at a time, from a list nobody can read.
                 const names = [...whitelist];
                 if (!names.length) { reply('Nothing to seed — the whitelist is empty.'); break; }
-                for (const n of names) trust.add(n);
+                for (const n of names) trust.add(trustKeyFor(n).key);
                 refreshTrust();
                 reply(`Sent ${names.length} name${names.length === 1 ? '' : 's'} to `
                     + `${trust.channel}: ${names.join(', ')}.`);
@@ -2617,20 +2684,33 @@ function handleCommand(chan, nick, message) {
                 // name, and ChanServ says so per name rather than failing the
                 // batch — so the count sent is not the count stored. Read it
                 // back rather than assuming, and say which ones landed.
-                reply('ChanServ works on ACCOUNTS, so any of those who never '
-                    + 'registered a nick will have been refused. Checking what '
-                    + 'actually landed…');
+                reply('ChanServ keys on ACCOUNTS and resolves each name itself. '
+                    + 'Checking what landed, then masking whatever it refused…');
                 setTimeout(() => {
                     trust.refresh();
                     setTimeout(() => {
                         const got = trust.list();
-                        const missing = names.filter((n) => !got.includes(n.toLowerCase()));
-                        reply(`Stored (${got.length}): ${got.join(', ') || '(none)'}.`);
-                        if (missing.length) {
-                            reply(`NOT stored — no services account: ${missing.join(', ')}. `
-                                + 'They stay covered by the WHITELIST secret; ask them to '
-                                + 'register their nick to move them across.');
-                        }
+                        const missing = names.filter((n) => !got.includes(trustKeyFor(n).key.toLowerCase()));
+                        reply(`Stored (${got.length} by account, ${trust.masks.size} by mask): `
+                            + `${got.join(', ') || '(none)'}.`);
+                        if (!missing.length) return;   // inside a callback: return, not break
+                        // SECOND PASS. These are the ones ChanServ actually
+                        // refused — no account exists — so a mask is the only
+                        // remaining way to store them, and now it is a fact
+                        // rather than a guess.
+                        reply(`\x0307${missing.length} have no account\x03: `
+                            + `${missing.slice(0, 12).join(', ')}`
+                            + `${missing.length > 12 ? ` +${missing.length - 12} more` : ''}. `
+                            + 'Storing them as host masks — weaker, because a mask is not '
+                            + 'an identity. Ask them to register to make it solid.');
+                        for (const n of missing) trust.add(maskKeyFor(n).key);
+                        setTimeout(() => {
+                            trust.refresh();
+                            setTimeout(() => {
+                                reply(`Now holding ${trust.size} by account and `
+                                    + `${trust.masks.size} by mask on ${trust.channel}.`);
+                            }, 4000);
+                        }, 2500);
                     }, 4000);
                 }, 2500);
             } else {
