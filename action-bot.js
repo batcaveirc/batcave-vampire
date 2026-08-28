@@ -473,9 +473,30 @@ function hostIsTrusted(nick) {
     for (const m of trustedMasks) if (globToRe(m).test(`${nick}!${uh}`)) return true;
     return false;
 }
-/** Whitelisted by nick, or by host mask. */
+/**
+ * Whitelisted by nick, by services ACCOUNT, or by host mask.
+ *
+ * The account lookup is not optional. ChanServ has no key but the account, so
+ * a trust channel stores `MinaL` for somebody who talks in the room as
+ * `Nessie`, and `Vampire` for the owner, who talks as `Vikram`. The WHITELIST
+ * secret was keyed by nick and worked; the moment the channel took over, every
+ * regular whose nick differs from their account lost their standing — silently,
+ * because losing an exemption looks exactly like never having had one.
+ */
 function isTrusted(nick) {
-    return whitelist.has(nick.toLowerCase()) || hostIsTrusted(nick);
+    const k = String(nick || '').toLowerCase();
+    if (whitelist.has(k)) return true;
+    const acct = accountOf.get(k);
+    if (acct && whitelist.has(acct.toLowerCase())) return true;
+    return hostIsTrusted(nick);
+}
+
+/** Has this person forfeited standing — under either their nick or account? */
+function isForfeited(nick) {
+    const k = String(nick || '').toLowerCase();
+    if (untrust.has(k) || trust.isDenied(k)) return true;
+    const acct = accountOf.get(k);
+    return Boolean(acct && (untrust.has(acct.toLowerCase()) || trust.isDenied(acct)));
 }
 
 /**
@@ -842,7 +863,7 @@ function gainTrust(nick, chan) {
     // The deny list is a memory, and this is what it is for: without it,
     // somebody who lost trust for a slur is eligible again the moment their
     // account is old enough and they have said forty quiet things.
-    if (untrust.has(k) || trust.isDenied(k)) return;
+    if (isForfeited(nick)) return;
     const why = reputation.earns(nick, {
         account: accountOf.get(k) || '',
         registeredAt: registeredAt.get(k) || 0,
@@ -2113,7 +2134,7 @@ function handleCommand(chan, nick, message) {
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!history on|off, '
                 + '!!access, !!unwarn <nick>, !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
-                + '!!trust add|del|seed|reload <nick> (sticks), !!untrust add|del <nick>, '
+                + '!!trust add|del|seed|reload <nick> (sticks), !!untrust add|del|seed <nick>, '
             + '!!whitelist add|remove <nick> (this run only), '
             + '!!announce <msg>.');
             break;
@@ -2642,6 +2663,31 @@ function handleCommand(chan, nick, message) {
                 if (trust.enabled && trust.loaded) trust.allow(args[1]);
                 refreshTrust();
                 reply(`${args[1]} is no longer on the untrust list.`);
+            } else if (args[0] === 'seed') {
+                // The other half of `!!trust seed`, which was missing — so the
+                // trusted moved to the channel and the offenders stayed behind
+                // in a secret, which is exactly the split this was meant to end.
+                const names = [...untrust];
+                if (!names.length) { reply('Nothing to seed — the untrust list is empty.'); break; }
+                if (!trust.enabled || !trust.loaded) {
+                    reply(`Cannot seed: ${trust.channel || 'no trust channel'} is not readable yet.`);
+                    break;
+                }
+                for (const n of names) trust.deny(n);
+                refreshTrust();
+                reply(`Sent ${names.length} name${names.length === 1 ? '' : 's'} to `
+                    + `${trust.channel} as +${trust.denyFlag}. Checking what landed…`);
+                setTimeout(() => {
+                    trust.refresh();
+                    setTimeout(() => {
+                        const got = trust.deniedList();
+                        const missing = names.filter((n) => !got.includes(n.toLowerCase()));
+                        reply(`Denied (${got.length}): ${got.join(', ') || '(none)'}.`);
+                        if (missing.length) {
+                            reply(`NOT stored — no services account: ${missing.join(', ')}.`);
+                        }
+                    }, 4000);
+                }, 2500);
             } else {
                 const onChannel = trust.enabled && trust.loaded ? trust.deniedList() : [];
                 reply(`Untrusted (${onChannel.length || untrust.size}): `
