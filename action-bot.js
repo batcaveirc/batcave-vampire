@@ -2950,9 +2950,34 @@ function handleLine(line) {
                 // the join burst sits behind twenty other lines and times out
                 // on our own traffic.
                 setTimeout(() => trust.refresh(), 8000);
-                // Re-read occasionally, because somebody may edit the list
-                // through ChanServ directly rather than through the bot.
-                setInterval(() => trust.refresh(), 15 * 60000).unref?.();
+                // Sit in the storage channel. Not to talk — to EXIST there.
+                // ChanServ expires a channel after 365 days with nobody
+                // holding +FORforsv present, and a room nobody ever joins is
+                // exactly that. We hold +f, so simply being here keeps the
+                // trust list from being deleted out from under us.
+                //
+                // But only once we have READ our own row: we carry +b so that
+                // we are permitted to grant it, and +b is automatic kickban.
+                // Joining without +e would have ChanServ throw us out of our
+                // own store.
+                setTimeout(() => {
+                    const sit = trust.canSit();
+                    if (sit.ok) { send(`JOIN ${trust.channel}`); return; }
+                    log('WARN', `Not joining ${trust.channel}: ${sit.why.replace(/\x02/g, '')} `
+                        + '(the channel can expire after 365 days with nobody in it).');
+                    for (const o of config.owners) {
+                        notice(o, `\x0304[TRUST]\x03 Not sitting in ${trust.channel}: ${sit.why}`);
+                    }
+                }, 20000);
+                // Cheap poll: COUNT is two lines and carries a per-flag
+                // histogram, where FLAGS costs a row per entry. Check often,
+                // and pull the whole listing only when the numbers move —
+                // which notices a hand-edit in 5 minutes instead of 15 while
+                // sending a fraction of the traffic.
+                setInterval(() => trust.poll(), 5 * 60000).unref?.();
+                // A slow full re-read anyway, so a missed COUNT cannot leave
+                // us wrong forever.
+                setInterval(() => trust.refresh(), 60 * 60000).unref?.();
             }
             // Not immediately: registration queues joins, WHO, NAMES, mode
             // sets and the quiet-list request through a 5-lines/second
@@ -3033,6 +3058,7 @@ function handleLine(line) {
     if (command === 'NOTICE' && /^chanserv$/i.test(nick || '')) {
         if (servicesReport) servicesReport(msg);
         if (trust.absorb(msg)) refreshTrust();
+        if (trust.countChanged(msg)) trust.refresh();
         // absorb() only looks at notices while a LISTING is open, so a refused
         // WRITE used to fall straight through here and vanish.
         reportTrustRefusal(msg);

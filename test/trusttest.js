@@ -174,4 +174,49 @@ c('the secret-only name is dropped', !kept3.has('vikram'), 'channel is authorita
 c('the denied stay denied', !kept3.has('jailer'));
 c('and we are still not in our own list', !kept3.has('vlkram'));
 
+
+console.log('\n— the cheap poll —');
+// COUNT answers with a per-flag histogram in two lines where FLAGS costs a
+// row per entry, so the list can be watched often and read in full rarely.
+const q = mk('#batcave-trust', 'vlkram');
+q.sent.length = 0;
+q.t.poll();
+c('it asks for a COUNT', q.sent[0] === 'PRIVMSG ChanServ :COUNT #batcave-trust', q.sent[0]);
+const hist = (v, b) => `#batcave-trust: A:2 F:1 O:1 R:1 S:0 V:${v} b:${b} e:1 f:2 i:1 o:1`;
+c('the first sample is not a change', q.t.countChanged(hist(19, 1)) === false);
+c('the same numbers are not a change', q.t.countChanged(hist(19, 1)) === false);
+c('a new trusted entry IS a change', q.t.countChanged(hist(20, 1)) === true);
+c('a new denied entry IS a change', q.t.countChanged(hist(20, 2)) === true);
+c('and settles again', q.t.countChanged(hist(20, 2)) === false);
+c('the other COUNT line is ignored', q.t.countChanged('#batcave-trust: VOP: 0, HOP: 0, AOP: 0, SOP: 0, AKICK: 0, Other: 20') === false);
+c('another channel is ignored', q.t.countChanged('#elsewhere: V:99 b:99') === false);
+c('a poll never opens a listing', !q.t.loading, 'COUNT must not be mistaken for FLAGS');
+
+
+console.log('\n— sitting in the store without being thrown out of it —');
+// The channel expires after 365 days with nobody in it, so the bot should sit
+// there. But it holds +b in order to be allowed to GRANT +b, and +b is
+// "automatic kickban" — so joining without +e means ChanServ removes it from
+// its own storage room.
+const sit = mk('#batcave-trust', 'vlkram');
+c('it will not join before reading the list', sit.t.canSit().ok === false, sit.t.canSit().why);
+sit.t.refresh();
+['1  Vampire  +AFORefiorstv', '2  Vlkram  +AVbf', '3  Nessie  +V',
+ 'End of #batcave-trust FLAGS listing.'].forEach(l => sit.t.absorb(l));
+const noExempt = sit.t.canSit();
+c('+b without +e is refused', noExempt.ok === false, noExempt.why);
+c('and it names the exact fix', /\+e/.test(noExempt.why), noExempt.why);
+
+const okc = mk('#batcave-trust', 'vlkram');
+okc.t.refresh();
+['1  Vlkram  +AVbefS', '2  Nessie  +V', 'End of #batcave-trust FLAGS listing.'].forEach(l => okc.t.absorb(l));
+c('with +e it may sit', okc.t.canSit().ok === true, okc.t.canSit().why);
+c('and it is still not in its own trust list', !okc.t.has('vlkram'));
+c('nor its own denied list', !okc.t.isDenied('vlkram'));
+
+const plain = mk('#batcave-trust', 'somebot');
+plain.t.refresh();
+['1  Nessie  +V', 'End of #batcave-trust FLAGS listing.'].forEach(l => plain.t.absorb(l));
+c('holding no entry at all is safe', plain.t.canSit().ok === true, plain.t.canSit().why);
+
 console.log(f?`\n${f} FAILED`:'\nALL PASS'); process.exit(f?1:0);

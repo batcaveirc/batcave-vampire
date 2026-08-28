@@ -94,9 +94,43 @@ class TrustList {
         this.self = String(opts.self || '').toLowerCase();
         this.lastWrite = 0;      // when we last asked ChanServ to change something
         this.lastWriteWho = '';  // and about whom, so a refusal can name them
+        this.lastCount = '';     // last COUNT histogram, to spot edits cheaply
+        this.selfFlags = '';     // our own row, once we have read it back
     }
 
     get enabled() { return Boolean(this.channel); }
+
+    /**
+     * The cheap check. `COUNT` answers with a per-flag histogram in two lines
+     * —  "V:19 b:1 f:2 …" — where FLAGS costs a row per entry. Poll this
+     * often, and pull the full listing only when the numbers actually move.
+     * Less traffic than the blind re-read it replaces AND faster to notice an
+     * edit somebody made through ChanServ directly.
+     */
+    poll() {
+        if (!this.enabled || this.loading) return;
+        this.send(`PRIVMSG ChanServ :COUNT ${this.channel}`);
+    }
+
+    /**
+     * Feed a COUNT reply in. Returns true when the histogram has moved and a
+     * full read is therefore worth doing.
+     */
+    countChanged(line) {
+        const t = String(line || '');
+        if (!this.enabled) return false;
+        if (!t.includes(this.channel)) return false;
+        const v = t.match(new RegExp(`\\b${this.flag}:(\\d+)`));
+        const b = t.match(new RegExp(`\\b${this.denyFlag}:(\\d+)`));
+        if (!v && !b) return false;                 // the other COUNT line
+        const seen = `${v ? v[1] : '?'}/${b ? b[1] : '?'}`;
+        if (seen === this.lastCount) return false;
+        const first = this.lastCount === '';
+        this.lastCount = seen;
+        if (first) return false;   // the first sample is not a change
+        this.log('OK', `${this.channel} changed (${this.flag}/${this.denyFlag} now ${seen}) — re-reading.`);
+        return true;
+    }
 
     /** Ask ChanServ for the list. Harmless to call again. */
     refresh() {
@@ -139,6 +173,11 @@ class TrustList {
             // appear in our own listing. Reading that back would put the
             // bot in its own denied list and have it distrust itself.
             const mine = this.self && key === this.self;
+            // Remember our OWN flags. We hold +b so that we are allowed to
+            // grant it, and +b is "enables automatic kickban" — so sitting in
+            // the channel to keep it from expiring gets us kickbanned by our
+            // own entry unless we also hold +e.
+            if (mine) this.selfFlags = row.flags;
             if (plain && !mine && row.flags.includes(this.flag)) this.pending.add(key);
             if (plain && !mine && row.flags.includes(this.denyFlag)) this.pendingDeny.add(key);
             return false;
@@ -226,6 +265,29 @@ class TrustList {
         this.write(nick, `-${this.denyFlag}`);
         this.denied.delete(String(nick).toLowerCase());
         return true;
+    }
+
+    /**
+     * Is it safe for us to sit in the storage channel?
+     *
+     * Being present is what stops ChanServ expiring the channel after 365
+     * days — and taking the whole trust list with it. But our own +b would
+     * kickban us on sight, so we may only do it while exempt.
+     *
+     * @returns {{ok:boolean, why:string}}
+     */
+    canSit() {
+        if (!this.enabled) return { ok: false, why: 'no trust channel configured' };
+        if (!this.loaded) return { ok: false, why: 'have not read the list yet' };
+        if (!this.selfFlags) return { ok: true, why: 'we hold no entry, so nothing bans us' };
+        if (!this.selfFlags.includes(this.denyFlag)) return { ok: true, why: 'we carry no kickban flag' };
+        if (this.selfFlags.includes('e')) return { ok: true, why: 'exempt' };
+        return {
+            ok: false,
+            why: `we hold +${this.denyFlag} (automatic kickban) without +e, so joining `
+                + `${this.channel} would get us kickbanned. Fix: \x02/msg ChanServ FLAGS `
+                + `${this.channel} ${this.self || '<my account>'} +e\x02`,
+        };
     }
 
     isDenied(nick) { return this.denied.has(String(nick || '').toLowerCase()); }
