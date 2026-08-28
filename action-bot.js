@@ -11,6 +11,7 @@ const { Watch } = require('./watch');
 const { Handshake } = require('./handshake');
 const { Feuds, severityOf, aimedAt } = require('./feud');
 const { TrustList, effective } = require('./trust');
+const { pack } = require('./trustrelay');
 const { Reputation } = require('./reputation');
 const { solicits } = require('./solicit');
 
@@ -825,6 +826,38 @@ function maskKeyFor(nick) {
 /** Recompute the effective whitelist after anything changes. */
 function refreshTrust() {
     whitelist = effective(trust, seedWhitelist, untrust);
+    relayTrust();
+}
+
+/**
+ * Pass the trust list to the standbys, signed.
+ *
+ * They have no services account — deliberately, because an unregistered nick
+ * is what lets a spare stand in for a name already taken — so ChanServ will
+ * not show them the list at all. Verified: an unidentified client asking gets
+ * "You are not authorized to perform this operation." Without this they fall
+ * back to their own WHITELIST secret, a second copy of the truth that drifts
+ * from this one the moment either is edited.
+ *
+ * Only to peers that have PROVEN themselves. Sending the list to whoever
+ * currently holds a standby's nick would hand an impostor the answer to "who
+ * may I not moderate" — and those nicks are unregistered precisely so that
+ * anyone can take them.
+ */
+let lastRelay = 0;
+function relayTrust(force = false) {
+    if (!process.env.PEER_SECRET || !provenPeers.size) return;
+    if (!force && Date.now() - lastRelay < 20000) return;   // not once per name during a seed
+    lastRelay = Date.now();
+    const lines = pack(process.env.PEER_SECRET, {
+        trusted: whitelist,
+        denied: new Set([...untrust, ...trust.deniedList()]),
+        masks: trust.masks,
+        denyMasks: trust.denyMasks,
+    });
+    for (const peer of provenPeers) for (const l of lines) send(`NOTICE ${peer} :${l}`);
+    log('OK', `Trust list relayed to ${provenPeers.size} peer(s): ${whitelist.size} trusted, `
+        + `${trust.masks.size} by mask, in ${lines.length} piece(s).`);
 }
 
 // What people have actually been doing. See reputation.js for why earning
@@ -3135,6 +3168,9 @@ function handleLine(line) {
             if (handshake.verify(nick, answer)) {
                 log('OK', `${nick} proved itself — granting ops.`);
                 provenPeers.add(nick.toLowerCase());
+                // Now, not at the next refresh: a standby that has just come
+                // up is exactly the one holding no list at all.
+                setTimeout(() => relayTrust(true), 1500);
                 opProvenPeers();
             } else {
                 // Somebody wearing the standby's name who cannot answer for it.
