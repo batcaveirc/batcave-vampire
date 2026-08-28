@@ -243,4 +243,22 @@ wild.t.refresh();
 ['1  *!*@*  +V', 'End of #batcave-trust FLAGS listing.'].forEach(l => wild.t.absorb(l));
 c('a catch-all mask never becomes a trusted NAME', wild.t.size === 0, [...wild.t.list()].join(','));
 
+
+console.log('\n— our own row, when the configured account name is wrong —');
+// Live failure: NICKSERV_ACCOUNT did not match the account the server had us
+// logged in as, so the bot did not recognise its own row and reported itself
+// as a trusted regular — "Stored (19): …, vlkram". Identity has to come from
+// the server (the 900 numeric), not from a secret that can simply be wrong.
+const wrong = mk('#batcave-trust', 'dracula');   // configured wrongly
+wrong.t.refresh();
+['1  Vlkram  +ASVbef', '2  Nessie  +V', 'End of #batcave-trust FLAGS listing.'].forEach(l => wrong.t.absorb(l));
+c('a wrong configured name lets us into our own list', wrong.t.has('vlkram'),
+  'this is the bug, reproduced');
+
+wrong.t.self = 'vlkram';                          // what the server actually said
+wrong.t.refresh();
+['1  Vlkram  +ASVbef', '2  Nessie  +V', 'End of #batcave-trust FLAGS listing.'].forEach(l => wrong.t.absorb(l));
+c('correcting it from the server fixes the read', !wrong.t.has('vlkram'), wrong.t.list().join(','));
+c('and the real regular is still there', wrong.t.has('nessie'));
+
 console.log(f?`\n${f} FAILED`:'\nALL PASS'); process.exit(f?1:0);

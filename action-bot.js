@@ -2673,7 +2673,15 @@ function handleCommand(chan, nick, message) {
                 // The migration step. Without it, moving to a trust channel
                 // means every regular loses their standing until somebody adds
                 // them back by hand, one at a time, from a list nobody can read.
-                const names = [...whitelist];
+                // The WHITELIST SECRET, deliberately — not the effective list.
+                //
+                // `whitelist` is what the bot is currently enforcing, and once
+                // the channel holds anybody it IS the channel. Seeding from it
+                // therefore re-sends the names already stored and can never add
+                // the rest: "Sent 18 names" on a 73-name whitelist, every time,
+                // forever. Seeding means "copy the secret across", so it reads
+                // the secret.
+                const names = [...seedWhitelist].filter((n) => !untrust.has(n));
                 if (!names.length) { reply('Nothing to seed — the whitelist is empty.'); break; }
                 for (const n of names) trust.add(trustKeyFor(n).key);
                 refreshTrust();
@@ -3098,6 +3106,19 @@ function handleLine(line) {
     }
     if (command === '900' || (command === 'NOTICE' && /identified|logged in/i.test(msg))) {
         if (!hasJoined) config.channels.forEach((c) => send(`JOIN ${c}`));
+        // 900 is RPL_LOGGEDIN and its last parameter is the account the server
+        // says we are. Take it from there, never from config: NICKSERV_ACCOUNT
+        // held a value that did not match, so the bot failed to recognise its
+        // OWN row in the trust list and reported itself as a trusted regular.
+        // The server is the authority on who we are; a secret is a guess.
+        const acct = command === '900' ? (params[2] || params[params.length - 1] || '') : '';
+        if (acct && acct !== '*') {
+            accountOf.set(currentNick.toLowerCase(), acct);
+            if (trust.self !== acct.toLowerCase()) {
+                log('OK', `Logged in as account ${acct} — using it to recognise my own trust entry.`);
+                trust.self = acct.toLowerCase();
+            }
+        }
     }
     // ChanServ talks back in NOTICEs. Both the history command and the services
     // health check listen here; each is inert unless it is actually waiting.
