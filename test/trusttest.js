@@ -118,6 +118,14 @@ r.t.add('Nessie');
 const why = r.t.writeRefused('You are not authorized to perform this operation.');
 c('after a write, the refusal is caught', Boolean(why), String(why));
 c('it names who we were writing', /Nessie/.test(why||''), String(why));
+// After a BATCH, lastWriteWho is just the final name queued, so blaming it is
+// wrong: "_risingphoenix_f is not registered" was reported as "(writing
+// vlkram)". Take the name from ChanServ's own words, or name nobody.
+const batch = mk('#batcave-trust', 'vlkram');
+batch.t.add('Aadhya'); batch.t.add('Zoe'); batch.t.add('Vlkram');
+const bw = batch.t.writeRefused('_risingphoenix_f is not registered.');
+c('a refusal names whoever ChanServ named', /_risingphoenix_f/.test(bw||''), String(bw));
+c('and never the last name in the batch', !/vlkram\x02\)/.test(bw||''), String(bw));
 c('it explains the actual Atheme rule', /hand out flags I hold/.test(why||''), String(why));
 c('and it gives the exact fix', /FLAGS #batcave-trust vlkram \+AfVb/.test(why||''), String(why));
 r.t.add('Almond');

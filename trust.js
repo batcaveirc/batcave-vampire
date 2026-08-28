@@ -98,6 +98,7 @@ class TrustList {
         this.self = String(opts.self || '').toLowerCase();
         this.lastWrite = 0;      // when we last asked ChanServ to change something
         this.lastWriteWho = '';  // and about whom, so a refusal can name them
+        this.lastWriteBatch = false; // …unless many went out at once
         this.lastCount = '';     // last COUNT histogram, to spot edits cheaply
         this.selfFlags = '';     // our own row, once we have read it back
     }
@@ -216,6 +217,9 @@ class TrustList {
 
     /** Every write goes through here so a later refusal can be attributed. */
     write(nick, change) {
+        // Two writes inside a second means a batch is in flight, and after a
+        // batch no single name can be blamed for a refusal.
+        this.lastWriteBatch = Date.now() - this.lastWrite < 1000;
         this.lastWrite = Date.now();
         this.lastWriteWho = String(nick);
         this.send(`PRIVMSG ChanServ :FLAGS ${this.channel} ${nick} ${change}`);
@@ -242,7 +246,14 @@ class TrustList {
         // talks for many reasons and most are nothing to do with us.
         if (!this.lastWrite || Date.now() - this.lastWrite > 20000) return null;
         if (!/not authorized|access denied|insufficient|you may only manipulate|is not registered|no such/i.test(t)) return null;
-        const who = this.lastWriteWho ? ` (writing \x02${this.lastWriteWho}\x02)` : '';
+        // Name whoever CHANSERV named, not whoever we wrote last. After a
+        // batch, lastWriteWho is simply the final name queued — which is how
+        // "_risingphoenix_f is not registered" got reported as
+        // "(writing vlkram)". If its message names nobody, say nobody rather
+        // than attach a name that is probably wrong.
+        const named = t.match(/^\s*(\S+) is not registered/i);
+        const subject = named ? named[1] : (this.lastWriteBatch ? '' : this.lastWriteWho);
+        const who = subject ? ` (\x02${subject}\x02)` : '';
         if (/you may only manipulate|not authorized|access denied|insufficient/i.test(t)) {
             return `ChanServ refused a change to ${this.channel}${who}: ${t.slice(0, 90)} `
                 + `— I hold +f but Atheme only lets me hand out flags I hold myself. `
