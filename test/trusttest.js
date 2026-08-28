@@ -261,4 +261,40 @@ wrong.t.refresh();
 c('correcting it from the server fixes the read', !wrong.t.has('vlkram'), wrong.t.list().join(','));
 c('and the real regular is still there', wrong.t.has('nessie'));
 
-console.log(f?`\n${f} FAILED`:'\nALL PASS'); process.exit(f?1:0);
+
+console.log('\n— verifying against ChanServ, not against our own optimism —');
+// The live failure: the seed said "Stored (71 by account, 0 by mask)" while
+// ChanServ held 19. Two causes compounding —
+//   add() updates the local set immediately, so reading it back compares our
+//   optimism with itself and nothing ever looks missing; and the outbound
+//   queue drains one line per 200ms, so a FLAGS request issued right after 73
+//   writes sits BEHIND them and returns the state from before any of them.
+const v = mk('#batcave-trust', 'vlkram');
+v.t.refresh();
+['1  Vlkram  +ASVbef', '2  Nessie  +V', 'End of #batcave-trust FLAGS listing.'].forEach(l => v.t.absorb(l));
+c('one real name is held', v.t.list().join(',') === 'nessie', v.t.list().join(','));
+
+v.t.add('Ghost');   // ChanServ will refuse this one
+c('add() is optimistic, so it LOOKS stored', v.t.has('ghost'),
+  'this optimism is what must never be used as verification');
+
+let verified = false;
+v.t.verify(2, () => { verified = true; });
+c('verify does not fire immediately', verified === false, 'it must wait for the queue');
+
+// Simulate the real listing arriving: Ghost is absent, because it was refused.
+setTimeout(() => {
+    v.t.absorb('1  Vlkram  +ASVbef');
+    v.t.absorb('2  Nessie  +V');
+    v.t.absorb('End of #batcave-trust FLAGS listing.');
+}, 2200);
+
+setTimeout(() => {
+    c('verify eventually fires', verified === true, 'callback never ran');
+    c('and the refused name is GONE from the verified view', !v.t.has('ghost'),
+      v.t.list().join(','));
+    c('so the mask pass can now see it is missing', v.t.list().join(',') === 'nessie');
+    console.log(f ? `\n${f} FAILED` : '\nALL PASS');
+    process.exit(f ? 1 : 0);
+}, 6000);
+

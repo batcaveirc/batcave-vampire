@@ -2693,34 +2693,31 @@ function handleCommand(chan, nick, message) {
                 // batch — so the count sent is not the count stored. Read it
                 // back rather than assuming, and say which ones landed.
                 reply('ChanServ keys on ACCOUNTS and resolves each name itself. '
-                    + 'Checking what landed, then masking whatever it refused…');
-                setTimeout(() => {
-                    trust.refresh();
-                    setTimeout(() => {
-                        const got = trust.list();
-                        const missing = names.filter((n) => !got.includes(trustKeyFor(n).key.toLowerCase()));
-                        reply(`Stored (${got.length} by account, ${trust.masks.size} by mask): `
-                            + `${got.join(', ') || '(none)'}.`);
-                        if (!missing.length) return;   // inside a callback: return, not break
-                        // SECOND PASS. These are the ones ChanServ actually
-                        // refused — no account exists — so a mask is the only
-                        // remaining way to store them, and now it is a fact
-                        // rather than a guess.
-                        reply(`\x0307${missing.length} have no account\x03: `
-                            + `${missing.slice(0, 12).join(', ')}`
-                            + `${missing.length > 12 ? ` +${missing.length - 12} more` : ''}. `
-                            + 'Storing them as host masks — weaker, because a mask is not '
-                            + 'an identity. Ask them to register to make it solid.');
-                        for (const n of missing) trust.add(maskKeyFor(n).key);
-                        setTimeout(() => {
-                            trust.refresh();
-                            setTimeout(() => {
-                                reply(`Now holding ${trust.size} by account and `
-                                    + `${trust.masks.size} by mask on ${trust.channel}.`);
-                            }, 4000);
-                        }, 2500);
-                    }, 4000);
-                }, 2500);
+                    + `Waiting for ${names.length} writes to drain, then checking what `
+                    + 'actually landed and masking whatever it refused…');
+                trust.verify(names.length, () => {
+                    const got = trust.list();
+                    const missing = names.filter((n) => !got.includes(trustKeyFor(n).key.toLowerCase()));
+                    reply(`Verified on ${trust.channel}: \x02${got.length}\x02 by account`
+                        + `${trust.masks.size ? `, \x02${trust.masks.size}\x02 by mask` : ''}. `
+                        + `${names.length - missing.length} of ${names.length} names covered.`);
+                    if (!missing.length) return;
+                    // These are the ones ChanServ genuinely refused — no
+                    // account exists for them — so a mask is the only way left
+                    // to store them, and it is now a fact rather than a guess.
+                    reply(`\x0307${missing.length} have no services account\x03: `
+                        + `${missing.slice(0, 12).join(', ')}`
+                        + `${missing.length > 12 ? ` +${missing.length - 12} more` : ''}. `
+                        + 'Storing as host masks — weaker, because a mask is not an identity. '
+                        + 'Ask them to register to make it solid.');
+                    for (const n of missing) trust.add(maskKeyFor(n).key);
+                    trust.verify(missing.length, () => {
+                        refreshTrust();
+                        reply(`Done: \x02${trust.size}\x02 by account and \x02${trust.masks.size}\x02 `
+                            + `by mask on ${trust.channel}. Grouped nicks share one account, so this `
+                            + 'is fewer entries than names — that is correct, not missing.');
+                    });
+                });
             } else {
                 const live = trust.loaded && trust.size > 0;
                 reply(`Trusted (${trust.size}, from ${trust.channel}`
@@ -2764,18 +2761,26 @@ function handleCommand(chan, nick, message) {
                 for (const n of names) trust.deny(n);
                 refreshTrust();
                 reply(`Sent ${names.length} name${names.length === 1 ? '' : 's'} to `
-                    + `${trust.channel} as +${trust.denyFlag}. Checking what landed…`);
-                setTimeout(() => {
-                    trust.refresh();
-                    setTimeout(() => {
-                        const got = trust.deniedList();
-                        const missing = names.filter((n) => !got.includes(n.toLowerCase()));
-                        reply(`Denied (${got.length}): ${got.join(', ') || '(none)'}.`);
-                        if (missing.length) {
-                            reply(`NOT stored — no services account: ${missing.join(', ')}.`);
-                        }
-                    }, 4000);
-                }, 2500);
+                    + `${trust.channel} as +${trust.denyFlag}. Verifying…`);
+                trust.verify(names.length, () => {
+                    const got = trust.deniedList();
+                    const missing = names.filter((n) => !got.includes(n.toLowerCase()));
+                    reply(`Denied (${got.length} by account`
+                        + `${trust.denyMasks.size ? `, ${trust.denyMasks.size} by mask` : ''}): `
+                        + `${got.join(', ') || '(none)'}.`);
+                    if (!missing.length) return;
+                    // An offender with no account is exactly the case a mask
+                    // handles best — and unlike trust, a mask here is the RIGHT
+                    // tool: you want to catch them however they come back.
+                    reply(`${missing.length} have no account — denying by mask instead: `
+                        + `${missing.join(', ')}.`);
+                    for (const n of missing) trust.deny(maskKeyFor(n).key);
+                    trust.verify(missing.length, () => {
+                        refreshTrust();
+                        reply(`Done: ${trust.deniedList().length} denied by account, `
+                            + `${trust.denyMasks.size} by mask.`);
+                    });
+                });
             } else {
                 const onChannel = trust.enabled && trust.loaded ? trust.deniedList() : [];
                 reply(`Untrusted (${onChannel.length || untrust.size}): `

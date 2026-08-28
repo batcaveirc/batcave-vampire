@@ -309,6 +309,45 @@ class TrustList {
         };
     }
 
+    /**
+     * Read the list back and hand over only a VERIFIED view.
+     *
+     * Two traps this exists to avoid, both of which fired live:
+     *
+     *  - add() updates our local set immediately so the room feels responsive.
+     *    Verifying against that set compares our optimism with itself: the
+     *    seed reported "71 stored" while ChanServ had stored none, and the
+     *    mask fallback never ran because nothing looked missing.
+     *  - the outbound queue drains one line per 200ms, so a FLAGS request made
+     *    right after 73 writes sits BEHIND them. Reading at +4s returned the
+     *    state from before any write had left the process.
+     *
+     * So: wait for the queue to drain, ask again, and do not call back until
+     * lastRead has actually advanced.
+     *
+     * @param {number} pendingWrites how many lines we just queued
+     * @param {Function} cb          called with no arguments once fresh
+     */
+    verify(pendingWrites, cb) {
+        const startedAt = Date.now();
+        // 200ms a line, plus headroom for the listing itself to come back.
+        const drain = Math.min(60000, 1500 + pendingWrites * 250);
+        setTimeout(() => {
+            this.refresh();
+            const began = this.lastRead;
+            let waited = 0;
+            const tick = setInterval(() => {
+                waited += 500;
+                if (this.lastRead > began || waited > 30000) {
+                    clearInterval(tick);
+                    this.log('OK', `Verified ${this.channel} ${Math.round((Date.now() - startedAt) / 1000)}s `
+                        + `after ${pendingWrites} writes: ${this.names.size} trusted, ${this.masks.size} by mask.`);
+                    cb();
+                }
+            }, 500);
+        }, drain);
+    }
+
     isDenied(nick) { return this.denied.has(String(nick || '').toLowerCase()); }
     deniedList() { return [...this.denied].sort(); }
 
