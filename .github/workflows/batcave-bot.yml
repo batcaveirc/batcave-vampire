@@ -14,7 +14,18 @@ on:
 # short handoff roughly every ~5.8 hours instead of a restart every 5 minutes.
 concurrency:
   group: batcave-bot
-  cancel-in-progress: false
+  # A PUSH takes over immediately; the 5-minute cron still waits its turn.
+  #
+  # With this flat false, every fix queued behind a job that keeps its own code
+  # for its whole 350-minute life. Measured today: a bot 5h37m old was still
+  # kicking people for a Hindi idiom and refusing to voice a registered regular
+  # while four commits fixing exactly those sat pending. Repeatedly reported as
+  # "fixed and pushed" when nothing had changed in the room — the deploy is
+  # part of the change, and this is what made that true here.
+  #
+  # The cron must NOT cancel, or a bot restarts every five minutes forever.
+  # The distinction is the event, so the expression is the event.
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   run-bot:
