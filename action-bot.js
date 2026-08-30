@@ -9,7 +9,7 @@ const { geminiChat } = require('./gemini');
 const { Guardian, victimOf } = require('./guardian');
 const { Watch } = require('./watch');
 const { Handshake } = require('./handshake');
-const { Feuds, severityOf, aimedAt, isBanter, hasLaughter } = require('./feud');
+const { Feuds, severityOf, aimedAt, isBanter, hasLaughter, isBenignHinglish } = require('./feud');
 const { TrustList, effective } = require('./trust');
 const { pack } = require('./trustrelay');
 const { Reputation } = require('./reputation');
@@ -1666,6 +1666,9 @@ async function sentientModeration(chan, nick, message) {
                         + 'Hinglish teasing between friends is the ordinary register in this '
                         + 'room, not abuse. Words like "churail", "pagal", "kamina", "chudail", '
                         + '"nautanki", "gadha", "ullu" are what friends call each other here — '
+                        + 'and "bakchodi"/"bkchodi" simply means idle chat, "bakwas" means '
+                        + 'nonsense, "timepass" and "faltu" are ordinary words. None of those '
+                        + 'is a slur, whatever they look like. '
                         + 'answer "none" unless the message is genuinely aimed at hurting '
                         + 'somebody, and remember you cannot hear tone.\n'
                         + 'CRITICAL: talking ABOUT bigotry is not bigotry. "Racist", "that is '
@@ -1722,6 +1725,23 @@ async function sentientModeration(chan, nick, message) {
         // offence. This is the exact shape of the live false positive.
         if (quoteNamesTheProblem(verdict.quote || '')) {
             log('AI', `Ignoring ${action} on ${nick}: quoted "${verdict.quote}", which names abuse rather than being it.`);
+            return;
+        }
+
+        // Gate 3b — the evidence is ordinary Hinglish that reads vulgar.
+        //
+        // "bkchodi" means idle chat. A newcomer said "just friendships and
+        // bkchodi" in her first two minutes here and was kicked for a SLUR,
+        // while the owner — exempt — was typing "we like doing bkchodi" in the
+        // same conversation. A regular said what everyone saw: "Gyi ab nahi
+        // aaye gyi vo", she's gone, she won't come back. The recruiter had
+        // brought her in eleven minutes earlier.
+        //
+        // Checked against the QUOTE, not the message, so a real slur sitting
+        // beside an ordinary word still counts.
+        if (isBenignHinglish(verdict.quote || '')) {
+            log('AI', `Ignoring ${action} on ${nick}: quoted "${verdict.quote}", `
+                + 'which is ordinary Hinglish here.');
             return;
         }
 

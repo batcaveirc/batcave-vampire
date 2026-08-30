@@ -105,4 +105,21 @@ console.log('\n— laughing while saying it —');
     c(`not laughter: ${s.slice(0, 24)}`, !hasLaughter(s));
 }
 
+
+console.log('\n— Hinglish that reads vulgar and is not —');
+// Preeti24, eleven minutes after the recruiter invited her, in her first
+// conversation: "nothing, i just came to get things off my mind, just
+// friendships and bkchodi". Kicked for a SLUR. The owner was typing "we like
+// doing bkchodi" in the same minute and was exempt. A regular: "Gyi ab nahi
+// aaye gyi vo" — she's gone, she won't come back.
+{
+  const { isBenignHinglish } = require('../feud.js');
+  for (const q of ['bkchodi', 'bakchod', 'bakchodi', 'bakwas', 'timepass', 'pagal'])
+    c(`ordinary Hinglish: ${q}`, isBenignHinglish(q));
+  // It must not become a way to smuggle a real one past the gate.
+  for (const q of ['madarchod', 'bhosdike', 'randi', 'chutiya madarchod',
+                   'bkchodi madarchod'])
+    c(`still a real slur: ${q}`, !isBenignHinglish(q));
+}
+
 console.log(f?`\n${f} FAILED`:'\nALL PASS'); process.exit(f?1:0);

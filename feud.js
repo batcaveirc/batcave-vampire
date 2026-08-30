@@ -76,6 +76,37 @@ const BANTER = [
  */
 const LAUGHTER = /(\u{1F602}|\u{1F923}|\u{1F604}|\u{1F605}|\u{1F606}|\u{1F61C}|\u{1F643}|\u{1F62D}|\bl+o+l+\b|\bl+m+a+o+\b|\bha(ha)+\b|\bhe(he)+\b|\brofl\b|:\)|:-\)|:D\b|xD\b)/iu;
 
+/**
+ * Hinglish that reads vulgar to a model and means something ordinary here.
+ *
+ * "bkchodi" is idle chat. A newcomer said "just friendships and bkchodi" in
+ * her first two minutes and was kicked for a SLUR — while the owner, exempt,
+ * was typing "we like doing bkchodi" in the same conversation. A regular said
+ * what everyone was thinking: "Gyi ab nahi aaye gyi vo" — she's gone, she
+ * won't come back.
+ *
+ * These share a root with something coarse and are not used that way. They
+ * are matched as whole tokens, so a genuine use of the root word is untouched.
+ */
+const HINGLISH_BENIGN = new Set([
+    'bakchodi', 'bakchod', 'bakchodhi', 'bkchodi', 'bkchod', 'bakchodi',
+    'bakwas', 'bakwaas', 'faltu', 'timepass', 'jugaad', 'chaman', 'chapri',
+    'bhasad', 'jhandu', 'nalla', 'ghanta', 'bakait', 'bakaiti',
+]);
+
+/**
+ * Is the only questionable thing here ordinary Hinglish?
+ *
+ * Used to drop an AI verdict whose evidence is one of these and nothing else.
+ * It deliberately does NOT look at the whole message — a real slur sitting
+ * beside "bakchodi" must still count.
+ */
+function isBenignHinglish(quote) {
+    const toks = String(quote || '').toLowerCase().split(/[^a-z]+/).filter(Boolean);
+    if (!toks.length) return false;
+    return toks.every((t) => HINGLISH_BENIGN.has(t) || LIGHT.has(t) || t.length < 3);
+}
+
 /** Did they laugh while saying it? */
 function hasLaughter(text) { return LAUGHTER.test(String(text || '')); }
 
@@ -222,4 +253,4 @@ class Feuds {
     get size() { return this.rows.size; }
 }
 
-module.exports = { Feuds, severityOf, aimedAt, isBanter, hasLaughter, BANTER, LAUGHTER, LIGHT, WINDOW_MS };
+module.exports = { Feuds, severityOf, aimedAt, isBanter, hasLaughter, isBenignHinglish, HINGLISH_BENIGN, BANTER, LAUGHTER, LIGHT, WINDOW_MS };
