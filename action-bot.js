@@ -3128,15 +3128,20 @@ function handleLine(line) {
                 // we are permitted to grant it, and +b is automatic kickban.
                 // Joining without +e would have ChanServ throw us out of our
                 // own store.
-                setTimeout(() => {
+                // Retry rather than announce. The first check lands before the
+                // listing has arrived on most restarts.
+                const trySit = (attempt = 1) => {
                     const sit = trust.canSit();
                     if (sit.ok) { send(`JOIN ${trust.channel}`); return; }
+                    if (sit.quiet && attempt < 6) { setTimeout(() => trySit(attempt + 1), 15000); return; }
+                    if (sit.quiet) return;              // never read it; say nothing, it is not an error
                     log('WARN', `Not joining ${trust.channel}: ${sit.why.replace(/\x02/g, '')} `
                         + '(the channel can expire after 365 days with nobody in it).');
                     for (const o of config.owners) {
                         notice(o, `\x0304[TRUST]\x03 Not sitting in ${trust.channel}: ${sit.why}`);
                     }
-                }, 20000);
+                };
+                setTimeout(() => trySit(), 20000);
                 // Cheap poll: COUNT is two lines and carries a per-flag
                 // histogram, where FLAGS costs a row per entry. Check often,
                 // and pull the whole listing only when the numbers move —
@@ -3276,6 +3281,39 @@ function handleLine(line) {
         for (const ch of modes) {
             if (ch === '+') { adding = true; continue; }
             if (ch === '-') { adding = false; continue; }
+            // A hostile channel mode from somebody who was handed ops.
+            //
+            // Live: LiBu gave ops to Lucifer, who banned R:Vampire — an extban
+            // on the OWNER'S ACCOUNT — kicked him, and then set +R +u +c +i on
+            // the room. +i is invite-only: nobody new can get in at all. The
+            // bot restored the owner (that part worked) and did nothing about
+            // the lockdown; the owner had to ask twice in the room for it to
+            // be undone by hand.
+            //
+            // Ops are transitive here — any op can make another op — so the
+            // trust model has no say in who ends up holding them. This is the
+            // backstop: a mode that closes the room, set by somebody the bot
+            // does not trust, is reverted once and reported.
+            //
+            // Once, deliberately. Reverting in a loop against a determined op
+            // is a mode war that fills the room with noise and ends when one
+            // side is deopped anyway.
+            if ('ikmlR'.includes(ch) && adding && nick
+                && !isTrusted(nick) && !isAdmin(nick) && !isOwner(nick)
+                && nick.toLowerCase() !== currentNick.toLowerCase()
+                && !/serv$|^chanbot$/i.test(nick)) {
+                const key = `${chanKey(tgt)}|lockdown`;
+                if (!actedRecently(key, ch, 'revert')) {
+                    markActioned(key, ch, 'revert');
+                    log('MOD', `${nick} set +${ch} on ${tgt} without standing — reverting.`);
+                    send(`MODE ${tgt} -${ch}`);
+                    for (const o of config.owners) {
+                        notice(o, `\x0304[GUARD]\x03 \x02${nick}\x02 set \x02+${ch}\x02 on ${tgt} `
+                            + '— reverted. They hold ops without being on the trust list; '
+                            + `\x02/msg ChanServ DEOP ${tgt} ${nick}\x02 if that was not deliberate.`);
+                    }
+                }
+            }
             if ('ovhbeIkl'.includes(ch)) {
                 const who = targets[ti++] || '';
                 if ('ovhq'.includes(ch) && who) {          // track everyone's status

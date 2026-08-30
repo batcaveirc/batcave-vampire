@@ -308,7 +308,12 @@ class TrustList {
      */
     canSit() {
         if (!this.enabled) return { ok: false, why: 'no trust channel configured' };
-        if (!this.loaded) return { ok: false, why: 'have not read the list yet' };
+        // NOT an error, and it must not be announced as one. The check runs
+        // 20s after connect and the listing has usually not arrived by then —
+        // so every single restart told the owners "Not sitting in
+        // #batcave-trust: have not read the list yet" in the middle of the
+        // room's conversation. Silence here, and the caller retries.
+        if (!this.loaded) return { ok: false, quiet: true, why: 'still reading the list' };
         if (!this.selfFlags) return { ok: true, why: 'we hold no entry, so nothing bans us' };
         if (!this.selfFlags.includes(this.denyFlag)) return { ok: true, why: 'we carry no kickban flag' };
         if (this.selfFlags.includes('e')) return { ok: true, why: 'exempt' };
