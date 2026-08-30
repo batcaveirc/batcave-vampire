@@ -527,6 +527,39 @@ function isForfeited(nick) {
  * regular without a list to maintain, which is why AUTO_VOICE_REGISTERED is on
  * by default.
  */
+/**
+ * Why this person does or does not get voice — in words.
+ *
+ * Asked live: "sorry guys ishi and lord u guys didnt get auto voice? i had to
+ * give voice to these two people when i joined in — why is that?" Both are
+ * registered (ishi/ishi, LorD/EXTINCT), so the obvious answer was wrong, and
+ * there was no way to find the real one: the decision was a boolean with four
+ * separate ways to come out false and no record of which one fired.
+ *
+ * A refusal nobody can explain is the same silence that has cost this project
+ * every hard bug. Now it says so, and !!info repeats it on demand.
+ */
+function voiceReason(nick, chan) {
+    const until = serving.get(`${chanKey(chan)}|${nick.toLowerCase()}`);
+    if (until && Date.now() < until) {
+        return { ok: false, why: `serving a devoice for ${Math.ceil((until - Date.now()) / 60000)}m` };
+    }
+    if (watch.isFlagged(nick)) {
+        return { ok: false, why: 'flagged by the watcher for advertising in another room' };
+    }
+    if (chan && moderatedRooms.has(chanKey(chan))) {
+        return { ok: true, why: 'the room is moderated, so voice is the right to speak' };
+    }
+    if (isTrusted(nick)) return { ok: true, why: 'trusted' };
+    const acct = accountOf.get(String(nick).toLowerCase());
+    if (voiceRegistered && acct) return { ok: true, why: `registered as ${acct}` };
+    if (voiceRegistered && !acct) {
+        return { ok: false, why: 'I have not learned their services account yet '
+            + '(no extended-join seen and no WHO reply) — a WHO fixes it' };
+    }
+    return { ok: false, why: 'not trusted, and voicing registered users is off' };
+}
+
 function deservesVoice(nick, chan) {
     // Where the room is +m, voice IS the right to speak, so everybody arriving
     // gets it — otherwise a newcomer joins into silence and never finds out
@@ -542,6 +575,16 @@ function deservesVoice(nick, chan) {
     if (watch.isFlagged(nick)) return false;
     if (chan && moderatedRooms.has(chanKey(chan))) return true;
     return isTrusted(nick) || (voiceRegistered && isRegistered(nick));
+}
+
+// A denial that repeats every 30 seconds must not log every 30 seconds. Say it
+// once per person per room per hour — enough to find them, quiet enough to read.
+const voiceGripe = new Map();
+function noteVoiceDenial(nick, chan) {
+    const k = `${chanKey(chan)}|${String(nick).toLowerCase()}`;
+    if (Date.now() - (voiceGripe.get(k) || 0) < 3600000) return;
+    voiceGripe.set(k, Date.now());
+    log('MOD', `No voice for ${nick} in ${chan}: ${voiceReason(nick, chan).why}`);
 }
 
 /**
@@ -2198,7 +2241,9 @@ function voiceSweep(ch) {
     // whole moment it exists for.
     if (!ch || !config.autoVoice || game.isGameChannel(ch) || !opped.has(ch)) return;
     for (const n of members.get(ch) || []) {
-        if (deservesVoice(n, ch) && !/[~&@%+]/.test(prefixIn(ch, n))) send(`MODE ${ch} +v ${n}`);
+        if (/[~&@%+]/.test(prefixIn(ch, n))) continue;          // already has something
+        if (deservesVoice(n, ch)) send(`MODE ${ch} +v ${n}`);
+        else noteVoiceDenial(n, ch);
     }
 }
 
@@ -2316,9 +2361,15 @@ function handleCommand(chan, nick, message) {
                 : hostIsTrusted(who) ? 'trusted by host mask (TRUSTED_MASKS)'
                 : /\+/.test(prefixIn(chan, who)) && voiceIsSelective(chan) ? 'trusted by voice'
                 : 'not trusted';
+            // Voice, and the REASON. "Why did this person not get auto-voice"
+            // was unanswerable: four separate ways for the decision to come out
+            // false and no record of which fired.
+            const v = voiceReason(who, chan);
             reply( `${who} — role: ${role} (${tier} — ${why}), strikes: ${warns.get(k) || 0}/${quota}, `
+                + `account: ${accountOf.get(k) || 'none seen'}, `
                 + `host: ${hostOf.get(k) || 'unknown'}`
                 + `${ignored.has(k) ? ', ignored' : ''}, last active: ${seenUsers[k] ? ago(seenUsers[k]) : 'never'}.`);
+            reply( `${who} — auto-voice: ${v.ok ? 'YES' : 'NO'} (${v.why}).`);
             break;
         }
         case 'rules':
