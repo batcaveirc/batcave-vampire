@@ -3283,6 +3283,17 @@ function handleLine(line) {
                     if (!inIt) { send(`JOIN ${c}`); send(`NAMES ${c}`); }
                 }
             };
+            // Re-read the membership of the source rooms periodically.
+            //
+            // Tracking JOIN and PART keeps a list roughly right; it cannot
+            // keep it right for hours. A netsplit, a missed line, or the bot
+            // being briefly disconnected loses people permanently, and the
+            // error only ever goes one way — downward — because departures are
+            // observed and arrivals can be missed. NAMES is one round trip and
+            // replaces the whole list, so the drift cannot accumulate.
+            setInterval(() => {
+                for (const c of recruiter.channels) send(`NAMES ${c}`);
+            }, 600000);
             joinRecruitRooms();
             setInterval(joinRecruitRooms, 300000);   // every 5 minutes
             recruiter.start(log);
@@ -3593,8 +3604,22 @@ function handleLine(line) {
         }
     } else if (command === 'JOIN' && nick) {
         const c = chanKey((tgt || msg).replace(/^:/, ''));
-        if (!isOurChannel(c)) return;
+        // Membership is tracked for the SOURCE rooms too, not just our own.
+        //
+        // This guard was the reason the recruiter kept answering "0 eligible"
+        // in a room with people in it. Arrivals in a recruit room were never
+        // added — but PART and QUIT have no such guard and remove from any
+        // channel — so the member list was filled once by NAMES at join and
+        // then only ever shrank. Measured: 1439 people actually in
+        // #allindiachat.com, 288 in the bot's view, and the count resetting
+        // high after every restart and decaying again. Every new arrival, who
+        // is precisely the person nobody has invited yet, was invisible.
+        const sourceRoom = recruiter.channels.some((r) => chanKey(r) === c);
+        if (!isOurChannel(c) && !sourceRoom) return;
         (members.get(c) || members.set(c, new Set()).get(c)).add(nick);
+        // The rest of this block — voicing, guards, the ladder — is for OUR
+        // rooms. A source room is only ever watched, never acted in.
+        if (!isOurChannel(c)) return;
         game.onJoin(nick, c);
 
         // Voice on arrival. NOT gated on `ready`: that flag is a replay guard
