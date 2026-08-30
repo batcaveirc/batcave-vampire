@@ -1769,7 +1769,31 @@ async function sentientModeration(chan, nick, message) {
             return;
         }
 
-        const unambiguous = /threat|sexual|doxx|slur/i.test(String(verdict.reason || ''));
+        // THREAT is no longer "act at once", and that is a considered change.
+        //
+        // Three removals in one day, all of them Hinglish figures of speech
+        // the model read literally:
+        //   "Hum usko gayab kardenge"          — offering to sort out a friend's problem
+        //   "I will kill u johnny" 🤣          — two friends joking
+        //   "kisi or ka head eat kro jaoo"     — "go bother someone else"
+        // The last one cost a user: "mai nhi aane wali ab yaha 😭". A regular
+        // in the room asked directly, "can you be easier on these people for
+        // devoicing and kicking because every small things are detected as
+        // threat?" — and he is right.
+        //
+        // In a room that argues in Hinglish, figurative violence is ordinary
+        // speech, so "threat" is the category this model is WORST at, not
+        // best. It now takes the ordinary ladder: a warning first, removal if
+        // they do it again. A real threat repeated is still caught; an idiom
+        // now costs a warning instead of a person.
+        //
+        // The exception is a threat with something CONCRETE in it — a place, a
+        // time, personal details, or coming to find someone. Nobody says those
+        // as a figure of speech, and the cost of being slow there is real.
+        const CREDIBLE = /\b(i know where (you|u) live|your address|come to your (house|home|place)|find (you|u) and|leak (your|ur) (photos|pics|nudes)|post (your|ur) (address|number)|doxx?)\b/i;
+        const reasonText = String(verdict.reason || '');
+        const unambiguous = /sexual|doxx|slur/i.test(reasonText)
+            || (/threat/i.test(reasonText) && CREDIBLE.test(message));
         if (!unambiguous && action !== 'warn' && !aiWarnedRecently(nick)) {
             aiWarned.set(nick.toLowerCase(), Date.now());
             log('MOD', `AI wanted to ${action} ${nick} on a first ${verdict.reason} — warning instead.`);

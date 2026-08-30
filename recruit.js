@@ -153,7 +153,15 @@ const UNWELCOME = ['horny', 'slut', 'whore', 'milf', 'incest', 'porn', 'nangi',
     // nothing and a false negative is unforgivable.
     'teen', 'teenage', 'jailbait', 'lolita', 'loli', 'schoolgirl', 'schoolboy',
     'underage', 'minor', 'preteen', 'kiddie', 'childs', 'child', 'yngg',
-    'daddysgirl', 'stepdaughter', 'stepson', 'rape', 'molest'];
+    'daddysgirl', 'stepdaughter', 'stepson', 'rape', 'molest',
+    // Invited into the owner's room on 2026-08-30: "_F_Groped". The list had
+    // 'rape' and 'molest' and nothing between them and ordinary words, so a
+    // nick advertising sexual assault read as an ordinary person and was sent
+    // an invitation. This is the category where a false positive costs nothing
+    // and a false negative is not recoverable — somebody sees it in their own
+    // room and it was the bot that brought them there.
+    'groped', 'grope', 'groping', 'forced', 'nonconsent', 'noconsent',
+    'unwilling', 'drugged', 'passedout', 'sleeping', 'blackmail'];
 
 // Solicitation, learned from 95 nicknames actually seen in #allindiachat.com
 // on 2026-08-27. The substring list above caught 7 of them; these fourteen
