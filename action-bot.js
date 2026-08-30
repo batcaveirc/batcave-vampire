@@ -300,6 +300,33 @@ const recruiter = new Recruiter(bot, {
 fun.enabled = onOff(process.env.FUN_ON || 'on');
 // Master moderation switch, independent of the game.
 let modEnabled = onOff(process.env.MOD_ENABLED || 'on');
+
+/**
+ * Cool mode: the deterministic layers work, the MODEL only watches.
+ *
+ * Default OFF, and that default is the point. Every removal that cost this
+ * room a person today came from an AI verdict, not from the word list:
+ *
+ *   Lucifer   "Hum usko gayab kardenge"        threat  — Hindi idiom
+ *   tulip     "kisi or ka head eat kro jaoo"   threat  — "go bother someone else"
+ *   vergil    a welcome joke with a 😄         harassment
+ *   Preeti24  "just friendships and bkchodi"   slur    — means idle chat
+ *
+ * Preeti24 was eleven minutes into her first visit. Each one was patched
+ * afterwards, one phrase at a time, which is losing: the room speaks Hinglish
+ * and the model reads it literally, so there will always be another phrase.
+ *
+ * So the model no longer acts unless a moderator says it should. What still
+ * acts in cool mode, because none of it depends on interpretation:
+ *   - the severe word list          (a slur is a slur)
+ *   - solicitation and child safety (validated against real traffic)
+ *   - raid guard, auto-ban masks, flood and repeat limits
+ *   - every human-issued command
+ *
+ * The model keeps reading and keeps reporting to the mods. It simply stops
+ * being the thing that removes people.
+ */
+let aiActive = onOff(process.env.AI_ACTIVE || 'off');
 // No auto-moderation inside a running game: nobody should be kicked mid-round
 // for a word, and a compartment filling up is not a raid.
 function moderationOff(chan) { return !modEnabled || game.isGameChannel(chan); }
@@ -1831,6 +1858,19 @@ async function sentientModeration(chan, nick, message) {
             return;
         }
 
+        // Gate 0 of the acting half — cool mode. Everything above still runs,
+        // so the mods get the full report and the log; only the ACTION stops.
+        // A moderator turns this on with !!active on when a room needs it.
+        if (!aiActive) {
+            log('AI', `COOL MODE — would ${action} ${nick} (${reason}); reporting only.`);
+            for (const m of channelMods()) {
+                notice(m, `\x0307[AI]\x03 would \x02${action}\x02 \x02${nick}\x02 — ${reason}. `
+                    + `Quoted: "${String(verdict.quote || '').slice(0, 60)}". `
+                    + '\x02!!active on\x02 if the room needs the model acting.');
+            }
+            return;
+        }
+
         // Gate 5 — the AI may never ban. A ban is the one action the person
         // cannot undo by coming back, and it should rest on something
         // deterministic: the word list bans, the model at most removes. Same
@@ -2391,6 +2431,7 @@ function handleCommand(chan, nick, message) {
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!history on|off, '
                 + '!!access, !!unwarn <nick>, !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
+                + '!!active on|off (AI moderation; off = cool), '
                 + '!!trust add|del|seed|reload <nick> (sticks), !!untrust add|del|seed <nick>, '
             + '!!whitelist add|remove <nick> (this run only), '
             + '!!announce <msg>.');
@@ -2443,6 +2484,24 @@ function handleCommand(chan, nick, message) {
             reply( `${who} — auto-voice: ${v.ok ? 'YES' : 'NO'} (${v.why}).`);
             break;
         }
+        // The switch a moderator actually reaches for, rather than a redeploy.
+        case 'active': {
+            if (!admin) { reply('Access denied.'); break; }
+            const arg = (target || '').toLowerCase();
+            if (arg === 'on' || arg === 'off') {
+                aiActive = arg === 'on';
+                log('MOD', `${nick} set AI moderation ${arg}.`);
+                say(chan, `\x0306[MOD]\x03 AI moderation is \x02${arg.toUpperCase()}\x02`
+                    + `${aiActive ? ' — the model can now remove people.'
+                                  : ' — the model watches and reports; the word list still acts.'} 🦇`);
+            } else {
+                reply(`AI moderation is \x02${aiActive ? 'ON' : 'OFF (cool)'}\x02. `
+                    + 'In cool mode the severe word list, solicitation, raid guard and auto-bans '
+                    + 'still act — only the model stops removing people. !!active on|off');
+            }
+            break;
+        }
+
         case 'rules':
             reply( channelRules || 'Be civil, no slurs, no spam, no unsolicited links. I am always watching. 🦇');
             break;
