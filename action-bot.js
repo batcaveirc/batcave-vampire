@@ -2240,10 +2240,27 @@ function voiceSweep(ch) {
     // returned immediately. It had never once run at startup, which is the
     // whole moment it exists for.
     if (!ch || !config.autoVoice || game.isGameChannel(ch) || !opped.has(ch)) return;
+    // If we do not know somebody's account, ASK — do not silently withhold.
+    //
+    // Auto-voice for a registered user depends entirely on accountOf, which is
+    // filled by extended-join. Somebody who was already in the room when we
+    // connected never sends us a JOIN, so we never learn their account and
+    // never voice them — for as long as they stay. Live: ishi and Lord are
+    // both registered (ishi/ishi, LorD/EXTINCT), neither is in the whitelist,
+    // and both had to be voiced by hand twice, an hour apart, across several
+    // restarts.
+    //
+    // One WHO per sweep at most, and only when somebody is actually unknown.
+    let unknown = 0;
     for (const n of members.get(ch) || []) {
         if (/[~&@%+]/.test(prefixIn(ch, n))) continue;          // already has something
-        if (deservesVoice(n, ch)) send(`MODE ${ch} +v ${n}`);
-        else noteVoiceDenial(n, ch);
+        if (deservesVoice(n, ch)) { send(`MODE ${ch} +v ${n}`); continue; }
+        if (!accountOf.has(String(n).toLowerCase())) unknown += 1;
+        else noteVoiceDenial(n, ch);                            // known, and still no
+    }
+    if (unknown) {
+        log('MOD', `${unknown} member(s) of ${ch} have no account on file — asking the server.`);
+        send(`WHO ${ch} %cuhnar,152`);
     }
 }
 
