@@ -35,6 +35,37 @@ const LIGHT = new Set([
     'kamina', 'kamine', 'harami', 'churail', 'chudail', 'pagli',
 ]);
 
+/**
+ * Hostility that is affection in this room.
+ *
+ * Observed: "libu ek baat bolni apko.. i hate u so much" between two friends,
+ * answered by the target with "johnny hatesss me whenever i come online" — a
+ * running joke of theirs. The bot read it as harassment, handed the "victim"
+ * operator status and devoiced the joker. The owner said so in the room:
+ * "lol johnny masti kar rha".
+ *
+ * And "Hum usko gayab kardenge" — Hindi for offering to make somebody's
+ * problem disappear, said protectively about a friend — was read as a threat
+ * and got one of the room's three most active regulars kicked. He rejoined,
+ * was answered in customer-service English, and left.
+ *
+ * These are matched as PHRASES, not words, because the words alone ("hate",
+ * "kill") are exactly the ones that carry real menace elsewhere.
+ */
+const BANTER = [
+    /\bi\s+hate\s+(u|you|yew|yu)\b/i,
+    /\bhate\s+(u|you)\s+(so\s+much|too|na|yaar|bhai)\b/i,
+    /\b(gayab|gaayab)\s+kar\s?denge?\b/i,          // "we'll make them disappear"
+    /\bdekh\s+lenge\b/i,                            // "we'll see about that"
+    /\b(maar|maro|maardunga)\s+(dunga|denge)?\s*(tujhe|tumhe)?\b.{0,12}\b(yaar|bhai|lol|haha|😂|🤣)/i,
+    /\bkill(ing)?\s+(me|myself)\b/i,                  // "this weather is killing me"
+];
+
+/** Is the whole line just this room's affectionate hostility? */
+function isBanter(text) {
+    return BANTER.some((re) => re.test(String(text || '')));
+}
+
 const WINDOW_MS = 90000;        // how long a fight stays "in progress"
 const START_AT = 2;             // aggressive lines before the private nudge
 const ESCALATE_AT = 2;          // further lines AFTER the nudge before devoicing
@@ -173,4 +204,4 @@ class Feuds {
     get size() { return this.rows.size; }
 }
 
-module.exports = { Feuds, severityOf, aimedAt, LIGHT, WINDOW_MS };
+module.exports = { Feuds, severityOf, aimedAt, isBanter, BANTER, LIGHT, WINDOW_MS };

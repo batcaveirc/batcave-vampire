@@ -9,7 +9,7 @@ const { geminiChat } = require('./gemini');
 const { Guardian, victimOf } = require('./guardian');
 const { Watch } = require('./watch');
 const { Handshake } = require('./handshake');
-const { Feuds, severityOf, aimedAt } = require('./feud');
+const { Feuds, severityOf, aimedAt, isBanter } = require('./feud');
 const { TrustList, effective } = require('./trust');
 const { pack } = require('./trustrelay');
 const { Reputation } = require('./reputation');
@@ -1232,16 +1232,32 @@ setInterval(() => {
 
 // The room should see an abuser answered, not just processed. Spoken BEFORE the
 // KICK so it is the last thing said while they are still present to read it.
-function retortBefore(chan, nick, reason) {
+/**
+ * The parting line, and when it must stay unsaid.
+ *
+ * NOT on an AI verdict. The AI is a judgement call and it gets them wrong:
+ * "Hum usko gayab kardenge" — a Hindi idiom for offering to deal with someone
+ * bothering a friend, said protectively — was read as a threat and one of the
+ * room's three most active regulars was kicked, then told "You had one job
+ * here — be tolerable — and you fumbled it immediately." He rejoined, was
+ * answered in corporate English, and left.
+ *
+ * A wrong removal is recoverable; being mocked on the way out is what makes
+ * somebody not come back. A deterministic verdict — a slur from the word
+ * list, a flood — is certain enough to earn a parting line. A model's opinion
+ * is not.
+ */
+function retortBefore(chan, nick, reason, fromAI = false) {
+    if (fromAI) return;
     const line = retort.lineFor(nick, reason, tierOf(chan, nick));
     if (line) say(chan, `${nick}: ${line}`);
 }
 
-function kickUser(chan, nick, reason) {
+function kickUser(chan, nick, reason, fromAI = false) {
     if (actedRecently(chan, nick, 'kick')) return;
     markActioned(chan, nick, 'kick');
     if (!requireOps(chan, `kick ${nick}`)) return;
-    retortBefore(chan, nick, reason);
+    retortBefore(chan, nick, reason, fromAI);
     send(`KICK ${chan} ${nick} :${reason}`);
     // "Banished" is what a BAN is. Saying it for a kick told the room somebody
     // was gone for good when they could have walked straight back in —
@@ -1684,6 +1700,32 @@ async function sentientModeration(chan, nick, message) {
         // sexual harassment and doxxing are unambiguous and still act at once.
         // Everything else gets the room's own ladder: a warning first, and
         // removal only if they do it again.
+        // Gate 4c — the "unambiguous" categories are where the model's worst
+        // mistakes land, because they are the ones that act at once.
+        //
+        // Both live failures were here. "Hum usko gayab kardenge" is Hindi for
+        // offering to make somebody's problem disappear, said protectively
+        // about a friend; read as a THREAT, it kicked one of the room's three
+        // most active regulars. Shayari — "mujhe apna haath bhi chu gyaa" —
+        // read as SEXUAL harassment, devoiced a whitelisted regular mid-verse.
+        //
+        // Two conditions, both cheap and both deterministic:
+        //   - the room's own affectionate hostility is never an offence
+        //   - a threat or harassment is DIRECTED. If the model cannot point at
+        //     somebody in the room, what it is reading is very likely idiom.
+        if (isBanter(message)) {
+            log('AI', `Ignoring ${action} on ${nick}: reads as this room's banter.`);
+            return;
+        }
+        const directed = /threat|harass/i.test(String(verdict.reason || ''))
+            ? aimedAt(message, (n) => [...(members.get(chanKey(chan)) || new Set())]
+                .some((m) => m.toLowerCase() === n.toLowerCase()))
+            : true;
+        if (!directed) {
+            log('AI', `Ignoring ${action} on ${nick}: a ${verdict.reason} aimed at nobody present.`);
+            return;
+        }
+
         const unambiguous = /threat|sexual|doxx|slur/i.test(String(verdict.reason || ''));
         if (!unambiguous && action !== 'warn' && !aiWarnedRecently(nick)) {
             aiWarned.set(nick.toLowerCase(), Date.now());
@@ -1698,7 +1740,7 @@ async function sentientModeration(chan, nick, message) {
         // rule already applied to nickname screening.
         if (action === 'ban') {
             log('MOD', `AI wanted to ban ${nick} — capped at a kick.`);
-            if (tier === 'stranger') { kickUser(chan, nick, reason); return; }
+            if (tier === 'stranger') { kickUser(chan, nick, reason, true); return; }
             warnUser(chan, nick, reason);
             return;
         }
@@ -1711,7 +1753,7 @@ async function sentientModeration(chan, nick, message) {
             warnUser(chan, nick, reason);
             return;
         }
-        if (action === 'kick') kickUser(chan, nick, reason);
+        if (action === 'kick') kickUser(chan, nick, reason, true);   // true = AI: no parting taunt
         else warnUser(chan, nick, reason);          // tier-aware
     } catch (e) {
         log('AI', 'moderation error: ' + e.message);

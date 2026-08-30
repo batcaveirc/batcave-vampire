@@ -63,4 +63,30 @@ F.see('#batcave','b','x',{severity:'heavy',target:'a',now:2000});
 const stale = F.see('#batcave','a','x',{severity:'heavy',target:'b',now:100000});
 c('an argument an hour later is a NEW argument', stale === null, JSON.stringify(stale));
 
+
+
+console.log('\n— this room\'s affectionate hostility is not an offence —');
+// Two live incidents, both from the same hour of transcript.
+//
+// "libu ek baat bolni apko.. i hate u so much" — Johnny to LiBu, who replied
+// "johnny hatesss me whenever i come online". A running joke between friends.
+// The bot handed LiBu operator status to defend herself and devoiced Johnny.
+// The owner said so in the room: "lol johnny masti kar rha".
+//
+// "Hum usko gayab kardenge" — Lucifer offering to deal with whoever was
+// bothering LiBu. Hindi idiom, read as a THREAT. He was kicked, told "you had
+// one job — be tolerable", answered in corporate English when he came back,
+// and left. He is the third most active person in that room.
+{
+  const { isBanter } = require('../feud.js');
+  for (const s of ['libu ek baat bolni apko.. i hate u so much', 'katerina i hate u',
+                   'Hum usko gayab kardenge', 'this weather is killing me', 'dekh lenge'])
+    c(`banter: ${s.slice(0, 34)}`, isBanter(s));
+  // A filter that swallows real menace is worse than none.
+  for (const s of ['i will find you and hurt you', 'i know where you live',
+                   'send me your address i will come to your house',
+                   'you are a worthless piece of trash', 'i will leak your photos'])
+    c(`NOT banter: ${s.slice(0, 30)}`, !isBanter(s));
+}
+
 console.log(f?`\n${f} FAILED`:'\nALL PASS'); process.exit(f?1:0);
