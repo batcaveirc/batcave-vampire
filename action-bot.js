@@ -9,7 +9,7 @@ const { geminiChat } = require('./gemini');
 const { Guardian, victimOf } = require('./guardian');
 const { Watch } = require('./watch');
 const { Handshake } = require('./handshake');
-const { Feuds, severityOf, aimedAt, isBanter } = require('./feud');
+const { Feuds, severityOf, aimedAt, isBanter, hasLaughter } = require('./feud');
 const { TrustList, effective } = require('./trust');
 const { pack } = require('./trustrelay');
 const { Reputation } = require('./reputation');
@@ -1760,6 +1760,16 @@ async function sentientModeration(chan, nick, message) {
             log('AI', `Ignoring ${action} on ${nick}: reads as this room's banter.`);
             return;
         }
+        // Laughing while saying it. Only for the categories that turn on
+        // INTENT — a joke and an attack use the same words there. It does
+        // nothing for slurs, sexual content or doxxing, which are the same act
+        // whether or not the speaker found them funny.
+        const intentBased = /harass|threat|insult|hate|rude|toxic/i.test(String(verdict.reason || ''))
+            && !/slur|sexual|doxx/i.test(String(verdict.reason || ''));
+        if (intentBased && hasLaughter(message)) {
+            log('AI', `Ignoring ${action} on ${nick}: they were laughing (${verdict.reason}).`);
+            return;
+        }
         const directed = /threat|harass/i.test(String(verdict.reason || ''))
             ? aimedAt(message, (n) => [...(members.get(chanKey(chan)) || new Set())]
                 .some((m) => m.toLowerCase() === n.toLowerCase()))
@@ -3408,6 +3418,25 @@ function handleLine(line) {
             }
             if ('ovhbeIkl'.includes(ch)) {
                 const who = targets[ti++] || '';
+                // A HUMAN op giving voice back ENDS the sentence.
+                //
+                // Live: vergil was devoiced, the owner voiced him at 12:41:07,
+                // and the bot took it away again at 12:41:08 — then repeated it
+                // on the next rejoin. The enforcement is there so somebody
+                // cannot shed a devoice by cycling, and it cannot tell that
+                // apart from a moderator overruling it.
+                //
+                // A moderator's decision outranks a timer the bot set. Anyone
+                // else handing voice back is still treated as evasion.
+                if (ch === 'v' && adding && who && nick
+                    && nick.toLowerCase() !== currentNick.toLowerCase()
+                    && (isAdmin(nick) || isOwner(nick) || isChannelMod(tgt, nick))) {
+                    const skey = `${chanKey(tgt)}|${who.toLowerCase()}`;
+                    if (serving.has(skey)) {
+                        serving.delete(skey);
+                        log('MOD', `${nick} voiced ${who} in ${tgt} — devoice cleared, they outrank the timer.`);
+                    }
+                }
                 if ('ovhq'.includes(ch) && who) {          // track everyone's status
                     const key = `${chanKey(tgt)}|${who.toLowerCase()}`;
                     const sym = { o: '@', v: '+', h: '%', q: '~' }[ch];

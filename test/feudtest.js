@@ -89,4 +89,20 @@ console.log('\n— this room\'s affectionate hostility is not an offence —');
     c(`NOT banter: ${s.slice(0, 30)}`, !isBanter(s));
 }
 
+
+console.log('\n— laughing while saying it —');
+// "GirlInSpecs_: this is room where we abuse poke harass bully others 😄" —
+// a welcome joke to a newcomer, devoiced as "encouraging harassment" while
+// the owner typed "they joking" one line below. The emoji was right there.
+{
+  const { hasLaughter } = require('../feud.js');
+  for (const s of ['this is room where we abuse poke harass bully others 😄',
+                   'I will kill u johnny 🤣', 'lol you idiot', 'hahaha stop it',
+                   'removed :D', 'abusing you xD'])
+    c(`laughter seen: ${s.slice(0, 34)}`, hasLaughter(s));
+  // It must not become a free pass. Someone can put an emoji after anything.
+  for (const s of ['i know where you live', 'you are worthless', 'shut up'])
+    c(`not laughter: ${s.slice(0, 24)}`, !hasLaughter(s));
+}
+
 console.log(f?`\n${f} FAILED`:'\nALL PASS'); process.exit(f?1:0);

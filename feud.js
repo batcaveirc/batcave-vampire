@@ -61,6 +61,24 @@ const BANTER = [
     /\bkill(ing)?\s+(me|myself)\b/i,                  // "this weather is killing me"
 ];
 
+/**
+ * Laughter, which is the strongest banter signal there is and was going unread.
+ *
+ * "GirlInSpecs_: this is room where we abuse poke harass bully others 😄" — a
+ * welcome joke to a newcomer, devoiced as "encouraging harassment" while the
+ * owner was typing "they joking" one line below. The emoji was right there.
+ *
+ * Deliberately NOT an excuse for everything. Someone can put 🤣 after a slur,
+ * and people do. Laughter softens the categories that turn on INTENT —
+ * harassment, threats, insults, where a joke and an attack use the same words
+ * — and does nothing at all for slurs, sexual content or doxxing, which are
+ * the same act whether or not the person found it funny.
+ */
+const LAUGHTER = /(\u{1F602}|\u{1F923}|\u{1F604}|\u{1F605}|\u{1F606}|\u{1F61C}|\u{1F643}|\u{1F62D}|\bl+o+l+\b|\bl+m+a+o+\b|\bha(ha)+\b|\bhe(he)+\b|\brofl\b|:\)|:-\)|:D\b|xD\b)/iu;
+
+/** Did they laugh while saying it? */
+function hasLaughter(text) { return LAUGHTER.test(String(text || '')); }
+
 /** Is the whole line just this room's affectionate hostility? */
 function isBanter(text) {
     return BANTER.some((re) => re.test(String(text || '')));
@@ -204,4 +222,4 @@ class Feuds {
     get size() { return this.rows.size; }
 }
 
-module.exports = { Feuds, severityOf, aimedAt, isBanter, BANTER, LIGHT, WINDOW_MS };
+module.exports = { Feuds, severityOf, aimedAt, isBanter, hasLaughter, BANTER, LAUGHTER, LIGHT, WINDOW_MS };
