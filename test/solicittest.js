@@ -53,4 +53,22 @@ c('a rate needs no gender, because nothing innocent quotes one',
   solicits('2000 per hour, dm me').level !== 'none');
 c('one signal is never enough', solicits('any girls here').level === 'none');
 
+
+console.log('\n— a quantity is not a self-description —');
+// Live: vergil was explaining that another user had abused him —
+//   "Koi user aake gali diya mujhe tab mila / 10 m ke liye"
+// which is Hinglish for "...for 10 minutes". It was read as age 10, male,
+// plus a bare "m" gender target, scored 4, and got him kicked for
+// advertising. He rejoined and asked what he had said.
+for (const s of ['Koi user aake gali diya mujhe tab mila 10 m ke liye',
+                 '10 m ke liye', 'wait 5 min', '30 m ago i said that',
+                 'give me 2 min', 'ok 15 m', '2 f aur 3 m the party me'])
+  c(`a duration is not an advert: ${s.slice(0, 34)}`, solicits(s).level === 'none');
+
+// And the fix must not cost what the filter exists for. Stripping the
+// quantity briefly broke this one, which is the real thing.
+for (const s of ['24f pune looking for fun', 'M 23, my cam your voice',
+                 'f 25 delhi cam show 500 for 1 hour'])
+  c(`a real self-label still reads: ${s.slice(0, 32)}`, solicits(s).level !== 'none');
+
 console.log(f?`\n${f} FAILED`:'\nALL PASS'); process.exit(f?1:0);

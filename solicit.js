@@ -31,7 +31,20 @@ const SEEK = /\b(any|anyone|any1|koi|looking|look|want|wants|wanted|need|needs|d
 
 // The gender being sought. A bare "f" or "m" counts — it is how these adverts
 // are written — but only as a standalone token, never inside a word.
-const TARGET = /\b(female|females|f|girl|girls|ladki|ladkiya|woman|women|lady|ladies|aunty|aunti|bhabhi|wife|wifes|milf|male|males|m|guy|guys|boy|boys|couple|couples)\b/i;
+// A bare "m" or "f" counts — it is how these adverts are written — but NOT
+// when a number is sitting in front of it. "10 m", "2 f" and "30 m" are
+// quantities in Hinglish, and reading them as a gender being sought is what
+// turned "for 10 minutes" into a solicitation.
+const TARGET_WORDS = /\b(female|females|girl|girls|ladki|ladkiya|woman|women|lady|ladies|aunty|aunti|bhabhi|wife|wifes|milf|male|males|guy|guys|boy|boys|couple|couples)\b/i;
+const BARE_MARK = /(^|[^a-z0-9])(?<!\d\s)[mf](?![a-z0-9])/i;
+const TARGET = {
+    test(t) {
+        const s = String(t || '');
+        if (TARGET_WORDS.test(s)) return true;
+        // Strip "<digits> m/f" first, then look for a standalone marker.
+        return BARE_MARK.test(s.replace(/\b\d{1,3}\s?[mf]\b/gi, ' '));
+    },
+};
 
 // What is being offered or asked for.
 const MEDIA = /\b(cam|cams|webcam|pic|pics|photo|photos|video|videos|vid|vids|snap|selfie|nude|nudes)\b/i;
@@ -44,7 +57,26 @@ const CONTACT = /\b(chat|chatting|call|calling|meet|meetup|meeting|host|hosting|
 const EXPLICIT = /\b(cum|cumming|sex|sexy|sexting|porn|horny|nude|naked|boobs|titties|tits|dick|cock|pussy|bbc|blowjob|suck|fuck|fucking|jerk|jerking|masturbat\w*|golden\s*shower|cuckold|cuck|threesome|hookup|escort|paid|payment)\b/i;
 
 // "23 M", "M23", "f 25" — how these adverts introduce themselves.
-const AGE_GENDER = /(\b\d{2}\s?[mf]\b|\b[mf]\s?\d{2}\b)/i;
+// An age has to be a plausible age, and must not be a QUANTITY.
+//
+// "10 m ke liye" — Hinglish for "for 10 minutes" — was read as "age 10, male"
+// and, with a bare "m" also counting as a gender sought, scored 4 and got the
+// speaker kicked for advertising. He was explaining that somebody had abused
+// him. Two separate mistakes in one short phrase:
+//
+//   - 10 is not an age anybody advertises; adults in these rooms write 18-69
+//   - a number followed by a unit is a duration, not a self-description
+const NOT_AN_AGE = /(min|mins|minute|hour|hr|hrs|day|days|week|month|year|saal|baje|rupee|rs|km|kg|ke\s+liye)/i;
+const AGE_GENDER_RE = /(\b(1[89]|[2-6]\d)\s?[mf]\b|\b[mf]\s?(1[89]|[2-6]\d)\b)/i;
+const AGE_GENDER = {
+    test(t) {
+        const m = AGE_GENDER_RE.exec(String(t || ''));
+        if (!m) return false;
+        // What follows the match — "10 m ke liye", "25 m ago".
+        const after = String(t).slice(m.index + m[0].length, m.index + m[0].length + 12);
+        return !NOT_AN_AGE.test(after);
+    },
+};
 
 // A rate. Nothing innocent quotes one in a chatroom.
 const PRICE = /(\b\d{3,5}\s*(rs|rupees|inr|\/-)?\s*(for|per|\/)\s*\d*\s*(hr|hour|hours|min|mins|night|session)\b|\b(rs|inr|₹)\s*\d{3,5}\b|\bper\s+(hour|hr|night|session)\b)/i;
@@ -78,8 +110,20 @@ function solicits(text) {
     // conversation: "anyone free for a video call?" names nobody and quotes
     // nothing, and removing somebody for it would be exactly the overreach
     // this file exists to avoid.
-    if (!target && !price) return { level: 'none', score: 0, why: [] };
-    if (score < 3) return { level: 'none', score, why: [] };
+    // An age-and-gender self-label IS a target — "24f pune looking for fun"
+    // names its own half and needs no separate gender word. Stripping the
+    // quantity to fix "10 m ke liye" removed that, and the fix has to not cost
+    // the thing the filter is actually for.
+    const selfLabel = AGE_GENDER.test(t);
+    if (!target && !price && !selfLabel) return { level: 'none', score: 0, why: [] };
+    // A bar of 3 when the ONLY evidence of a target is the person's own
+    // age-and-gender label, because that is also how people introduce
+    // themselves: "vikram 25M here nice to meet you" is a hello, and
+    // "24f pune looking for fun" is an advert. Both mention an age and a
+    // medium; only one of them is offering something. So when nobody is being
+    // sought by name and no rate is quoted, it takes one more signal.
+    const bar = (!target && !price && selfLabel) ? 4 : 3;
+    if (score < bar) return { level: 'none', score, why: [] };
 
     // Children turn a solicitation into the worst thing in the room. Checked
     // only once the message already reads as solicitation, so "my little girl
