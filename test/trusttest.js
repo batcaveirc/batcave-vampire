@@ -53,8 +53,16 @@ c('and UNTRUST still subtracts', !effective(t, secret, new Set(['libu'])).has('l
 ({t} = mk());
 t.refresh();
 ['1     Vikram                 +V', 'End of #batcave-trust FLAGS listing.'].forEach(l=>t.absorb(l));
-c('once ChanServ HAS answered, it wins', effective(t, secret, untrust).size === 1,
+// CHANGED 2026-08-28. This used to assert the channel REPLACED the secret.
+// That is what stripped a whitelisted regular of years' standing: a seed of 73
+// names stored 21, the channel "won" with a partial list, and everyone missing
+// silently became a stranger — one of them was devoiced by the AI for reciting
+// poetry and said so in the room. The channel now ADDS; only the deny list
+// removes.
+c('the channel adds to the secret rather than replacing it',
+  effective(t, secret, untrust).size === 3,
   [...effective(t, secret, untrust)].join(', '));
+c('and the name it contributes is there', effective(t, secret, untrust).has('vikram'));
 
 console.log('\n— a refusal falls back rather than emptying the list —');
 const bad = mk();
@@ -77,7 +85,10 @@ c('the listing IS marked read', empty.loaded === true);
 c('but an empty one does not take over', effective(empty, secret, untrust).size === 3,
   [...effective(empty, secret, untrust)].join(', ')||'(everyone lost their standing)');
 empty.add('Vikram');
-c('and the moment somebody is in it, it does', effective(empty, secret, untrust).size === 1,
+// CHANGED with the above: a name appearing in the channel must never cost
+// anybody else their standing.
+c('a name appearing in the channel takes nothing from anyone',
+  effective(empty, secret, untrust).size === 3,
   [...effective(empty, secret, untrust)].join(', '));
 
 console.log('\n— two lists, one channel —');
@@ -178,7 +189,9 @@ real.t.refresh();
  '5  JAILER  +b', 'End of #batcave-trust FLAGS listing.'].forEach(l => real.t.absorb(l));
 const kept3 = effective(real.t, new Set(['vikram', 'jailer']), new Set());
 c('the channel now wins over the secret', kept3.has('nessie') && kept3.has('almond'), [...kept3].join(','));
-c('the secret-only name is dropped', !kept3.has('vikram'), 'channel is authoritative once real');
+// CHANGED: a secret-only name is KEPT. Dropping it is the exact bug above.
+c('a secret-only name keeps its standing', kept3.has('vikram'),
+  'the secret is a floor; removal takes an explicit +b');
 c('the denied stay denied', !kept3.has('jailer'));
 c('and we are still not in our own list', !kept3.has('vlkram'));
 
@@ -296,6 +309,35 @@ setTimeout(() => {
     v.t.absorb('2  Nessie  +V');
     v.t.absorb('End of #batcave-trust FLAGS listing.');
 }, 2200);
+
+
+console.log('\n— a PARTIAL list must not strip anybody (the live incident) —');
+// 2026-08-28: `!!trust seed` sent 73 names and stored 21. The channel took
+// over on those 21 and every regular missing from them became a stranger to
+// the moderation ladder. hunterrrrrr, whitelisted for months, was devoiced by
+// the AI for reciting shayari and said so in the room:
+//   "mai to whitelist me tha naa" / "fir mera voice kyu le rha"
+// Losing an exemption looks identical to never having had one, which is why
+// it went unnoticed for hours.
+const part = mk('#batcave-trust', 'vlkram');
+part.t.refresh();
+['1  Vlkram  +ASVbef', '2  Aadhya  +V', '3  MinaL  +V',
+ 'End of #batcave-trust FLAGS listing.'].forEach(l => part.t.absorb(l));
+const secretHad = new Set(['hunterrrrrr', 'johnny', 'aadhya', 'minal', 'nessie', 'almond']);
+const eff2 = effective(part.t, secretHad, new Set());
+c('a regular missing from a partial seed keeps standing', eff2.has('hunterrrrrr'),
+  [...eff2].join(','));
+c('nobody in the secret is lost', [...secretHad].every((n) => eff2.has(n)),
+  `${eff2.size} of ${secretHad.size} survived`);
+c('and the channel still contributes its own', eff2.has('aadhya'));
+
+console.log('\n— removal still works, and is the ONLY way to lose standing —');
+const rem = mk('#batcave-trust', 'vlkram');
+rem.t.refresh();
+['1  JAILER  +b', 'End of #batcave-trust FLAGS listing.'].forEach(l => rem.t.absorb(l));
+const eff3 = effective(rem.t, new Set(['jailer', 'hunterrrrrr']), new Set());
+c('an explicit +b removes them', !eff3.has('jailer'), [...eff3].join(','));
+c('everyone else is untouched', eff3.has('hunterrrrrr'));
 
 setTimeout(() => {
     c('verify eventually fires', verified === true, 'callback never ran');

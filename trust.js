@@ -397,15 +397,23 @@ function effective(trust, fromSecret, untrust) {
     //
     // So the takeover needs a name that is not ours, and the result has to be
     // non-empty. A channel that yields nothing is a channel that is not ready.
+    // The channel ADDS trust; the deny list REMOVES it. The secret is a floor.
+    //
+    // The previous rule handed the room to the channel as soon as it held one
+    // usable name, and a PARTIAL list passes that test. It happened: a seed of
+    // 73 names stored 21, the channel took over, and every regular who had not
+    // landed silently became a stranger to the ladder. One of them — a
+    // whitelisted regular of long standing — was devoiced by the AI for
+    // reciting poetry and said so in the room: "mai to whitelist me tha naa".
+    //
+    // Losing an exemption looks exactly like never having had one, which is
+    // why nobody noticed for hours. So a name is trusted if EITHER source
+    // vouches for it, and untrusting is done deliberately through the deny
+    // list, which is durable and auditable. That removes the only way this
+    // can strip somebody: it now takes an explicit +b.
     const fromChannel = trust && trust.names ? trust.names : new Set();
     const denied = new Set([...untrust, ...(trust && trust.denied ? trust.denied : [])]);
-    const channelGives = new Set([...fromChannel].filter((n) => !denied.has(n)));
-    const useChannel = Boolean(trust && trust.enabled && trust.loaded && channelGives.size > 0);
-    const base = useChannel ? trust.names : fromSecret;
-    // Denied wins over trusted, from either source. The channel's deny list is
-    // the durable one; the UNTRUST secret stays as a fallback for rooms with
-    // no trust channel configured.
-    return new Set([...base].filter((n) => !denied.has(n)));
+    return new Set([...fromSecret, ...fromChannel].filter((n) => !denied.has(n)));
 }
 
 module.exports = { TrustList, effective, parseFlagRow, isEndOfList };

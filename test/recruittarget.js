@@ -68,5 +68,49 @@ for (const n of ['ghost_rider','Freedom_Fighter','Camila','Sharp_Shooter','Domin
   'Subhash','Bulletin_Board','Shower_Thoughts','Wisdom_Seeker','Priya_Chat_Fun'])
   c(`${n} is still welcome`, !r.unwelcome(n), `refused as ${r.unwelcome(n)}`);
 
+
+console.log('\n— self-labels: the commonest form in these rooms —');
+// "!!recruit now 3" in a room of 90 answered "0 eligible — 68 not my half".
+// The age-and-letter rule demanded a NON-LETTER before the age, so every
+// name-then-age label was invisible: Aanchal36fTWINSdelhi was in that room,
+// says 36f in its own nick, and was counted as somebody else's half.
+{
+  const r = make('feminine');
+  for (const n of ['Aanchal36fTWINSdelhi', 'Priya25f', 'Aaliya26f', 'f25delhi',
+                   '24fpune', 'riya 22 f', '_______F_Delhi'])
+    c(`reads the label in ${n}`, r.looksFeminine(n));
+  // The boundary has to stay on the f-first form or these become women.
+  for (const n of ['wolf25', 'Rolf30', 'golf18', 'Aditya09', 'Abhi006', 'Afzal35'])
+    c(`${n} is not a self-label`, !r.looksFeminine(n));
+}
+
+console.log('\n— names must not match as bare substrings —');
+// "isha" was matching Krishan, Nishant and Rishabh, so three men were
+// classified as women. Same mistake the nickname filter already learned when
+// it refused `ghost` for containing "host" and `freedom` for containing "dom".
+{
+  const r = make('feminine');
+  for (const n of ['Krishan', 'Nishant', 'Rishabh', 'Harish', 'Manish', 'Ashish',
+                   'Aditya', 'Aakash', 'Rajesh', 'Sandeep', 'Rohit'])
+    c(`${n} is not read as a woman`, !r.looksFeminine(n));
+  for (const n of ['Nisha', 'Isha', 'Ishani', 'Anjali', 'Riya_Sharma', 'Aanchal_delhi',
+                   'Shweta', 'Muskan', 'Zoya', 'Kavya', 'Aaradhya', 'Akanksha'])
+    c(`${n} still reads as a woman`, r.looksFeminine(n));
+}
+
+console.log('\n— the other half is a real answer, not an empty pool —');
+// The fix for "nobody eligible" is not guessing harder about gender; it is
+// having the standbys cover the half this bot is not aiming at.
+{
+  const fem = make('feminine');
+  const oth = make('other');
+  const sample = ['Priya25f', 'Rahul', 'Aanchal36f', 'Amit', 'Nisha', 'Krishan'];
+  const a = sample.filter((n) => fem.mine(n));
+  const b = sample.filter((n) => oth.mine(n));
+  c('every nick belongs to exactly one half', a.length + b.length === sample.length,
+    `${a.length} + ${b.length} of ${sample.length}`);
+  c('and the halves do not overlap', !a.some((n) => b.includes(n)));
+}
+
 console.log(fails?`\n${fails} FAILED`:'\nALL PASS');
 process.exit(fails?1:0);

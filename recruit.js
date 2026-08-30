@@ -76,7 +76,43 @@ const DEFAULT_HINTS = [
     'roshni', 'sadhna', 'sarita', 'savita', 'shanti', 'sheetal', 'shobha',
     'sudha', 'sushma', 'urmila', 'vaishali', 'vinita', 'aisha', 'ayesha',
     'farah', 'fatima', 'nazia', 'rukhsar', 'sadia', 'saira', 'shabnam',
-    'zoya', 'noor', 'mehak', 'anushka', 'alia', 'kareena', 'katrina',
+    'zoya', 'noor', 'mehak', 'anushka', 'alia', 'kareena', 'katrina',,
+    // Curated, not mined. Auto-learning these from the room produced
+    // "teen", "young", "busty" and "camgirlpaid" — a list learned from
+    // live traffic poisons itself, so candidates get read by a human.
+    'aaliya', 'aanchal', 'aaradhya', 'aashi', 'aastha', 'aayushi',
+    'adishi', 'akanksha', 'akshara', 'alisha', 'amrita', 'anisha',
+    'anitha', 'ankana', 'ankita', 'anshika', 'anupama', 'aparna',
+    'ashwini', 'avani', 'bhavana', 'bhavya', 'bhumika', 'chaitali',
+    'chesta', 'chhavi', 'damini', 'deepti', 'devika', 'dhara',
+    'dimple', 'disha', 'ekta', 'falguni', 'gayatri', 'gunjan',
+    'harleen', 'harshita', 'hina', 'ishani', 'ishika', 'jasmine',
+    'jaya', 'jhanvi', 'kalpana', 'kamini', 'kanika', 'karishma',
+    'kashish', 'kavita', 'khushbu', 'khushi', 'kriti', 'lavanya',
+    'madhuri', 'mahima', 'malti', 'manjot', 'manju', 'manvi',
+    'meenakshi', 'megha', 'mitali', 'mohini', 'monika', 'mounika',
+    'mrinal', 'muskan', 'nandini', 'nandni', 'natasha', 'navya',
+    'neeru', 'niharika', 'nilofar', 'nimisha', 'nishtha', 'nita',
+    'nupur', 'parul', 'peehu', 'prachi', 'pragya', 'prerna',
+    'prity', 'priyal', 'priyanka', 'purva', 'radhika', 'rakhi',
+    'ramya', 'reena', 'rhea', 'richa', 'rima', 'rimjhim',
+    'rinku', 'ritika', 'ruhi', 'rupali', 'safia', 'samiksha',
+    'sandhya', 'sanjana', 'sarika', 'saumya', 'shefali', 'shikha',
+    'shivani', 'shraddha', 'shreya', 'sonali', 'stuti', 'suhana',
+    'sujata', 'supriya', 'surbhi', 'tanisha', 'tanushree', 'tanvi',
+    'tara', 'tulika', 'uma', 'urvashi', 'vani', 'vishakha',
+    'yashika', 'zainab',,
+    'anshu', 'anushree', 'anvi', 'arya', 'bhoomi', 'chanchal',
+    'charu', 'daksha', 'damayanti', 'darshana', 'eshita', 'gargi',
+    'gitanjali', 'ishwari', 'jaanvi', 'janvi', 'jiya', 'kajol',
+    'kanak', 'lakshmi', 'leena', 'mahi', 'manvitha', 'meghna',
+    'mira', 'namita', 'nandita', 'nayana', 'neelu', 'nidhii',
+    'nikhita', 'nutan', 'palak', 'prabha', 'pratibha', 'prisha',
+    'priti', 'priyanshee', 'priyanshi', 'puja', 'rachita', 'radhi',
+    'rashi', 'riddhi', 'roopa', 'rubi', 'ruby', 'saloni',
+    'samruddhi', 'sanya', 'shreeya', 'simmi', 'sneh', 'sonu',
+    'sweta', 'tanmayi', 'trupti', 'urja', 'vaidehi', 'vasudha',
+    'vidhi', 'vinaya', 'vrinda', 'yamuna',
 ];
 
 // Self-description, which is how people in these rooms actually signal gender.
@@ -90,7 +126,16 @@ const FEM_WORD = /(female|girl|ladki|bhabhi|behen|aunty|didi|lady|mrs|miss|queen
 // "f25delhi" was rejected because the age had to be followed by a NON-letter,
 // so every "f23mumbai" and "24fpune" in the room read as somebody else's half.
 // The trailing boundary is gone; the leading one stays, or "wolf25" matches.
-const FEM_AGE  = /(^|[^a-z0-9])(f\s?\d{2}|\d{2}\s?f)/i;
+// Two forms, and they need DIFFERENT boundaries — one rule for both is what
+// made this miss the commonest label in the room.
+//
+//   <digits>f  — "Aanchal36f", "Priya25f", "Aaliya26f". The age is glued to
+//                the END of a name, so demanding a non-letter before it
+//                rejects every one of them. Measured against 3023 real nicks
+//                from #allindiachat.com: "Aanchal36fTWINSdelhi" MISSED.
+//   f<digits>  — "f25delhi", "_f_23". Here the boundary must STAY, or "wolf25"
+//                and "Rolf30" read as women.
+const FEM_AGE  = /(^|[^a-z0-9])f\s?\d{2}|\d{2}\s?f/i;
 // A bare F between separators — "_______F_Delhi", "Riya|F|22", "(f)" — is the
 // commonest marker of all in these rooms and was not being read at all.
 const FEM_MARK = /(^|[^a-z0-9])f([^a-z0-9]|$)/i;
@@ -220,9 +265,32 @@ class Recruiter {
         // "IndianGirlUSA". Guessing from a name's ending does not work — it
         // reads Aakash, Aditya and RajCanada as feminine.
         if (FEM_WORD.test(nick) || FEM_AGE.test(nick) || FEM_MARK.test(nick)) return true;
-        const n = nick.toLowerCase().replace(/[^a-z]/g, '');
-        if (!n) return false;
-        return this.hints.some((h) => n.includes(h));
+        // Name hints match at the START of the nick, or as a whole token —
+        // never as a bare substring anywhere inside it.
+        //
+        // Measured: "isha" was matching Krishan, Nishant and Rishabh, so three
+        // men were being classified as women and invited by a recruiter aimed
+        // at the other half. It is the same mistake the nickname filter
+        // already learned once, when it refused `ghost` for containing "host"
+        // and `freedom` for containing "dom". Short names inside longer names
+        // is exactly where substring matching fails.
+        //
+        // People put their name at the FRONT of a nick — "Priya25f",
+        // "Aanchal_delhi", "riya|22" — so the head of the nick and its
+        // separator-delimited tokens are where a name actually lives.
+        const raw = nick.toLowerCase();
+        // No early return on an empty head: "_Esha18" and "_Shruti_" begin
+        // with a separator, so the head is empty and the name lives in the
+        // TOKENS. Bailing out here skipped both, which the suite caught.
+        const head = (raw.match(/^[a-z]+/) || [''])[0];
+        const tokens = raw.split(/[^a-z]+/).filter(Boolean);
+        if (!head && !tokens.length) return false;
+        // EXACT, not a prefix: "Nisha" is a prefix of "Nishant", so prefix
+        // matching still read a man as a woman. A nick's head IS the person's
+        // name, so it either is a name we know or it is not — and the recall
+        // this gives up is recovered properly by the standbys recruiting the
+        // other half, not by guessing harder here.
+        return this.hints.some((h) => head === h || tokens.includes(h));
     }
 
     /**
@@ -461,4 +529,50 @@ class Recruiter {
     }
 }
 
-module.exports = { Recruiter };
+/**
+ * Rooms discovered from the server's own channel list.
+ *
+ * /LIST answers with every public channel on the network — nearly twenty
+ * thousand users' worth here — so the value is finding rooms nobody thought to
+ * configure. The danger is equally obvious: joining hundreds of channels and
+ * inviting out of all of them is indistinguishable from spam, and gets a bot
+ * K-lined rather than popular.
+ *
+ * So this only ever SUGGESTS. It ranks candidates and hands them back for a
+ * person to approve, exactly as the word-list mining does — a rule learned
+ * from live traffic and applied automatically poisons itself.
+ */
+const OFF_LIMITS = /^#+(help|oper|service|staff|admin|abuse|log|security|test|bot)/i;
+
+class Discovery {
+    constructor(opts = {}) {
+        this.minUsers = Number(opts.minUsers || 15);
+        this.max = Number(opts.max || 12);
+        this.found = [];
+        this.collecting = false;
+    }
+
+    /** Begin. The caller sends LIST; we just get ready to read the answer. */
+    start() { this.found = []; this.collecting = true; }
+
+    /** One RPL_LIST (322) row. */
+    absorb(chan, users, topic, { already = [], home = '' } = {}) {
+        if (!this.collecting) return;
+        const n = Number(users) || 0;
+        const c = String(chan || '');
+        if (!c.startsWith('#')) return;
+        if (n < this.minUsers) return;                       // a dead room is not a source
+        if (OFF_LIMITS.test(c)) return;                      // staff and service rooms
+        if (c.toLowerCase() === String(home).toLowerCase()) return;
+        if (already.some((a) => a.toLowerCase() === c.toLowerCase())) return;
+        this.found.push({ chan: c, users: n, topic: String(topic || '').slice(0, 60) });
+    }
+
+    /** RPL_LISTEND (323). Biggest rooms first, capped. */
+    finish() {
+        this.collecting = false;
+        return this.found.sort((a, b) => b.users - a.users).slice(0, this.max);
+    }
+}
+
+module.exports = { Discovery, Recruiter };
