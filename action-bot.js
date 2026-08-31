@@ -1350,6 +1350,7 @@ function kickUser(chan, nick, reason, fromAI = false) {
     if (actedRecently(chan, nick, 'kick')) return;
     markActioned(chan, nick, 'kick');
     if (!requireOps(chan, `kick ${nick}`)) return;
+    verdictNotice(nick, reason, 'You have been removed. You can rejoin.');
     retortBefore(chan, nick, reason, fromAI);
     send(`KICK ${chan} ${nick} :${reason}`);
     // "Banished" is what a BAN is. Saying it for a kick told the room somebody
@@ -1386,11 +1387,36 @@ function banMask(nick, wide) {
     }
     return `*!*@${host}`;
 }
+/**
+ * The word to the person, before the door.
+ *
+ * Sent privately, so the room does not become a stage — the room already sees
+ * the [MOD] line, and an audience is the thing that makes somebody dig in.
+ *
+ * Deliberately NOT abuse back, and today is the argument for that rather than
+ * a principle. Lucifer was wrongly kicked AND mocked on the way out — "You had
+ * one job here — be tolerable" — and left. And "You arrived to be removed",
+ * one of these bot's own taunts, was quoted back at it and nearly got
+ * GirlInSpecs_ removed for a threat. Every insult the bot writes is a sentence
+ * its own moderator will later read as abuse, and a sentence the room can aim
+ * at anybody by repeating it.
+ *
+ * So: cold, specific, and unanswerable. It names what was said, what it cost
+ * them, and how it ends. That is what actually lands on somebody who came in
+ * to get a reaction — they get a verdict instead, and nothing to quote.
+ */
+function verdictNotice(nick, reason, outcome) {
+    notice(nick, `\x0304[BATCAVE]\x03 ${reason}. ${outcome}`);
+    notice(nick, 'This was not a warning about tone. It was the line, and you were '
+        + 'on the wrong side of it. The room is still here when you are ready to be civil. 🦇');
+}
+
 function banUser(chan, nick, reason) {
     if (actedRecently(chan, nick, 'ban')) return;
     markActioned(chan, nick, 'ban');
     if (!requireOps(chan, `ban ${nick}`)) return;
     const mask = banMask(nick);
+    verdictNotice(nick, reason, 'You are banned from the channel.');
     retortBefore(chan, nick, reason);
     send(`MODE ${chan} +b ${mask}`);
     send(`KICK ${chan} ${nick} :${reason}`);
