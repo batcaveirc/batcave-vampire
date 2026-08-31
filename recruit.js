@@ -112,7 +112,39 @@ const DEFAULT_HINTS = [
     'rashi', 'riddhi', 'roopa', 'rubi', 'ruby', 'saloni',
     'samruddhi', 'sanya', 'shreeya', 'simmi', 'sneh', 'sonu',
     'sweta', 'tanmayi', 'trupti', 'urja', 'vaidehi', 'vasudha',
-    'vidhi', 'vinaya', 'vrinda', 'yamuna',
+    'vidhi', 'vinaya', 'vrinda', 'yamuna',,
+    'alishba', 'alka', 'ambika', 'amrit', 'anamika', 'anandi',
+    'anaya', 'anisa', 'anju', 'ankeeta', 'annu', 'anshita',
+    'apeksha', 'archita', 'arshi', 'arti', 'asfiya', 'asma',
+    'avantika', 'ayushi', 'bhagyashree', 'bhairavi', 'bhoomika', 'bindiya',
+    'chahat', 'chandrika', 'charulata', 'chetna', 'chhaya', 'darshita',
+    'deeksha', 'devanshi', 'dhanashree', 'dhriti', 'dipali', 'dipti',
+    'divyanshi', 'ekant', 'falak', 'farheen', 'gauhar', 'geetika',
+    'ghazal', 'gitika', 'gulnaz', 'hafsa', 'hansa', 'harsha',
+    'haseena', 'hiba', 'himani', 'hiral', 'huma', 'iram',
+    'ismat', 'jasleen', 'jasmin', 'jyotsna', 'kainat', 'kalyani',
+    'kamna', 'kanchana', 'kashvi', 'khadija', 'khushboo', 'kismat',
+    'kumkum', 'lajwanti', 'lalita', 'laxmi', 'madhavi', 'mahek',
+    'mahira', 'maitri', 'malaika', 'mallika', 'mandira', 'mansi',
+    'maryam', 'mehrunisa', 'mehwish', 'mishka', 'mubina', 'mumtaz',
+    'naaz', 'nafisa', 'nagma', 'naina', 'najma', 'namrita',
+    'nandana', 'narmada', 'nasreen', 'navjot', 'nayantara', 'neelima',
+    'neetu', 'nehal', 'nilofer', 'nimrat', 'nitya', 'noorjahan',
+    'nusrat', 'pakhi', 'palakh', 'pallabi', 'pamela', 'parineeta',
+    'poornima', 'pranjal', 'prathana', 'purnima', 'rabia', 'raima',
+    'rajni', 'rakshita', 'ramandeep', 'rashida', 'rehana', 'renuka',
+    'reshma', 'revathi', 'ridhima', 'rimpi', 'rinki', 'roopali',
+    'roshan', 'rubina', 'rupinder', 'sabina', 'safiya', 'sahiba',
+    'sakina', 'salma', 'samina', 'sanober', 'sarojini', 'sayani',
+    'seerat', 'sehrish', 'shabana', 'shagufta', 'shahnaz', 'shaina',
+    'shalu', 'shamim', 'shanaya', 'sharmila', 'shashi', 'shazia',
+    'sheeba', 'shehnaz', 'shivangi', 'shobhna', 'shrishti', 'shubhi',
+    'simrat', 'sitara', 'smriti', 'snehal', 'sonakshi', 'suhani',
+    'sukanya', 'sumaiya', 'sumati', 'sunaina', 'sunidhi', 'sushmita',
+    'swarna', 'tabassum', 'tahira', 'tamanna', 'tanuja', 'tanushka',
+    'tarannum', 'tasneem', 'tejal', 'trishna', 'tulsi', 'urmi',
+    'urvi', 'vaishnavi', 'vanshika', 'veena', 'vibha', 'vidhya',
+    'yashoda', 'yasmin', 'zahra', 'zarina', 'zeenat', 'zohra',
 ];
 
 // Self-description, which is how people in these rooms actually signal gender.
@@ -298,7 +330,22 @@ class Recruiter {
         // name, so it either is a name we know or it is not — and the recall
         // this gives up is recovered properly by the standbys recruiting the
         // other half, not by guessing harder here.
-        return this.hints.some((h) => head === h || tokens.includes(h));
+        // Exact, OR a name with a surname stuck to it.
+        //
+        // Measured against 1439 real nicks: exact matching found 101. It was
+        // missing "aditimishra" and "akanshas" — Aditi and Akansha with a
+        // surname or a letter run on, which is how half the room writes a
+        // nick. Pure prefix matching is what read Nishant as Nisha, so the
+        // leftover decides: a SURNAME is three or more characters, a male
+        // name extended is one or two.
+        //
+        //   aditimishra  ->  aditi  + "mishra" (6)  accepted
+        //   nishant      ->  nisha  + "nt"     (2)  refused
+        //
+        // And only for hints of five characters or more, because a short name
+        // inside a longer one is exactly the ghost/host mistake.
+        const surnamed = (h) => h.length >= 5 && head.startsWith(h) && head.length - h.length >= 3;
+        return this.hints.some((h) => head === h || tokens.includes(h) || surnamed(h));
     }
 
     /**
