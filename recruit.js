@@ -388,8 +388,14 @@ class Recruiter {
                 + `${unmatched} not my half, ${unwelcome} would be banned on arrival)`);
         }
         if (lines.length) {
-            lines.push(`I invite the "${this.target}" half `
-                + `(RECRUIT_TARGET=all if no other bot is covering the rest).`);
+            // Say what "not my half" costs and where those people go. "0
+            // eligible" beside "864 not my half" reads as the bot being
+            // broken, when it is the bot correctly covering a tenth of a room
+            // that nobody else is covering. The number is the argument.
+            lines.push(this.target === 'all'
+                ? 'I invite everyone (RECRUIT_TARGET=all).'
+                : `I invite the "${this.target}" half — the rest are nobody's job `
+                  + 'right now. RECRUIT_TARGET=all takes them, or a standby runs $$recruit.');
         }
         return lines.length ? lines : ['no channels configured'];
     }
