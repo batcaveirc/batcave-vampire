@@ -490,6 +490,24 @@ function isExempt(nick, chan) {
 }
 
 // Normalize leet/obfuscation so "st00pid" and "f-u-c-k" still match a whole word.
+/**
+ * Like normalize, but punctuation is DELETED rather than turned into a space.
+ *
+ * normalize() replaces punctuation with a space, which is right for reading
+ * words and wrong for catching "ch.utiya" — that becomes "ch utiya" and the
+ * word is gone. Deleting instead rejoins the split letters, and because only
+ * punctuation is removed, two ordinary words separated by an actual space
+ * stay separate. That distinction is the whole fix: "kami na aani" must not
+ * become "kaminaaani", and "ch.utiya" must become "chutiya".
+ */
+function normalizeGlue(t) {
+    return (t || '').toLowerCase()
+        .replace(/@/g, 'a').replace(/0/g, 'o').replace(/[1!|]/g, 'i').replace(/3/g, 'e')
+        .replace(/4/g, 'a').replace(/[5$]/g, 's').replace(/7/g, 't')
+        .replace(/[^a-zऀ-ॿ ]/g, '')       // DELETED, not spaced
+        .replace(/(.)\1{2,}/g, '$1$1');
+}
+
 function normalize(t) {
     return (t || '').toLowerCase()
         // '@' stands in for 'a' (k@mine -> kamine), NOT 'o'. Getting this wrong
@@ -504,11 +522,15 @@ function distinctHits(wordSet, msg) {
     if (!wordSet.size) return [];
     const norm = normalize(msg);
     const words = new Set((' ' + norm + ' ').split(/\s+/));
-    const joined = norm.replace(/\s+/g, '');
+    // Same rule as wordHit: never join across a SPACE. Removing every space
+    // fused "kami na aani" into "kaminaaani" and found "kamina" in a
+    // compliment. This function decides "three slurs in one message = ban",
+    // so the same glue here could produce a ban out of ordinary Hindi.
+    const depunct = normalizeGlue(msg);
     const found = new Set();
     for (const w of wordSet) {
         if (!w) continue;
-        if (words.has(w) || (w.length >= 6 && joined.includes(w))) found.add(w);
+        if (words.has(w) || (w.length >= 6 && depunct !== norm && depunct.includes(w))) found.add(w);
     }
     return [...found];
 }
@@ -519,12 +541,31 @@ function wordHit(wordSet, msg) {
     const words = new Set((' ' + norm + ' ').split(/\s+/));
     for (const w of wordSet) if (w && words.has(w)) return w;
 
-    // Second pass for evasion by spacing/punctuation ("k a m i n e", "ch.utiya").
-    // Only words of 6+ characters, because short ones hide inside innocent words
-    // (e.g. "randi" inside the name "Brandi") and a false kick is worse than a
-    // missed one.
-    const joined = norm.replace(/\s+/g, '');
-    for (const w of wordSet) if (w && w.length >= 6 && joined.includes(w)) return w;
+    // Second pass for DELIBERATE evasion — but never by gluing whole words
+    // together.
+    //
+    // This removed every space in the message, so ordinary neighbours fused
+    // into words nobody typed:
+    //
+    //     "Bas apki smile mein kami na aani chahiye"   ("may your smile
+    //      never fade")  ->  "...kaminaaani..."  which contains "kamina"
+    //
+    // UME was devoiced for a compliment and asked the room what he had said.
+    // Nobody could tell him, because he had not said it.
+    //
+    // Two narrower passes instead, each matching a real evasion shape:
+    //   punctuation between letters   "ch.utiya", "m-a-d-a-r-c-h-o-d"
+    //   a run of single letters       "k a m i n e"
+    // Neither can join two ordinary words, because ordinary words are neither
+    // punctuation-separated nor one letter long.
+    const depunct = normalizeGlue(msg);
+    if (depunct !== norm) {
+        for (const w of wordSet) if (w && w.length >= 6 && depunct.includes(w)) return w;
+    }
+    for (const run of norm.match(/(?:\b[a-z0-9]\b[\s.\-_]+){3,}[a-z0-9]\b/g) || []) {
+        const collapsed = run.replace(/[^a-z0-9]/g, '');
+        for (const w of wordSet) if (w && w.length >= 6 && collapsed.includes(w)) return w;
+    }
     return null;
 }
 
