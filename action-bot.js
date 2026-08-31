@@ -368,7 +368,29 @@ function chunk(msg, size = 380) {
     if (line) out.push(line);
     return out.length ? out : [''];
 }
-function say(chan, msg) { chunk(msg).forEach((c) => send(`PRIVMSG ${chan} :${c}`)); }
+// The last few things WE said, so the room cannot feed them back to us.
+//
+// From today's log:
+//   GirlInSpecs_ → kick (AI: threat of expulsion)
+//   quote="You arrived to be removed"
+// which is retort.js line 50, one of Dracula's own parting taunts. Somebody
+// repeated it and the model read it as a threat by them. The bot writes
+// deliberately cutting lines, so anything it says is exactly the sort of
+// sentence its own moderator flags — a feedback loop where the room can get
+// somebody removed by quoting the bot at it.
+const ourLines = [];
+function rememberSaid(msg) {
+    ourLines.push(String(msg).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim());
+    while (ourLines.length > 40) ourLines.shift();
+}
+/** Is this message just something we said, handed back to us? */
+function isOurOwnWords(msg) {
+    const flat = String(msg).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+    if (flat.length < 12) return false;         // too short to be distinctive
+    return ourLines.some((l) => l.length >= 12 && (l.includes(flat) || flat.includes(l)));
+}
+
+function say(chan, msg) { rememberSaid(msg); chunk(msg).forEach((c) => send(`PRIVMSG ${chan} :${c}`)); }
 function notice(nick, msg) { chunk(msg).forEach((c) => send(`NOTICE ${nick} :${c}`)); }
 // Store an absolute timestamp and render it as "12m ago". A clock reading is
 // useless here: the runner is UTC and every user is in a different zone.
@@ -1723,6 +1745,12 @@ async function sentientModeration(chan, nick, message) {
         try { verdict = JSON.parse(m[0]); } catch (e) { return; }   // fail-safe: never act on unparseable output
         const action = String(verdict.action || 'none').toLowerCase();
         if (!['warn', 'kick', 'ban'].includes(action)) return;
+
+        // Gate 0b — we are not going to remove somebody for quoting us.
+        if (isOurOwnWords(message)) {
+            log('AI', `Ignoring ${action} on ${nick}: that is our own line quoted back.`);
+            return;
+        }
 
         // Gate 1 — the model must be sure. A hedged verdict is banter.
         if (verdict.confident !== true) {
