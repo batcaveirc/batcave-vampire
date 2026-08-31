@@ -84,16 +84,32 @@ class Watch {
         const why = nasty && spammed ? 'spamming the room name alongside abuse'
             : nasty ? 'naming the room while being abusive'
                 : `named the room ${count}x in one line`;
-        this.remember(nick, chan, why);
+        this.remember(nick, chan, why, message);
         return { level: 'alert', why, count };
     }
 
-    remember(nick, chan, why) {
+    remember(nick, chan, why, text) {
         const k = nick.toLowerCase();
         const now = Date.now();
         const hist = (this.sightings.get(k) || []).filter((s) => now - s.at < MEMORY_MS);
-        hist.push({ at: now, chan, why });
+        // Keep WHAT was said, not only that something was.
+        //
+        // A moderator was told "bonddd just arrived — heard advertising this
+        // room in #allindiachat.com. Muted for 30m." and had no way to see the
+        // line, so no way to tell a raid from somebody recommending the place
+        // to a friend. A verdict nobody can check is a verdict nobody can
+        // overturn, and this one mutes a new arrival for half an hour.
+        hist.push({ at: now, chan, why, text: String(text || '').slice(0, 160) });
         this.sightings.set(k, hist);
+    }
+
+    /** The lines we actually heard, most recent first. */
+    heardFrom(nick) {
+        const now = Date.now();
+        return (this.sightings.get(String(nick).toLowerCase()) || [])
+            .filter((s) => now - s.at < MEMORY_MS && s.text)
+            .sort((a, b) => b.at - a.at)
+            .map((s) => ({ chan: s.chan, why: s.why, text: s.text, at: s.at }));
     }
 
     /** Rooms we have heard this nick advertise us in, recently. */

@@ -328,6 +328,47 @@ let modEnabled = onOff(process.env.MOD_ENABLED || 'on');
  * being the thing that removes people.
  */
 let aiActive = onOff(process.env.AI_ACTIVE || 'off');
+
+/**
+ * Cool mode that arms itself when something real happens, and stands down
+ * again when the room settles.
+ *
+ * The objection to cool mode is obvious: at 22:41 somebody was genuinely
+ * abusing the room, and a moderator who is asleep cannot type !!active on.
+ * So the DETERMINISTIC layer arms the model — the layer that does not
+ * misread Hinglish, validated against 40,264 real messages. Something the
+ * word list or the relational pattern is certain about is exactly the
+ * evidence that a room needs more than banter tolerance right now.
+ *
+ * Deliberately time-boxed. An escalation that never ends is just strict mode
+ * arrived at sideways, and everything about today says strict mode costs this
+ * room newcomers. It goes back to cool on its own.
+ *
+ * A mod's explicit !!active off outranks it: if a human has said "not now",
+ * an automatic trigger must not overrule them ten seconds later.
+ */
+let armedUntil = 0;
+let armedManualOff = 0;
+const ARM_MINUTES = Number(process.env.AI_ARM_MINUTES || 20);
+
+function aiIsActive() {
+    if (aiActive) return true;
+    if (armedManualOff && Date.now() - armedManualOff < 30 * 60000) return false;
+    return Date.now() < armedUntil;
+}
+
+/** Something deterministic and severe just happened. Wake the model up. */
+function armAI(why, chan) {
+    if (aiActive || Date.now() < armedUntil) return;      // already watching
+    if (armedManualOff && Date.now() - armedManualOff < 30 * 60000) return;
+    armedUntil = Date.now() + ARM_MINUTES * 60000;
+    log('MOD', `AI armed for ${ARM_MINUTES}m — ${why}.`);
+    for (const m of channelMods()) {
+        notice(m, `\x0304[MOD]\x03 ${why} — AI moderation armed for `
+            + `\x02${ARM_MINUTES}m\x02, then back to cool. \x02!!active off\x02 to stop it now.`);
+    }
+    if (chan) say(chan, '\x0304[MOD]\x03 That crossed the line. Watching closely for a while. 🦇');
+}
 // No auto-moderation inside a running game: nobody should be kicked mid-round
 // for a word, and a compartment filling up is not a raid.
 function moderationOff(chan) { return !modEnabled || game.isGameChannel(chan); }
@@ -1523,7 +1564,7 @@ function scriptedModeration(chan, nick, message) {
     // Severe language is always actioned — including inside a game. Switching
     // moderation off is about avoiding accidental kicks, not tolerating slurs.
     const severe = wordHit(severeWords, message);
-    if (severe) { banUser(chan, nick, 'severe language'); return true; }
+    if (severe) { armAI(`${nick}: severe language`, chan); banUser(chan, nick, 'severe language'); return true; }
 
     // Relational abuse, which a WORD list structurally cannot see.
     //
@@ -1545,7 +1586,7 @@ function scriptedModeration(chan, nick, message) {
     const rel = severeAbuse(message,
         (n) => [...(members.get(chanKey(chan)) || new Set())]
             .some((m) => m.toLowerCase() === String(n).toLowerCase()));
-    if (rel.severe) { banUser(chan, nick, rel.why); return true; }
+    if (rel.severe) { armAI(`${nick}: ${rel.why}`, chan); banUser(chan, nick, rel.why); return true; }
 
     if (moderationOff(chan)) return false;
 
@@ -1956,7 +1997,7 @@ async function sentientModeration(chan, nick, message) {
         // Gate 0 of the acting half — cool mode. Everything above still runs,
         // so the mods get the full report and the log; only the ACTION stops.
         // A moderator turns this on with !!active on when a room needs it.
-        if (!aiActive) {
+        if (!aiIsActive()) {
             log('AI', `COOL MODE — would ${action} ${nick} (${reason}); reporting only.`);
             for (const m of channelMods()) {
                 notice(m, `\x0307[AI]\x03 would \x02${action}\x02 \x02${nick}\x02 — ${reason}. `
@@ -2585,12 +2626,17 @@ function handleCommand(chan, nick, message) {
             const arg = (target || '').toLowerCase();
             if (arg === 'on' || arg === 'off') {
                 aiActive = arg === 'on';
+                // A human saying "not now" outranks an automatic trigger, or
+                // the switch is decorative the moment anything sets it off.
+                armedUntil = 0;
+                armedManualOff = arg === 'off' ? Date.now() : 0;
                 log('MOD', `${nick} set AI moderation ${arg}.`);
                 say(chan, `\x0306[MOD]\x03 AI moderation is \x02${arg.toUpperCase()}\x02`
                     + `${aiActive ? ' — the model can now remove people.'
                                   : ' — the model watches and reports; the word list still acts.'} 🦇`);
             } else {
-                reply(`AI moderation is \x02${aiActive ? 'ON' : 'OFF (cool)'}\x02. `
+                const armedFor = Math.max(0, Math.ceil((armedUntil - Date.now()) / 60000));
+                reply(`AI moderation is \x02${aiActive ? 'ON' : armedFor ? `ARMED (${armedFor}m left)` : 'OFF (cool)'}\x02. `
                     + 'In cool mode the severe word list, solicitation, raid guard and auto-bans '
                     + 'still act — only the model stops removing people. !!active on|off');
             }
@@ -3897,12 +3943,24 @@ function handleLine(line) {
             notice(nick, `\x0304[BatCave]\x03 You arrive without voice: you were heard `
                 + `advertising this room in ${where}. A moderator can restore it. `
                 + 'This is not a ban.');
+            // SHOW the line. A mod was told "bonddd just arrived — heard
+            // advertising this room in #allindiachat.com. Muted for 30m" and
+            // had no way to see what was actually said, so no way to tell a
+            // raid being organised from somebody recommending the place to a
+            // friend. A verdict nobody can check is a verdict nobody can
+            // overturn, and this one silences a new arrival for half an hour.
+            const evidence = watch.heardFrom(nick);
             for (const m of channelMods()) {
                 notice(m, `\x0304[WATCH]\x03 \x02${nick}\x02 just arrived in ${c} — heard `
                     + `advertising this room in ${where}. Muted for ${watchMuteMin}m. `
                     + `\x02!!unwarn ${nick}\x02 to clear it.`);
+                for (const e of evidence.slice(0, 2)) {
+                    notice(m, `  ${e.chan} — ${e.why}: "${e.text}"`);
+                }
+                if (!evidence.length) notice(m, '  (no line recorded — flagged before this was kept)');
             }
-            log('MOD', `Watch: flagged arrival ${nick} in ${c} (seen in ${where})`);
+            log('MOD', `Watch: flagged arrival ${nick} in ${c} (seen in ${where})`
+                + (evidence[0] ? ` — heard: "${evidence[0].text}"` : ''));
         }
 
         // Raid guard: a burst of joins in a few seconds is a raid, not traffic.
