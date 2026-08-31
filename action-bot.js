@@ -14,6 +14,7 @@ const { TrustList, effective } = require('./trust');
 const { pack } = require('./trustrelay');
 const { Reputation } = require('./reputation');
 const { solicits } = require('./solicit');
+const { severeAbuse } = require('./abuse');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
@@ -1497,6 +1498,28 @@ function scriptedModeration(chan, nick, message) {
     // moderation off is about avoiding accidental kicks, not tolerating slurs.
     const severe = wordHit(severeWords, message);
     if (severe) { banUser(chan, nick, 'severe language'); return true; }
+
+    // Relational abuse, which a WORD list structurally cannot see.
+    //
+    // The worst message of 2026-08-30 — "Iski Gashti Maa ko pelte hai … Nude
+    // fingering" — passed the word list, and the model's verdict on it was
+    // discarded on a punctuation technicality, so the bot did nothing and the
+    // owner banned by hand. Meanwhile the same model removed four newcomers
+    // for jokes.
+    //
+    // The dominant severe insult in these rooms is aimed at somebody's mother
+    // or sister and is built entirely from innocent words in a particular
+    // order. That makes it invisible to a list and obvious to a pattern —
+    // and it is deterministic, so it works with the model switched off, which
+    // is the state the room now runs in.
+    //
+    // Validated against 40,264 recorded messages from these rooms: 76 distinct
+    // lines flagged, and "Koi apni behen ki pic dikhaega" — a real line here —
+    // is not one of them.
+    const rel = severeAbuse(message,
+        (n) => [...(members.get(chanKey(chan)) || new Set())]
+            .some((m) => m.toLowerCase() === String(n).toLowerCase()));
+    if (rel.severe) { banUser(chan, nick, rel.why); return true; }
 
     if (moderationOff(chan)) return false;
 
