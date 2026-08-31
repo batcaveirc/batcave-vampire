@@ -1761,8 +1761,26 @@ async function sentientModeration(chan, nick, message) {
         // the message. A model that cannot quote what it is punishing is
         // inventing it: that is how a friendly ":D" was read as harassment and
         // a trusted regular got thrown out mid-joke.
+        // An ELLIPSIS means the model quoted two fragments of one message, and
+        // both halves have to be checked separately or genuine abuse is thrown
+        // away on punctuation. It happened, on the worst message of the day:
+        //
+        //   Flagged Nayan_M41 (kick) but quoted
+        //   "Iski Gashti Maa ko pelte hai ... Nude fingering"
+        //   which is not in the message — ignoring.
+        //
+        // Both halves were in it. The joined string was not, so the check
+        // failed and the bot did nothing; the owner banned by hand two minutes
+        // later. Every other failure today was the model punishing a joke —
+        // this is the opposite one, and it is the more expensive kind.
+        const flatMsg = flatten(message);
+        const parts = String(verdict.quote || '').split(/\s*(?:\.{2,}|…)\s*/)
+            .map((q) => flatten(q)).filter((q) => q.length >= 3);
         const quote = flatten(verdict.quote || '');
-        if (!quote || !flatten(message).includes(quote)) {
+        const quoted = parts.length > 1
+            ? parts.every((q) => flatMsg.includes(q))
+            : Boolean(quote) && flatMsg.includes(quote);
+        if (!quoted) {
             log('AI', `Flagged ${nick} (${action}) but quoted "${verdict.quote || ''}" `
                 + `which is not in the message — ignoring.`);
             return;
