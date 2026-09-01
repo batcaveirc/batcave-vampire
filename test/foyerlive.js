@@ -48,6 +48,11 @@ function run(carryPeople, done) {
                 const w = l.match(/^WHO (\S+)/);
                 if (w && w[1] === OPEN) {
                     send(`:srv 354 D ${OPEN} u host johnny johnnyacct :a person`);
+                    // A standby: OUR bot, but wearing its own realname rather
+                    // than the chorus mark, and its nick does not rotate.
+                    send(`:srv 354 D ${OPEN} u host Carmilla 0 :Standby moderator for the BatCave`);
+                    // And the scenery, recognised by the mark alone.
+                    send(`:srv 354 D ${OPEN} u host Zain22 0 :BatCave community member`);
                     send(`:srv 315 D ${OPEN} :End of WHO`);
                 } else if (w) {
                     send(`:srv 315 D ${w[1]} :End of WHO`);
@@ -98,11 +103,24 @@ run('on', (r) => {
       r.toOpen.join(' | ') + ' — an open door needs no invitation');
     c('it asked what the door state was', r.askedModes,
       'without this it cannot tell a locked room from an open one');
+    // The fault the owner read straight off the room list: Carmilla and
+    // Katerina in the open room, absent from #batcave, locked out by the +i
+    // this bot set itself. They wear their own realname, not the chorus mark.
+    c('a STANDBY is carried in, though it wears its own realname',
+      r.toLocked.some((l) => /carmilla/i.test(l)),
+      r.invites.join(' | ') || '(the standbys stay locked out of their own room)');
+    c('and so is the scenery, by its mark',
+      r.toLocked.some((l) => /zain22/i.test(l)), r.invites.join(' | '));
 
     console.log('\n— the default, which is what the room actually runs —');
     run('', (d) => {
         c('a regular is NOT invited anywhere', !d.invites.some((l) => /johnny/i.test(l)),
           d.invites.join(' | ') + ' — nobody asked to be moved');
+        // ...but our own bots still are. They cannot ask, and the default
+        // being off for PEOPLE must not lock the fleet out of the room.
+        c('our own bots are STILL carried in by default',
+          d.invites.some((l) => /carmilla/i.test(l)) && d.invites.some((l) => /zain22/i.test(l)),
+          d.invites.join(' | ') || '(nothing invited at all)');
         c('and the sweep still ran, so this is a decision and not an accident',
           d.sweeps >= 2, `${d.sweeps} sweeps`);
         console.log(fails ? `\n${fails} FAILED` : '\nALL PASS');

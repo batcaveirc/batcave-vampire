@@ -80,6 +80,12 @@ jobs:
           # the topic: with no open room known, the OPEN room would have been
           # signposted "Invite-only", which is the opposite of true.
           CHORUS_CHANNEL: ${{ secrets.CHORUS_CHANNEL }}
+          # Our own standbys, which do NOT rotate their nicks and wear a
+          # different realname from the scenery. Without this they are refused
+          # by the realname test and sit outside a +i #batcave — locked out of
+          # the room they exist to defend, unable to ask, and with no +I
+          # exception that fits an unregistered bot.
+          FLEET_NICKS: ${{ secrets.FLEET_NICKS || 'Carmilla,Bankai,Katerina,Drusilla' }}
           TRUST_FLAG: ${{ secrets.TRUST_FLAG || 'V' }}
           # Standing that follows behaviour. Off makes trust manual again.
           AUTO_TRUST: ${{ secrets.AUTO_TRUST || 'on' }}

@@ -314,7 +314,7 @@ function carryIn(who, realname) {
     if (!who) return;
     const mark = (process.env.CHORUS_MARK || '').trim();
     const real = String(realname || '').replace(/^:/, '').trim();
-    const isOurs = !!mark && real === mark;
+    const isOurs = (!!mark && real === mark) || FLEET.has(String(who).toLowerCase());
     // Our own scenery is carried in because it CANNOT ask: the nicks rotate
     // every restart and it has no outgoing message path at all, by design.
     //
@@ -400,6 +400,24 @@ function signpost(chan, current) {
     send(`TOPIC ${chan} :${desiredTopic(chan)}`);
     log('INFO', `Signposted ${chan} (it had none).`);
 }
+
+// Our own bots, by name.
+//
+// The scenery is recognised by its REALNAME because its nicks rotate every
+// restart. The standbys do not rotate — and they wear a different realname
+// ("Standby moderator for the BatCave"), so the realname test refused them.
+//
+// The result was visible in the room and took three rounds to see: Carmilla
+// and Katerina sitting in the OPEN room, absent from #batcave, locked out of
+// the channel they exist to defend by the +i this bot set itself. They cannot
+// ask to be let in — they are unregistered by design, so no +I exception fits
+// them either — and the one function that would have invited them,
+// inviteOwnBots, was called by a timer and never defined anywhere.
+//
+// PROTECTED_NICKS is the wrong list to reuse here: it contains ChanServ and
+// other people's bots, which must never be invited anywhere.
+const FLEET = new Set((process.env.FLEET_NICKS || 'Carmilla,Bankai,Katerina,Drusilla')
+    .split(',').map((n) => n.trim().toLowerCase()).filter(Boolean));
 
 const faultsTold = new Set();          // one owner notice per distinct fault
 const knockSeen = new Map();           // nick(lower) -> last knock
@@ -4517,7 +4535,15 @@ function handleLine(line) {
             // This is where the scenery gets recognised. The 352 handler had
             // that job and 352 never arrives, because every WHO we send is
             // WHOX and WHOX answers 354 — the feature was unreachable.
-            carryIn(n, q ? params[7] : params[6]);
+            // Everything from here to the end of the line, not one field.
+            //
+            // The parser is a plain split(' ') with no trailing-parameter
+            // handling, so a realname of "BatCave community member" arrives as
+            // THREE params. Reading a single one gave "BatCave", which can
+            // never equal the mark — so the scenery could not have been
+            // recognised even once it started wearing the mark correctly. Two
+            // bugs were hiding behind each other here.
+            carryIn(n, params.slice(q ? 7 : 6).join(' '));
         }
     }
     if (command === '330' && params[1] && params[2]) {   // WHOIS "is logged in as"
