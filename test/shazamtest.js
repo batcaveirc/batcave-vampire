@@ -39,7 +39,12 @@ console.log('— the trigger —');
 c('the bare word works, no prefix', src.includes('/^\\s*shazam\\s*[!.]*$/i.test(msg)'),
   'a regular under attack should not have to remember which bot uses which punctuation');
 c('only in our own channels', /isOurChannel\(tgt\)/.test(src.slice(src.indexOf('shazam\\\\s*[!.]*$'), src.indexOf('shazam\\\\s*[!.]*$') + 200)) || /shazam[\s\S]{0,120}isOurChannel/.test(src));
-c('it is advertised in help', src.includes('shazam') && src.includes('for 5m of ops'));
+// Wording changed with the feature. It used to grant the caller ops for five
+// minutes; the owner replaced that with removing the attacker, because the room
+// is meant to have no human mods at all. Help had to follow, so asserting on
+// "for 5m of ops" was asserting on a design that no longer exists.
+c('it is advertised in help', /reply\([^)]*shazam[\s\S]{0,160}remove/i.test(src),
+  'a power nobody is told about is a power nobody uses');
 
 console.log('— one list, not two —');
 c('!!whitelist points at !!trust', src.includes('one list, one store'));

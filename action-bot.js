@@ -281,6 +281,36 @@ function invitedRecently(who, chan) {
     return false;
 }
 
+// Somebody we want in a room they are not in yet, recognised from a WHO reply.
+//
+// Two kinds of guest. Our own scenery, identified by its REALNAME rather than
+// its nick — the nicks rotate every restart so nobody can invite them by name,
+// but they can be SEEN, and the realname comes back in the WHO reply without
+// them ever sending a line. And any TRUSTED person: the open room is the
+// foyer, so somebody locked out of #batcave goes there and is carried across.
+function carryIn(who, realname) {
+    if (!who) return;
+    const mark = (process.env.CHORUS_MARK || '').trim();
+    const real = String(realname || '').replace(/^:/, '').trim();
+    const isOurs = !!mark && real === mark;
+    if (!(isOurs || isTrusted(who) || isAdmin(who) || isOwner(who))) return;
+    if (isForfeited(who)) return;                          // denied is denied
+    if (who.toLowerCase() === currentNick.toLowerCase()) return;
+    for (const c of config.channels) {
+        const inIt = [...(members.get(chanKey(c)) || new Set())]
+            .some((m) => m.toLowerCase() === who.toLowerCase());
+        if (inIt) continue;
+        if (!opped.has(chanKey(c))) continue;              // cannot invite without ops
+        if (invitedRecently(who, c)) continue;
+        send(`INVITE ${who} ${c}`);
+        log('INFO', `Invited ${who} into ${c} (${isOurs ? 'ours, by realname' : 'trusted'}).`);
+        if (!isOurs) {
+            notice(who, `\x0306[DOOR]\x03 ${c} is invite-only; you are on the trust list, `
+                + 'so I have let you in. Join whenever you like.');
+        }
+    }
+}
+
 const knockSeen = new Map();           // nick(lower) -> last knock
 function handleKnock(chan, who, why) {
     const k = String(who).toLowerCase();
@@ -4104,7 +4134,11 @@ function handleLine(line) {
                 setInterval(() => trust.poll(), 5 * 60000).unref?.();
                 // Our own bots restart every few hours and, being unregistered
                 // by design, cannot get back into a +i room on their own.
-                setInterval(() => config.channels.forEach((c) => inviteOwnBots(c)), 120000).unref?.();
+                setInterval(() => {
+                    for (const c of [...config.channels, process.env.CHORUS_CHANNEL].filter(Boolean)) {
+                        send(`WHO ${c} %cuhnar,152`);      // the replies do the inviting
+                    }
+                }, 120000).unref?.();
                 // A slow full re-read anyway, so a missed COUNT cannot leave
                 // us wrong forever.
                 setInterval(() => trust.refresh(), 60 * 60000).unref?.();
@@ -4349,6 +4383,11 @@ function handleLine(line) {
         if (n) {
             accountOf.set(n.toLowerCase(), (acct && acct !== '0') ? acct : '');
             if (user && host) { hostOf.set(n.toLowerCase(), `${user}@${host}`); rememberHost(n, `${user}@${host}`); }
+            // %cuhnar asks for the realname too, and it is the LAST field.
+            // This is where the scenery gets recognised. The 352 handler had
+            // that job and 352 never arrives, because every WHO we send is
+            // WHOX and WHOX answers 354 — the feature was unreachable.
+            carryIn(n, q ? params[7] : params[6]);
         }
     }
     if (command === '330' && params[1] && params[2]) {   // WHOIS "is logged in as"
@@ -4456,49 +4495,7 @@ function handleLine(line) {
     if (command === '352' && params[5] && params[2] && params[3]) {
         hostOf.set(params[5].toLowerCase(), `${params[2]}@${params[3]}`);
         rememberHost(params[5], `${params[2]}@${params[3]}`);
-        // Our own scenery, recognised by its REALNAME rather than its nick.
-        //
-        // The owner's idea: the decorative bots land in the open room and get
-        // invited across. That solves the problem I was stuck on — their nicks
-        // rotate every restart, so nobody can invite them by name — because
-        // here they can simply be SEEN.
-        //
-        // The realname is set at connect and comes back in this reply, so they
-        // are identified without ever sending a line. That matters: the chorus
-        // was built with no outgoing message path at all, asserted by a test,
-        // and every other way of announcing themselves would have spent it.
-        const realname = params.slice(7).join(' ').replace(/^:\d+\s*/, '').trim();
-        const mark = (process.env.CHORUS_MARK || '').trim();
-        const who = params[5];
-        const isOurs = mark && realname && realname === mark;
-        // A TRUSTED regular seen in any room we sit in is invited to the ones
-        // they are missing from.
-        //
-        // The open room is the foyer: somebody locked out of #batcave goes
-        // there and gets brought across. The owner has already told a regular
-        // exactly that — "go to the emoji room, dracula will invite u" — and
-        // until now only the scenery was invited, so he would have waited
-        // forever in a room being told to be patient.
-        //
-        // Trust by NICK is weaker than trust by account: an impostor wearing a
-        // regular's unregistered nick gets carried in too. They arrive with no
-        // ops and no voice, into every other defence, which is the same
-        // exposure the trust list already carries — this does not add to it.
-        const worthCarrying = isOurs || isTrusted(who) || isAdmin(who) || isOwner(who);
-        if (worthCarrying) {
-            for (const c of config.channels) {
-                const inIt = [...(members.get(chanKey(c)) || new Set())]
-                    .some((m) => m.toLowerCase() === who.toLowerCase());
-                if (inIt) continue;
-                if (!opped.has(chanKey(c))) continue;
-                if (isForfeited(who)) continue;            // denied is denied
-                if (invitedRecently(who, c)) continue;
-                send(`INVITE ${who} ${c}`);
-                log('INFO', `Invited ${who} into ${c} (${isOurs ? 'ours, by realname' : 'trusted'}).`);
-                notice(who, `\x0306[DOOR]\x03 ${c} is invite-only; you are on the trust list, `
-                    + 'so I have let you in. Join whenever you like.');
-            }
-        }
+        carryIn(params[5], params.slice(7).join(' ').replace(/^:\d+\s*/, ''));
     }
     if (command === 'PART' && nick) {
         (members.get(chanKey(tgt)) || new Set()).delete(nick);

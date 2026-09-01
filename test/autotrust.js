@@ -46,7 +46,13 @@ srv.listen(0,'127.0.0.1', async () => {
   await wait(1200);
   c('it edits the access list', out.some(l=>/PRIVMSG ChanServ :FLAGS #batcave-trust Nessie \+V/.test(l)),
     out.filter(l=>/ChanServ/.test(l)).join(' | ')||'(nothing)');
-  c('and says it survives restarts', notices().some(l=>/survives restarts/.test(l)), notices().join(' | '));
+  // It used to answer "survives restarts" the instant the command was typed —
+  // before ChanServ had said anything — and then contradict itself a second
+  // later when the edit was refused. Now it says what it is doing and reports
+  // the verified result, so the claim of success comes after the proof of it.
+  c('and says what it is doing, without claiming success yet',
+    notices().some(l=>/Sending Nessie to #batcave-trust/.test(l) && /verif/i.test(l)),
+    notices().join(' | '));
 
   console.log('\n— behaviour takes it away —');
   out.length=0; say('JAILER','you slurword piece of work');
