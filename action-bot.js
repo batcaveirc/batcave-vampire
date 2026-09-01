@@ -195,6 +195,110 @@ function rememberHost(nick, userHost) {
  * way at all. Lucifer and darkworld are the same person by their own nick
  * change, and their two records carry different cloaks.
  */
+/**
+ * The door: +i, and a knock to be let in.
+ *
+ * Verified against this server — KNOCK exists and answers
+ * "713 Can't KNOCK on #batcave, channel is not invite only so knocking is
+ * pointless", which is the server telling us exactly what the feature needs.
+ *
+ * The trade is real and worth stating: +i means nobody walks in uninvited.
+ * That stops a raid at the door, and it also stops the curious. It does NOT
+ * stop the recruiter — an INVITE waives +i — so everybody Dracula asks in
+ * still arrives normally, which is what makes this affordable here.
+ */
+/**
+ * Invite exceptions, so the door is closed to strangers and open to regulars.
+ *
+ * +i alone would make every regular wait to be let in, which nobody will
+ * tolerate for long. +I is the other half: a mask or an account that bypasses
+ * +i without an invitation.
+ *
+ * This network advertises EXTBAN=account,R and we have watched "R:Vampire"
+ * used as a ban, so R:<account> is the form. An ACCOUNT is the right key —
+ * it cannot be worn by somebody else, which a nick can, and the whole point
+ * of the door is to stop people who arrive under a fresh name.
+ *
+ * MAXLIST says I:200. The trust list is a couple of dozen.
+ *
+ * People trusted only by a NICK get no exception and will have to knock.
+ * That is not a bug: an unregistered nick is exactly what an attacker wears,
+ * and letting one past the door would undo the door.
+ */
+function syncInviteExceptions(chan, reply) {
+    const accounts = new Set();
+    const masks = new Set();
+    for (const name of whitelist) {
+        // A trust entry is an account when somebody currently carries it.
+        const asAccount = [...accountOf.entries()].find(([, a]) => a && a.toLowerCase() === name);
+        if (asAccount) accounts.add(accountOf.get(asAccount[0]));
+        else if (name.includes('@') || name.includes('!')) masks.add(name);
+    }
+    for (const m of trust.masks) masks.add(m);
+    let n = 0;
+    // ANY registered account, as one entry.
+    //
+    // The owner's idea and it is the strongest part of this: instead of
+    // listing people, require an identity. R:* matches everybody logged in,
+    // so one exception covers every registered user and leaves the 200-entry
+    // list almost empty for the individuals who need naming.
+    //
+    // What it costs an attacker is the thing they are least willing to spend:
+    // registering means an email, a persistent account, and an identity that
+    // can be banned once and stays banned — instead of a throwaway nick and
+    // another one ten seconds later. Every attacker in these logs — Guest4407,
+    // Turner94, cute_pup, perfect20 — was unregistered.
+    //
+    // Set OPEN_TO_REGISTERED=off if you would rather name everybody by hand.
+    if (!/^(0|off|false|no)$/i.test(process.env.OPEN_TO_REGISTERED || 'on')) {
+        send(`MODE ${chan} +I R:*`);
+        n += 1;
+    }
+    for (const a of accounts) { send(`MODE ${chan} +I R:${a}`); n += 1; }
+    for (const m of masks) { send(`MODE ${chan} +I ${m}`); n += 1; }
+    log('MOD', `Invite exceptions on ${chan}: ${accounts.size} accounts, ${masks.size} masks.`);
+    if (reply) {
+        const openReg = !/^(0|off|false|no)$/i.test(process.env.OPEN_TO_REGISTERED || 'on');
+        reply(`Door exceptions set: ${openReg ? '\x02every registered account\x02 (R:*), plus ' : ''}`
+            + `\x02${accounts.size}\x02 named accounts and \x02${masks.size}\x02 masks. `
+            + 'Recruiter invitations still work — an INVITE waives +i.');
+        reply('Anybody unregistered has to knock. That is the point: registering costs an '
+            + 'email and an identity that stays banned once banned, which is exactly what a '
+            + 'throwaway nick is for avoiding.');
+    }
+    return n;
+}
+
+const knockSeen = new Map();           // nick(lower) -> last knock
+function handleKnock(chan, who, why) {
+    const k = String(who).toLowerCase();
+    const now = Date.now();
+    // Knocking repeatedly is itself a way to make noise in a locked room.
+    if (now - (knockSeen.get(k) || 0) < 5 * 60000) {
+        log('MOD', `Ignoring repeat knock from ${who} on ${chan}.`);
+        return;
+    }
+    knockSeen.set(k, now);
+    // Somebody we have already removed does not get to knock their way back.
+    if (isForfeited(who)) {
+        log('MOD', `${who} knocked on ${chan} while denied — not announced.`);
+        for (const o of config.owners) {
+            notice(o, `\x0304[DOOR]\x03 \x02${who}\x02 knocked but is on the deny list. `
+                + `Not announced. \x02!!letin ${who}\x02 overrides.`);
+        }
+        return;
+    }
+    const alts = altsOf(who);
+    say(chan, `\x0306[DOOR]\x03 \x02${who}\x02 is knocking${why ? `: ${why}` : ''}. `
+        + `An operator can \x02!!letin ${who}\x02. 🦇`);
+    for (const m of channelMods()) {
+        notice(m, `\x0306[DOOR]\x03 \x02${who}\x02 knocked on ${chan}${why ? `: ${why}` : ''}. `
+            + `\x02!!letin ${who}\x02 to admit them.`
+            + `${alts.length ? ` Also seen as: ${alts.slice(0, 4).join(', ')}.` : ''}`);
+    }
+    log('MOD', `Knock on ${chan} from ${who}${why ? `: ${why}` : ''}.`);
+}
+
 /** How long this process has been alive, in words. */
 function uptimeShort() {
     const m = Math.floor(process.uptime() / 60);
@@ -2949,7 +3053,7 @@ function handleCommand(chan, nick, message) {
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!history on|off, '
                 + '!!access, !!unwarn <nick>, !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
-                + 'say \x02shazam\x02 for 5m of ops if you are trusted, '
+                + '!!door on|off (invite-only + knocking), !!letin <nick>, '
                 + '!!active on|off (AI moderation; off = cool), '
                 + '!!trust add|del|seed|reload <nick> (sticks), !!untrust add|del|seed <nick>, '
             + '!!whitelist add|remove <nick> (this run only), '
@@ -3058,6 +3162,46 @@ function handleCommand(chan, nick, message) {
                     + 'In cool mode the severe word list, solicitation, raid guard and auto-bans '
                     + 'still act — only the model stops removing people. !!active on|off');
             }
+            break;
+        }
+
+        // The door, and the key.
+        case 'door': {
+            if (!admin) { reply('Access denied.'); break; }
+            const arg = (target || '').toLowerCase();
+            if (arg === 'on') {
+                // Exceptions FIRST, then the lock — or every regular in the
+                // room is briefly locked out of their own channel.
+                syncInviteExceptions(chan, reply);
+                setTimeout(() => {
+                    send(`MODE ${chan} +i`);
+                    say(chan, '\x0306[DOOR]\x03 The room is invite-only now. Regulars walk in '
+                        + `as before; anybody else may knock (\x02/knock ${chan} your reason\x02) `
+                        + 'and an operator will let them in. 🦇');
+                    log('MOD', `${nick} closed the door on ${chan} (+i).`);
+                }, 3000);
+            } else if (arg === 'sync') {
+                syncInviteExceptions(chan, reply);
+            } else if (arg === 'off') {
+                send(`MODE ${chan} -i`);
+                say(chan, '\x0306[DOOR]\x03 The room is open again.');
+                log('MOD', `${nick} opened ${chan} (-i).`);
+            } else {
+                reply('\x02!!door on\x02 makes the room invite-only. Trusted regulars still '
+                    + 'walk in — they get an invite exception on their ACCOUNT — and everybody '
+                    + 'the recruiter asks in still arrives, because an INVITE waives +i. '
+                    + 'Anybody else knocks. \x02!!door sync\x02 refreshes the exceptions after '
+                    + 'trust changes, \x02!!door off\x02 reopens the room.');
+            }
+            break;
+        }
+        case 'letin': {
+            if (!admin) { reply('Access denied.'); break; }
+            if (!target) { reply('Usage: !!letin <nick>'); break; }
+            send(`INVITE ${target} ${chan}`);
+            notice(target, `\x0306[DOOR]\x03 ${nick} let you in. Join ${chan} when ready.`);
+            say(chan, `\x0306[DOOR]\x03 ${nick} let \x02${target}\x02 in. 🦇`);
+            log('MOD', `${nick} admitted ${target} to ${chan}.`);
             break;
         }
 
@@ -4220,6 +4364,12 @@ function handleLine(line) {
     }
     // WHO reply -> learn every user's host, so a ban works even for someone
     // who has not spoken yet (otherwise we fall back to a weak nick mask).
+    // 710 — somebody knocked on a +i channel we hold ops in.
+    if (command === '710' && params[1]) {
+        const who = (params[2] || '').split('!')[0];
+        const why = params.slice(3).join(' ').replace(/^:/, '').replace(/^has knocked[^:]*:?\s*/i, '');
+        if (who) handleKnock(params[1], who, why.slice(0, 80));
+    }
     // USERHOST (302) — "nick=+user@host" for up to five nicks at once, and it
     // works for anybody online, not only people we share a channel with.
     if (command === '302') {
