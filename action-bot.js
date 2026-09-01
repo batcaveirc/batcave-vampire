@@ -269,16 +269,38 @@ function syncInviteExceptions(chan, reply) {
     return n;
 }
 
-// One invitation per person per room per ten minutes. Without it a WHO sweep
-// re-invites everybody every time it runs, which is a notice storm for them
-// and looks like a malfunction to the room.
-const invitedAt = new Map();
-function invitedRecently(who, chan) {
+// One invitation per person per room, per run. Not one every ten minutes:
+// somebody who did not take the first one is not waiting for a reminder, they
+// have decided, and asking again on a timer is nagging. The owner watched it
+// re-invite the same person and said so — "once was enough".
+//
+// The bot restarts every few hours, so a genuinely new offer still reaches
+// somebody who wants it later; it just stops arriving on a loop.
+const invitedThisRun = new Set();
+function alreadyInvited(who, chan) {
     const key = `${chanKey(chan)}|${String(who).toLowerCase()}`;
-    const last = invitedAt.get(key) || 0;
-    if (Date.now() - last < 10 * 60000) return true;
-    invitedAt.set(key, Date.now());
+    if (invitedThisRun.has(key)) return true;
+    invitedThisRun.add(key);
     return false;
+}
+
+// Which of our rooms are actually shut.
+//
+// An invitation to an OPEN room does nothing at all — the door is not locked,
+// so the invite is pure noise to the person receiving it and to the room
+// watching it scroll past. Dracula was inviting people into the open foyer,
+// which is the one room nobody ever needs an invitation for.
+const chanModes = new Map();                       // chanKey -> Set of mode letters
+function isInviteOnly(chan) { return (chanModes.get(chanKey(chan)) || new Set()).has('i'); }
+function applyModes(chan, spec) {
+    const set = chanModes.get(chanKey(chan)) || new Set();
+    let adding = true;
+    for (const ch of String(spec || '')) {
+        if (ch === '+') adding = true;
+        else if (ch === '-') adding = false;
+        else if (/[a-zA-Z]/.test(ch)) { if (adding) set.add(ch); else set.delete(ch); }
+    }
+    chanModes.set(chanKey(chan), set);
 }
 
 // Somebody we want in a room they are not in yet, recognised from a WHO reply.
@@ -293,7 +315,21 @@ function carryIn(who, realname) {
     const mark = (process.env.CHORUS_MARK || '').trim();
     const real = String(realname || '').replace(/^:/, '').trim();
     const isOurs = !!mark && real === mark;
-    if (!(isOurs || isTrusted(who) || isAdmin(who) || isOwner(who))) return;
+    // Our own scenery is carried in because it CANNOT ask: the nicks rotate
+    // every restart and it has no outgoing message path at all, by design.
+    //
+    // People are different, and the owner drew that line after watching this
+    // happen: "we dont need it to invite regular ppl to the rooms automatic
+    // right ?" — correct. Somebody who has not asked to be somewhere does not
+    // need a bot deciding it for them, and a regular who IS locked out has
+    // two ways to say so that both already work: knock, which is announced
+    // and answered, or a word to any operator. Both are a person choosing.
+    //
+    // So this stays OFF for people unless it is deliberately turned on.
+    if (!isOurs) {
+        if (!/^(1|true|yes|on)$/i.test(process.env.CARRY_PEOPLE || '')) return;
+        if (!(isTrusted(who) || isAdmin(who) || isOwner(who))) return;
+    }
     if (isForfeited(who)) return;                          // denied is denied
     if (who.toLowerCase() === currentNick.toLowerCase()) return;
     for (const c of config.channels) {
@@ -301,7 +337,8 @@ function carryIn(who, realname) {
             .some((m) => m.toLowerCase() === who.toLowerCase());
         if (inIt) continue;
         if (!opped.has(chanKey(c))) continue;              // cannot invite without ops
-        if (invitedRecently(who, c)) continue;
+        if (!isInviteOnly(c)) continue;                    // an open room needs no invitation
+        if (alreadyInvited(who, c)) continue;
         send(`INVITE ${who} ${c}`);
         log('INFO', `Invited ${who} into ${c} (${isOurs ? 'ours, by realname' : 'trusted'}).`);
         if (!isOurs) {
@@ -309,6 +346,47 @@ function carryIn(who, realname) {
                 + 'so I have let you in. Join whenever you like.');
         }
     }
+}
+
+// The room's own signpost.
+//
+// Every room here has a door policy, and a set of words that do something,
+// and until now the only way to learn either was to already know. Somebody
+// locked out asked the room how to get in — in the room they could not reach.
+// A topic is the one piece of text IRC shows you before you have said
+// anything, so that is where the answer belongs.
+//
+// It is written ONCE. The bot restarts on every push and every few hours when
+// the host hands over, and a room that gets a TOPIC change four times a day
+// has a bot vandalising it, not documenting it. So: set it when the room has
+// no topic, or when the topic does not already carry the marker; otherwise
+// leave whatever a human decided to put there alone.
+const TOPIC_MARK = '!!help';
+function desiredTopic(chan) {
+    const open = process.env.CHORUS_CHANNEL
+        && chanKey(chan) === chanKey(process.env.CHORUS_CHANNEL);
+    const foyer = process.env.CHORUS_CHANNEL || '';
+    if (open) {
+        return 'Open room, and the way into ' + (config.channels[0] || '#batcave')
+            + ' — registered and trusted people are invited across automatically, '
+            + 'just wait here a moment. Everyone else: /knock '
+            + (config.channels[0] || '#batcave') + ' <reason>. Say !!help for what you can use.';
+    }
+    return 'Invite-only. Say !!help for what you can use here'
+        + ' — trusted regulars can say shazam to have whoever is targeting them removed.'
+        + (foyer ? ' Locked out? Join ' + foyer + ' and you will be invited across.' : '');
+}
+
+const topicSet = new Set();                        // rooms we have already signposted
+function signpost(chan, current) {
+    const key = chanKey(chan);
+    if (topicSet.has(key)) return;                 // once per run, whatever happens
+    if (!opped.has(key)) return;                   // +t means ops only; wait until we are
+    const now = String(current || '');
+    if (now.includes(TOPIC_MARK)) { topicSet.add(key); return; }   // already signposted
+    topicSet.add(key);
+    send(`TOPIC ${chan} :${desiredTopic(chan)}`);
+    log('INFO', `Signposted ${chan}${now ? ' (replacing a topic with no help pointer)' : ' (it had none)'}.`);
 }
 
 const knockSeen = new Map();           // nick(lower) -> last knock
@@ -4414,7 +4492,18 @@ function handleLine(line) {
     // The room's real topic, so a game that borrows the topic line can put it
     // back. Captured from both the reply on join (332) and any later change.
     if (command === '332' && params[2] !== undefined) {
-        game.rememberTopic(params.slice(2).join(' ').replace(/^:/, ''));
+        const t = params.slice(2).join(' ').replace(/^:/, '');
+        game.rememberTopic(t);
+        if (isOurChannel(params[1])) setTimeout(() => signpost(params[1], t), 8000);
+    }
+    if (command === '324' && params[1] && params[2]) {   // RPL_CHANNELMODEIS
+        applyModes(params[1], params[2]);
+    }
+    if (command === 'MODE' && tgt && String(tgt).startsWith('#')) {
+        applyModes(tgt, params[1] || msg);
+    }
+    if (command === '331' && params[1] && isOurChannel(params[1])) {   // no topic at all
+        setTimeout(() => signpost(params[1], ''), 8000);
     }
     if (command === 'TOPIC' && nick) {
         game.rememberTopic(msg);
@@ -4521,6 +4610,7 @@ function handleLine(line) {
         send(`PRIVMSG ChanServ :OP ${c} ${currentNick}`);   // claim ops up front
         send(`WHO ${c} %cuhnar,152`);                       // WHOX: hosts AND accounts
         send(`NAMES ${c}`);                                 // and our own op status
+        send(`MODE ${c}`);                                  // and whether the door is shut
         // Deliberately silent. This used to announce "Dracula stirs" in every
         // room it owns, which was useful while the rooms were being set up and
         // is noise now: the host hands the job over roughly every six hours and

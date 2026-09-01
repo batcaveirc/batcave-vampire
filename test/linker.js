@@ -89,11 +89,11 @@ function check(file) {
     for (const m of src.matchAll(/\b(?:const|let|var)\s*\{([^}]*)\}/g))
         for (const piece of m[1].split(',')) add(piece.split(':').pop().split('=')[0].trim());
     // Parameter lists, and single-identifier arrow parameters.
-    for (const m of src.matchAll(/(?:\bfunction\s*\*?\s*[\w$]*\s*|\)\s*=>|(?<=[=(,]\s*))\(([^()]{0,600})\)\s*(?:=>|\{)/g))
+    for (const m of src.matchAll(/(?:\bfunction\s*\*?\s*[\w$]*\s*|\)\s*=>|(?<=[=(,]\s*))\(((?:[^()]|\([^()]*\)){0,600})\)\s*(?:=>|\{)/g))
         for (const piece of m[1].split(',')) add(piece.trim().replace(/^\.\.\./, '').split(/[\s=:]/)[0]);
     for (const m of src.matchAll(/(?:^|[=(,:[]|=>|\breturn\b)\s*([A-Za-z_$][\w$]*)\s*=>/g)) add(m[1]);
-    for (const m of src.matchAll(/(?:^|[\s;{},])(?:async\s+|get\s+|set\s+|\*\s*)?([A-Za-z_$][\w$]*)\s*\(([^()]{0,600})\)\s*\{/gm)) { add(m[1]); }
-    for (const m of src.matchAll(/([A-Za-z_$][\w$]*)\s*\(([^()]{0,600})\)\s*\{/g))
+    for (const m of src.matchAll(/(?:^|[\s;{},])(?:async\s+|get\s+|set\s+|\*\s*)?([A-Za-z_$][\w$]*)\s*\(((?:[^()]|\([^()]*\)){0,600})\)\s*\{/gm)) { add(m[1]); }
+    for (const m of src.matchAll(/([A-Za-z_$][\w$]*)\s*\(((?:[^()]|\([^()]*\)){0,600})\)\s*\{/g))
         for (const piece of m[2].split(',')) add(piece.trim().replace(/^\.\.\./, '').split(/[\s=:]/)[0]);
 
     const missing = [];
