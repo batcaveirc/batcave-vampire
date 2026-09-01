@@ -401,6 +401,7 @@ function signpost(chan, current) {
     log('INFO', `Signposted ${chan} (it had none).`);
 }
 
+const faultsTold = new Set();          // one owner notice per distinct fault
 const knockSeen = new Map();           // nick(lower) -> last knock
 function handleKnock(chan, who, why) {
     const k = String(who).toLowerCase();
@@ -3993,7 +3994,30 @@ function connect() {
         buf += data.toString();
         const lines = buf.split('\r\n');
         buf = lines.pop();
-        lines.forEach(handleLine);
+        // Same guard the standbys now carry, and for the same reason: an
+        // uncaught throw in here does not fail one command, it ends the
+        // process. Dracula crash-looped for half an hour on a single
+        // ReferenceError inside a timer, and the standbys were taken down
+        // twice by one word typed in the room.
+        //
+        // Not swallowed — the stack is logged and the owners are told once per
+        // distinct fault, so the next one announces itself.
+        for (const line of lines) {
+            try {
+                handleLine(line);
+            } catch (e) {
+                const sig = String((e && e.stack ? e.stack.split('\n')[1] : e) || e).trim();
+                log('ERROR', `handler threw on "${String(line).slice(0, 120)}": ${e && e.message}`);
+                if (e && e.stack) log('ERROR', e.stack.split('\n').slice(0, 4).join(' | '));
+                if (!faultsTold.has(sig)) {
+                    faultsTold.add(sig);
+                    for (const o of config.owners) {
+                        notice(o, `\x0304[FAULT]\x03 I survived an error: ${e && e.message} `
+                            + `— at ${sig.slice(0, 90)}`);
+                    }
+                }
+            }
+        }
     });
     socket.on('error', (err) => { connecting = false; log('ERROR', err.message); });
     socket.on('close', () => { connecting = false; opped.clear(); game.onDisconnect(); log('INFO', 'Connection closed.'); scheduleReconnect(); });

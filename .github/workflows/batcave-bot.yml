@@ -74,6 +74,12 @@ jobs:
           # in the open room and invited into the locked one without ever
           # having to speak. Unset = the feature is off.
           CHORUS_MARK: ${{ secrets.CHORUS_MARK }}
+          # The open room. Read in three places — the WHO sweep, the foyer text
+          # in a room's topic, and which room counts as the way in — and it was
+          # never passed, so all three fell back to empty. The worst of those is
+          # the topic: with no open room known, the OPEN room would have been
+          # signposted "Invite-only", which is the opposite of true.
+          CHORUS_CHANNEL: ${{ secrets.CHORUS_CHANNEL }}
           TRUST_FLAG: ${{ secrets.TRUST_FLAG || 'V' }}
           # Standing that follows behaviour. Off makes trust manual again.
           AUTO_TRUST: ${{ secrets.AUTO_TRUST || 'on' }}
