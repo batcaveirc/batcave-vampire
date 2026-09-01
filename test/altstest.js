@@ -49,6 +49,26 @@ console.log('\n— the linking rule —');
     c('and a different cloak is not', alts('someoneelse').length === 0);
     c('an unknown nick links to nobody', alts('neverseen').length === 0);
 }
+{
+    // The trap: cloaks end in the PROVIDER's prefix. Lucifer carries
+    // "...4900.2401.IP" and so do ______RahulM45 and _______sahil45M, because
+    // 2401:4900: is Reliance Jio and millions of people are on it. A suffix
+    // match would link half of India.
+    const hosts = new Map([
+        ['lucifer', 'webchat@67knht.c4s9.3bnc.4900.2401.IP'],
+        ['rahulm45', 'webchat@jju8tq.eok1.s70c.4900.2401.IP'],
+        ['sahil45m', 'webchat@jju8tq.eok1.s70c.4900.2401.IP'],
+    ]);
+    const byHost = new Map();
+    for (const [n, uh] of hosts) {
+        const h = uh.split('@').pop();
+        byHost.set(h, (byHost.get(h) || new Set()).add(n));
+    }
+    const alts = (n) => [...(byHost.get((hosts.get(n) || '').split('@').pop()) || [])].filter((x) => x !== n);
+    c('a shared PROVIDER prefix does not link people', alts('lucifer').length === 0,
+      'suffix matching would link everyone on Reliance Jio');
+    c('but an identical full cloak still does', alts('rahulm45').join(',') === 'sahil45m');
+}
 
 console.log(f ? `\n${f} FAILED` : '\nALL PASS');
 process.exit(f ? 1 : 0);

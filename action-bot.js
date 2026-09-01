@@ -179,7 +179,21 @@ function rememberHost(nick, userHost) {
     set.add(String(nick).toLowerCase());
     nicksOnHost.set(host, set);
 }
-/** Other names we have seen on this person's connection. */
+/**
+ * Other names we have seen on this person's connection.
+ *
+ * EXACT host match only, and that is not fussiness. Cloaks end in the
+ * provider's prefix: Lucifer carries "...4900.2401.IP" and so do
+ * "______RahulM45" and "_______sahil45M", because 2401:4900: is Reliance
+ * Jio's IPv6 range and millions of people share it. Matching on a suffix
+ * would link half the country and produce exactly the false accusation this
+ * feature exists to avoid.
+ *
+ * The limit is real and worth knowing: a webchat user gets a fresh address
+ * per session, so somebody who reconnects between names cannot be linked this
+ * way at all. Lucifer and darkworld are the same person by their own nick
+ * change, and their two records carry different cloaks.
+ */
 function altsOf(nick) {
     const uh = hostOf.get(String(nick).toLowerCase());
     if (!uh) return [];
