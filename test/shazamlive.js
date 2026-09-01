@@ -26,10 +26,12 @@ const server = net.createServer((sock) => {
                 // extended-join style accounts: trusty is registered, ghost is not.
                 send(`:trusty!u@host1 JOIN ${CHAN} trustyacct :real`);
                 send(`:ghost!u@host2 JOIN ${CHAN} * :real`);
-                send(`:srv 353 D = ${CHAN} :@D trusty ghost lurker`);
+                send(`:srv 353 D = ${CHAN} :@D trusty ghost lurker attacker`);
                 send(`:srv 366 D ${CHAN} :end`);
                 send(`:srv MODE ${CHAN} +o D`);
-                setTimeout(() => send(`:trusty!u@host1 PRIVMSG ${CHAN} :shazam`), 2500);
+                // Somebody attacks trusty, then trusty calls it.
+                setTimeout(() => send(`:attacker!u@h9 PRIVMSG ${CHAN} :trusty you are a randi and a bhosdike`), 2200);
+                setTimeout(() => send(`:trusty!u@host1 PRIVMSG ${CHAN} :shazam`), 3200);
                 setTimeout(() => send(`:ghost!u@host2 PRIVMSG ${CHAN} :shazam`), 4500);
                 // Present before we connected: no JOIN, so no extended-join,
                 // so no account — which is most people after a restart.
@@ -56,9 +58,15 @@ server.listen(0, '127.0.0.1', () => {
 
     setTimeout(() => {
         const all = sent.join('\n');
-        c('a trusted, REGISTERED user gets ops', /MODE #batcave \+o trusty/.test(all),
-          sent.filter((l) => l.startsWith('MODE')).join(' | ') || '(no MODE at all)');
-        c('and the room is told', /SHAZAM.*trusty has ops/i.test(all));
+        // CHANGED with the feature: no ops are handed out at all any more.
+        c('the attacker is removed', /KICK #batcave attacker/.test(all),
+          sent.filter((l) => l.startsWith('KICK')).join(' | ') || '(no KICK at all)');
+        // NOT asserting that trusty never gets +o here: the Guardian legitimately
+        // arms a victim who is being attacked, and it fires on the same message.
+        // What matters is that SHAZAM itself no longer grants it, which the
+        // source-level test asserts directly.
+        c('shazam announced a removal, not a grant', /called it\. Removing attacker/.test(all),
+          all.split('\n').filter((l) => /SHAZAM/.test(l)).join(' | ') || '(no SHAZAM line)');
         c('a trusted but UNREGISTERED user is refused', !/MODE #batcave \+o ghost/.test(all),
           'anyone can wear an unregistered nick, and this hands out operator');
         c('and told why, not left in silence', /NOTICE ghost .*registered nick/i.test(all),

@@ -1522,7 +1522,20 @@ function notePersistentTargeting(chan, victim, attacker) {
  * from somebody who took a regular's name.
  */
 const SHAZAM_MINUTES = Number(process.env.SHAZAM_MINUTES || 5);
+// The last few minutes of each room, so "who is attacking me" can be answered
+// from evidence rather than from a name somebody has to spot and type.
+const recentSaid = new Map();          // chan -> [{at, nick, msg}]
+function rememberSaid2(chan, nick, msg) {
+    const ch = chanKey(chan);
+    const now = Date.now();
+    const log2 = (recentSaid.get(ch) || []).filter((e) => now - e.at < 10 * 60000);
+    log2.push({ at: now, nick, msg });
+    while (log2.length > 300) log2.shift();
+    recentSaid.set(ch, log2);
+}
+
 const shazamUsed = new Map();          // nick(lower) -> when
+const shazamTried = new Map();         // nick(lower) -> refused attempts
 function shazam(chan, nick) {
     const ch = chanKey(chan);
     const k = nick.toLowerCase();
@@ -1561,9 +1574,30 @@ function shazam(chan, nick) {
         return true;
     }
     if (!isTrusted(nick) && !isAdmin(nick) && !isOwner(nick) && !isChannelMod(chan, nick)) {
+        // Somebody already denied is not curious, they are testing the lock.
+        if (isForfeited(nick)) {
+            log('MOD', `${nick} tried shazam while denied — banned.`);
+            banUser(chan, nick, 'tried to take ops after losing standing');
+            return true;
+        }
+        // Persistence, not curiosity. The owner asked for a kick here, and the
+        // reason it is the SECOND attempt is in his own transcript: he told
+        // UME "try that command", UME typed it four times, and a flat kick
+        // would have removed somebody for doing exactly what he was asked.
+        // Trying it once is a question. Trying it again after being told no is
+        // an answer.
+        const tries = (shazamTried.get(k) || 0) + 1;
+        shazamTried.set(k, tries);
+        if (tries >= 3) {
+            log('MOD', `${nick} kept trying shazam after being told (${tries}) — kicked.`);
+            kickUser(chan, nick, 'kept trying to take ops after being told no');
+            shazamTried.set(k, 0);
+            return true;
+        }
         notice(nick, `\x0304[SHAZAM]\x03 That is for trusted regulars, and you are not on `
-            + `the list yet. An operator can add you with \x02!!trust add ${nick}\x02.`);
-        log('MOD', `Shazam refused for ${nick} in ${chan}: not trusted.`);
+            + `the list yet. An operator can add you with \x02!!trust add ${nick}\x02. `
+            + `${tries >= 2 ? 'Asking again will get you removed.' : ''}`);
+        log('MOD', `Shazam refused for ${nick} in ${chan}: not trusted (attempt ${tries}).`);
         return true;
     }
     if (!opped.has(ch)) { notice(nick, 'I have no ops here myself.'); return true; }
@@ -1573,19 +1607,52 @@ function shazam(chan, nick) {
         notice(nick, `Not yet — once every 30 minutes. ${Math.ceil((30 * 60000 - since) / 60000)}m to go.`);
         return true;
     }
-    shazamUsed.set(k, Date.now());
-    send(`MODE ${chan} +o ${nick}`);
-    say(chan, `\x0309[SHAZAM]\x03 ${nick} has ops for ${SHAZAM_MINUTES} minutes. 🦇`);
-    log('MOD', `Shazam: ${nick} took ops in ${chan} for ${SHAZAM_MINUTES}m.`);
-    for (const m of channelMods()) {
-        if (m.toLowerCase() !== k) notice(m, `\x0306[SHAZAM]\x03 ${nick} took ops in ${chan}.`);
+    // Find who has been going at them, and remove THAT person.
+    //
+    // This used to hand the caller ops for five minutes. The owner's design is
+    // better and the reason is in this room's own history: an op set +i on the
+    // channel and banned the owner's account within minutes of being given
+    // ops. Nobody needs operator to be defended — they need the person
+    // attacking them gone.
+    //
+    // It answers from evidence, not from a name somebody has to spot and type
+    // while being shouted at. Only somebody who actually aimed something
+    // hostile at the caller, in the last few minutes, and who is not trusted
+    // themselves.
+    const now = Date.now();
+    const here = members.get(ch) || new Set();
+    const present = (n) => [...here].some((m) => m.toLowerCase() === String(n).toLowerCase());
+    const culprits = (recentSaid.get(ch) || [])
+        .filter((e) => now - e.at < 6 * 60000)
+        .filter((e) => e.nick.toLowerCase() !== k)
+        .filter((e) => !isTrusted(e.nick) && !isAdmin(e.nick) && !isOwner(e.nick))
+        .filter((e) => !PROTECTED_NICKS.has(e.nick.toLowerCase()))
+        .filter((e) => present(e.nick))
+        // Aimed AT the caller, by name.
+        .filter((e) => aimedAt(e.msg, (n) => n.toLowerCase() === k))
+        // And actually hostile — not a joke, not banter, not simply naming them.
+        .filter((e) => !isBanter(e.msg) && !hasLaughter(e.msg)
+            && (severeAbuse(e.msg).severe
+                || severityOf(e.msg, { severe: severeWords, heavy: badwords }) !== 'none'
+                || solicits(e.msg).level !== 'none'));
+
+    if (!culprits.length) {
+        notice(nick, '\x0304[SHAZAM]\x03 I cannot see anybody attacking you in the last few '
+            + 'minutes. If somebody is, say their name in the room and I will look again — '
+            + 'or ask an operator.');
+        log('MOD', `Shazam from ${nick} in ${chan}: no attacker found.`);
+        return true;
     }
-    setTimeout(() => {
-        if (!opped.has(ch)) return;
-        if (isAdmin(nick) || isOwner(nick)) return;      // they had ops of their own
-        send(`MODE ${chan} -o ${nick}`);
-        log('MOD', `Shazam expired for ${nick} in ${chan}.`);
-    }, SHAZAM_MINUTES * 60000);
+    shazamUsed.set(k, now);
+    const worst = culprits[culprits.length - 1];
+    const why = severeAbuse(worst.msg).why || 'abuse aimed at a regular';
+    say(chan, `\x0309[SHAZAM]\x03 ${nick} called it. Removing ${worst.nick}. 🦇`);
+    log('MOD', `Shazam: ${nick} removed ${worst.nick} in ${chan} — ${why}.`);
+    for (const m of channelMods()) {
+        notice(m, `\x0306[SHAZAM]\x03 ${nick} used it on \x02${worst.nick}\x02 in ${chan}. `
+            + `Quoted: "${String(worst.msg).slice(0, 70)}". \x02!!unwarn ${worst.nick}\x02 if wrong.`);
+    }
+    kickUser(chan, worst.nick, `${why} — removed at ${nick}'s call`);
     return true;
 }
 
@@ -4428,6 +4495,11 @@ function handleLine(line) {
             gainTrust(nick, tgt);
         }
         if (!ready) return;                                   // ignore replayed backlog
+        // AFTER the replay guard, deliberately. The channel carries +H 50:3d,
+        // so joining replays three days of history — recorded here with a
+        // current timestamp, shazam would remove somebody for a line they
+        // typed on Saturday.
+        rememberSaid2(tgt, nick, msg);
         if (ignored.has(nick.toLowerCase())) return;          // !!ignore
 
         if (msg.startsWith('!!')) { handleCommand(tgt, nick, msg); return; }
