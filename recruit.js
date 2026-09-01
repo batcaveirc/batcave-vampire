@@ -242,7 +242,24 @@ function nickTokens(nick) {
 // says: "f16", "16f", "17yo", "15 y". The feminine-marker patterns match these
 // too, which is exactly why this has to be checked FIRST — "f16" reads as a
 // woman to the classifier and as a child to anybody else.
-const UNDERAGE = /(^|[^a-z0-9])((f|m)\s?(1[0-7]|[1-9])|(1[0-7]|[1-9])\s?(f|m|yo|yrs?|y)|age\s?1[0-7])([^a-z0-9]|$)/i;
+// Two patterns, because they need different endings.
+//
+// The single regex this replaces required a NON-alphanumeric character after
+// the age, so "15f_mumbai" was caught and "f16delhi" was not — an age glued
+// straight to a word walked through, and that is the commonest form the nick
+// actually takes. A live test invited f16delhi.
+//
+// A teen age binds tightly enough to need no trailing boundary: "f16delhi"
+// cannot be read as anything but a sixteen-year-old in Delhi.
+const UNDERAGE_TEEN = /(^|[^a-z0-9])((f|m)\s?1[0-7]|1[0-7]\s?(f|m|yo|yrs?|y)|age\s?1[0-7])/i;
+// A single digit is genuinely ambiguous — "m4rk" is a name — so that form
+// still needs the boundary. The asymmetry is deliberate: a false positive
+// here costs one invitation nobody sends, and a false negative invites a
+// child into an adult room.
+const UNDERAGE_SINGLE = /(^|[^a-z0-9])((f|m)\s?[1-9]|[1-9]\s?(f|m|yo|yrs?|y))([^a-z0-9]|$)/i;
+const UNDERAGE = {
+    test: (s) => UNDERAGE_TEEN.test(String(s)) || UNDERAGE_SINGLE.test(String(s)),
+};
 
 const NEVER = new Set(['chanserv', 'nickserv', 'operserv', 'hostserv', 'memoserv',
     'botserv', 'global', 'chanbot', 'luna1', 'vampire', 'dracula', 'notsobot']);

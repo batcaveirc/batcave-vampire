@@ -310,8 +310,14 @@ function applyModes(chan, spec) {
 // but they can be SEEN, and the realname comes back in the WHO reply without
 // them ever sending a line. And any TRUSTED person: the open room is the
 // foyer, so somebody locked out of #batcave goes there and is carried across.
+// nick(lower) -> realname, from the WHO sweep we already run. Kept because it
+// is the ONLY thing that identifies our own scenery: their nicks rotate every
+// restart, so nothing else about them is stable.
+const realnameOf = new Map();
+
 function carryIn(who, realname) {
     if (!who) return;
+    if (realname) realnameOf.set(String(who).toLowerCase(), String(realname).replace(/^:/, '').trim());
     const mark = (process.env.CHORUS_MARK || '').trim();
     const real = String(realname || '').replace(/^:/, '').trim();
     const isOurs = (!!mark && real === mark) || FLEET.has(String(who).toLowerCase());
@@ -1145,6 +1151,70 @@ function clonesARegular(nick) {
         if (!who || who.length < 4) continue;
         if (n === who) continue;                  // that IS them
         if (n.includes(who)) return { who, word };
+    }
+    return null;
+}
+
+/**
+ * Fold a nick to the letters somebody READS.
+ *
+ * "L1saa", "lisaa_", "Lisaa2", "l.i.s.a.a" and "L!SAA" all come out as
+ * "lisaa", because that is what they are for: to be misread as her at a
+ * glance, in a scrolling room, by people who are not inspecting nicks.
+ */
+function foldNick(sNick) {
+    return String(sNick || '').toLowerCase()
+        .replace(/[0]/g, 'o').replace(/[1!|]/g, 'i').replace(/[3]/g, 'e')
+        .replace(/[4@]/g, 'a').replace(/[5$]/g, 's').replace(/[7]/g, 't')
+        .replace(/[^a-z]/g, '');
+}
+
+/**
+ * Is this nick built to be mistaken for one of our regulars?
+ *
+ * clonesARegular() above catches the version with a slur welded on —
+ * "NangiPoojaBhabhi" — and returns null when there is no bad word, which is
+ * most of them. The plain form is the more damaging attack: wear "Lisaa_",
+ * abuse people for ten minutes, and the room remembers LISAA doing it. The
+ * bot could not see that at all.
+ *
+ * Only TRUSTED regulars are protected here, not everyone seen speaking. The
+ * set has to be small and deliberate, because the answer is a kick and two
+ * people can genuinely be called Priya.
+ *
+ * The account settles it when there is one: somebody logged in as the regular
+ * IS the regular, whatever nick they are wearing.
+ */
+/** One of ours — the standbys by name, the scenery by the realname it wears. */
+function isOneOfOurs(nick) {
+    const n = String(nick || '').toLowerCase();
+    if (FLEET.has(n)) return true;
+    const mark = (process.env.CHORUS_MARK || '').trim();
+    return !!mark && (realnameOf.get(n) || '') === mark;
+}
+
+function impersonatesARegular(nick) {
+    const raw = String(nick || '').toLowerCase();
+    // Never at our own scenery.
+    //
+    // Those names come from a fixed pool — aarav, nidhi, zoya, tara, sana —
+    // and any of them can fold to a regular's name by coincidence. Without
+    // this the bot kicks its own decorative bots as impostors and announces
+    // to the room that they were impersonating somebody, which is both wrong
+    // and exactly the accusation this check exists to avoid making carelessly.
+    if (isOneOfOurs(nick)) return null;
+    const folded = foldNick(nick);
+    if (folded.length < 4) return null;            // short names collide by accident
+    const mine = (accountOf.get(raw) || '').toLowerCase();
+    for (const who of whitelist) {
+        if (!who || who.length < 4) continue;
+        if (raw === who) return null;              // that IS them, wearing their own name
+        if (foldNick(who) !== folded) continue;
+        // Logged in as the person they resemble — the same human on a second
+        // connection, which is ordinary and must not be punished.
+        if (mine && mine === who) return null;
+        if (mine && (accountOf.get(who) || '').toLowerCase() === mine) return null;
+        return { who };
     }
     return null;
 }
@@ -2752,6 +2822,23 @@ async function screenNick(chan, nick) {
         log('MOD', `Clone attack: ${nick} targeted ${clone.who} (matched "${clone.word}").`);
         return;
     }
+    // Wearing a regular's name, without the slur that clonesARegular needs.
+    const worn = impersonatesARegular(nick);
+    if (worn) {
+        const k2 = nick.toLowerCase();
+        const seen = (nickOffences.get(k2) || 0) + 1;
+        nickOffences.set(k2, seen);
+        // Kicked first, banned if they put it back on. A kick is recoverable
+        // and two people really can be called Priya; coming back wearing it
+        // again is an answer to the question.
+        if (seen > 1) banUser(chan, nick, `wearing ${worn.who}'s name (came back with it)`);
+        else kickUser(chan, nick, `that is ${worn.who}'s name — pick your own`);
+        say(chan, `\x0304[MOD]\x03 \x02${nick}\x02 is not \x02${worn.who}\x02. `
+            + `Anything said under that name was not ${worn.who}. 🦇`);
+        log('MOD', `Impersonation: ${nick} folds to ${worn.who}.`);
+        noteHostileArrival(chan, 'impersonation');
+        return;
+    }
     const listHit = badNick(nick);
     const fromList = !!listHit;
     let bad = listHit ? 'filtered word in nick' : null;
@@ -4166,6 +4253,18 @@ function handleLine(line) {
                 reclaimNick();
             }
         } else if (newNick) {
+            // Screen the NEW name.
+            //
+            // screenNick ran on JOIN and nowhere else, so the whole check was
+            // one rename away from useless: arrive as "Guest41", become
+            // "Lisaa_" a second later, and nothing looked at it again. That is
+            // not a clever bypass, it is the obvious one.
+            for (const c of config.channels) {
+                const inIt = [...(members.get(chanKey(c)) || new Set())]
+                    .some((m) => m.toLowerCase() === newNick.toLowerCase()
+                        || m.toLowerCase() === nick.toLowerCase());
+                if (inIt && ready && strictNicks && !moderationOff(c)) screenNick(c, newNick);
+            }
             const h = hostOf.get(nick.toLowerCase());
             if (h) hostOf.set(newNick.toLowerCase(), h);
             // The ACCOUNT travels with them too. It did not, and it cost a
