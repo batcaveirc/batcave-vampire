@@ -298,6 +298,23 @@ class Recruiter {
         return this.target === 'other' ? !fem : fem;
     }
 
+    /**
+     * Have we already invited this person under a different name?
+     *
+     * The deps provide the other nicks seen on the same connection. Absent
+     * that (older wiring, or a nick we have never seen speak) this answers
+     * false, which is the safe direction: a duplicate invitation is a small
+     * cost, and refusing to invite anybody we cannot identify would be a
+     * large one.
+     */
+    alreadyAskedAnAlt(nick) {
+        if (typeof this.deps.altsOf !== 'function') return false;
+        for (const alt of this.deps.altsOf(nick) || []) {
+            if (this.askedRecently(String(alt).toLowerCase())) return true;
+        }
+        return false;
+    }
+
     /** Nicknames that look feminine enough for Dracula to take this one. */
     looksFeminine(nick) {
         // Explicit self-description first, and it is far more reliable than a
@@ -390,6 +407,7 @@ class Recruiter {
             const n = nick.toLowerCase();
             if (NEVER.has(n) || n === this.bot.nick.toLowerCase()) continue;
             if (this.askedRecently(n)) continue;
+            if (this.alreadyAskedAnAlt(nick)) continue;
             // Never an operator. Being invited by a bot reads as spam to the
             // people most able to act on it, and that is how a bot gets banned.
             if (/[~&@%]/.test(this.deps.prefixOf(chan, nick))) continue;
@@ -424,6 +442,15 @@ class Recruiter {
                 const n = nick.toLowerCase();
                 if (NEVER.has(n) || n === this.bot.nick.toLowerCase()) { bots++; continue; }
                 if (this.askedRecently(n)) { asked++; continue; }
+                // Already asked under ANOTHER name on the same connection.
+                //
+                // Cloaks hash the real address, so nicks sharing one are one
+                // person. Without this the recruiter invited "female24",
+                // "female33_actress", "actresslustyshag" and
+                // "female33_pornstar" as four prospects — they are one man's
+                // personas, and four invitations from a bot is how a room
+                // acquires a reputation for spamming.
+                if (this.alreadyAskedAnAlt(nick)) { asked++; continue; }
                 if (/[~&@%]/.test(this.deps.prefixOf(chan, nick))) { ops++; continue; }
                 if (home.includes(n)) { already++; continue; }
                 if (this.unwelcome(nick)) { unwelcome++; continue; }

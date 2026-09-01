@@ -152,6 +152,41 @@ const repeatLog = new Map();
 // nick -> [{at, flat}] for the 15-minute near-identical window.
 const repeatWindow = new Map();       // nick(lower) -> [{at, flat}], 15-minute window
 const hostOf = new Map();          // nick(lower) -> user@host (for real bans)
+
+/**
+ * Every nick we have seen on a given host — one person's names, together.
+ *
+ * InspIRCd cloaks are a deterministic hash of the real address, so two nicks
+ * carrying the same cloak are the same connection. That is available to
+ * anybody in the room; it needs no oper privileges and no real IP.
+ *
+ * Mined from the logs, it is not subtle:
+ *
+ *   u42.9vh.103.103.IP   terrym50, housewife48, jessica32, new2cuckold, terry
+ *   4h3.d7t.43.49.IP     female24, female33_actress, actresslustyshag, female33_pornstar
+ *   qjt.bnh.77.103.IP    hotphysiqueguy, hyderabadiilund, zalimmmlunddhyd, hunkbeast
+ *
+ * Six personas on one connection, presenting as both men and women. Every
+ * ladder in this bot counts per NICK, which is why one person could be
+ * targeted by four different names and each arrived with a clean record.
+ */
+const nicksOnHost = new Map();     // host -> Set(nick)
+function rememberHost(nick, userHost) {
+    if (!nick || !userHost) return;
+    const host = String(userHost).split('@').pop();
+    if (!host) return;
+    const set = nicksOnHost.get(host) || new Set();
+    set.add(String(nick).toLowerCase());
+    nicksOnHost.set(host, set);
+}
+/** Other names we have seen on this person's connection. */
+function altsOf(nick) {
+    const uh = hostOf.get(String(nick).toLowerCase());
+    if (!uh) return [];
+    const host = uh.split('@').pop();
+    return [...(nicksOnHost.get(host) || [])]
+        .filter((n) => n !== String(nick).toLowerCase());
+}
 const ignored = new Set();         // nick(lower) -> bot ignores them entirely
 const opped = new Set();           // channel(lower) we currently hold +o in
 const joinLog = new Map();         // channel(lower) -> [join timestamps] (raid detect)
@@ -299,6 +334,11 @@ const recruiter = new Recruiter(bot, {
     membersOf: (c) => [...(members.get(chanKey(c)) || [])],
     prefixOf: (c, n) => prefixIn(c, n),
     get homeChannel() { return config.channels[0]; },
+    // One person's other names, so an invitation is not sent six times to the
+    // same connection. Measured in the logs: "female24", "female33_actress",
+    // "actresslustyshag" and "female33_pornstar" all share one cloak, and the
+    // recruiter was treating them as four separate people to invite.
+    altsOf: (n) => altsOf(n),
 });
 fun.enabled = onOff(process.env.FUN_ON || 'on');
 // Master moderation switch, independent of the game.
@@ -2749,6 +2789,19 @@ function handleCommand(chan, nick, message) {
                 + `host: ${hostOf.get(k) || 'unknown'}`
                 + `${ignored.has(k) ? ', ignored' : ''}, last active: ${seenUsers[k] ? ago(seenUsers[k]) : 'never'}.`);
             reply( `${who} — auto-voice: ${v.ok ? 'YES' : 'NO'} (${v.why}).`);
+            // The other names on this connection. Cloaks are a hash of the
+            // real address, so this is the same person — and every ladder here
+            // counts per NICK, which is how one person was able to target
+            // somebody under four different names with a clean record each
+            // time.
+            const alts = altsOf(who);
+            if (alts.length) {
+                reply(`${who} — \x02also seen on this connection\x02: ${alts.slice(0, 12).join(', ')}`
+                    + `${alts.length > 12 ? ` +${alts.length - 12} more` : ''}. Same host, so the same person.`);
+            }
+            // WHOWAS reaches back past a disconnect, which is exactly when
+            // somebody has just changed name to escape a warning.
+            send(`WHOWAS ${who} 5`);
             break;
         }
         // The switch a moderator actually reaches for, rather than a redeploy.
@@ -3725,7 +3778,7 @@ function handleLine(line) {
     }
     // Remember every user@host we see — needed for bans that actually hold.
     const userHost = (prefix.match(/^:\S+?!(\S+)/) || [])[1];
-    if (nick && userHost) hostOf.set(nick.toLowerCase(), userHost);
+    if (nick && userHost) { hostOf.set(nick.toLowerCase(), userHost); rememberHost(nick, userHost); }
 
     // 482 = we tried an op-only action without ops. Drop the stale ops flag so
     // requireOps() stops lying, and ask ChanServ to fix it.
@@ -3844,7 +3897,7 @@ function handleLine(line) {
         const acct = q ? params[6] : params[5];
         if (n) {
             accountOf.set(n.toLowerCase(), (acct && acct !== '0') ? acct : '');
-            if (user && host) hostOf.set(n.toLowerCase(), `${user}@${host}`);
+            if (user && host) { hostOf.set(n.toLowerCase(), `${user}@${host}`); rememberHost(n, `${user}@${host}`); }
         }
     }
     if (command === '330' && params[1] && params[2]) {   // WHOIS "is logged in as"
@@ -3897,8 +3950,18 @@ function handleLine(line) {
     }
     // WHO reply -> learn every user's host, so a ban works even for someone
     // who has not spoken yet (otherwise we fall back to a weak nick mask).
+    // WHOWAS (314) — a nick's history, including the host it used. Fed into
+    // the same index, so asking about somebody who has already left still
+    // links their names together.
+    if (command === '314' && params[1] && params[2] && params[3]) {
+        rememberHost(params[1], `${params[2]}@${params[3]}`);
+        if (!hostOf.has(params[1].toLowerCase())) {
+            hostOf.set(params[1].toLowerCase(), `${params[2]}@${params[3]}`);
+        }
+    }
     if (command === '352' && params[5] && params[2] && params[3]) {
         hostOf.set(params[5].toLowerCase(), `${params[2]}@${params[3]}`);
+        rememberHost(params[5], `${params[2]}@${params[3]}`);
     }
     if (command === 'PART' && nick) {
         (members.get(chanKey(tgt)) || new Set()).delete(nick);
