@@ -1530,6 +1530,36 @@ function shazam(chan, nick) {
     // word three times, got nothing at all, and reported "kuch bhi nhi" —
     // indistinguishable from the feature being broken, which is how it was
     // read in the room.
+    // A REGISTERED account, always — even for somebody on the trust list.
+    //
+    // The owner's own call, and he is right: "lucifer" is trusted by NICK
+    // through the old whitelist, is unregistered, and is on webchat. Anybody
+    // may take that nick while he is offline, and without this they would type
+    // one word and hold operator. That is the impersonation attack this room
+    // has already suffered, except handed the keys.
+    //
+    // Trust decides WHO may; registration decides that they are really them.
+    if (!isOwner(nick) && !accountOf.has(k)) {
+        // We may simply not have LOOKED yet. Somebody already sitting in the
+        // room when the bot connected never sends a JOIN, so extended-join
+        // never told us their account — and that is most people, most of the
+        // time, because the bot restarts far more often than they do. Ask,
+        // and say we are asking, rather than telling a registered regular to
+        // go and register.
+        send(`USERHOST ${nick}`);
+        send(`WHOIS ${nick}`);
+        notice(nick, '\x0304[SHAZAM]\x03 One moment — I had not checked who you are yet. '
+            + 'Say it again in a few seconds.');
+        log('MOD', `Shazam deferred for ${nick}: account unknown, asking the server.`);
+        return true;
+    }
+    if (!isOwner(nick) && !accountOf.get(k)) {
+        notice(nick, '\x0304[SHAZAM]\x03 You need a registered nick for this — anyone can '
+            + 'wear an unregistered one, and this hands out operator. '
+            + '\x02/msg NickServ REGISTER <password> <email>\x02, then try again.');
+        log('MOD', `Shazam refused for ${nick}: no services account.`);
+        return true;
+    }
     if (!isTrusted(nick) && !isAdmin(nick) && !isOwner(nick) && !isChannelMod(chan, nick)) {
         notice(nick, `\x0304[SHAZAM]\x03 That is for trusted regulars, and you are not on `
             + `the list yet. An operator can add you with \x02!!trust add ${nick}\x02.`);
