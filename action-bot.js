@@ -1505,6 +1505,51 @@ function notePersistentTargeting(chan, victim, attacker) {
 }
 
 /** Take back a temporary grant. Safe to call twice; does nothing the second time. */
+/**
+ * "shazam" — a trusted regular takes ops for five minutes.
+ *
+ * The point is that the people who hold this room together should not have to
+ * wait for a bot or a sleeping moderator when something starts. They already
+ * have standing; this makes it usable.
+ *
+ * Trusted only, and that word means the trust channel — not "has voice",
+ * which everybody here has, and not "asked nicely".
+ *
+ * Time-boxed and self-revoking, for the same reason the Guardian's grant is:
+ * an op nobody removes is a permanent op handed out by a keyword. A cooldown
+ * stops it being used as a toy, and every use is logged and announced, because
+ * ops that appear silently are how a room stops being able to tell a regular
+ * from somebody who took a regular's name.
+ */
+const SHAZAM_MINUTES = Number(process.env.SHAZAM_MINUTES || 5);
+const shazamUsed = new Map();          // nick(lower) -> when
+function shazam(chan, nick) {
+    const ch = chanKey(chan);
+    const k = nick.toLowerCase();
+    if (!isTrusted(nick) && !isAdmin(nick) && !isOwner(nick)) return false;
+    if (!opped.has(ch)) { notice(nick, 'I have no ops here myself.'); return true; }
+    if (/[~&@]/.test(prefixIn(chan, nick))) { notice(nick, 'You already have ops.'); return true; }
+    const since = Date.now() - (shazamUsed.get(k) || 0);
+    if (since < 30 * 60000) {
+        notice(nick, `Not yet — once every 30 minutes. ${Math.ceil((30 * 60000 - since) / 60000)}m to go.`);
+        return true;
+    }
+    shazamUsed.set(k, Date.now());
+    send(`MODE ${chan} +o ${nick}`);
+    say(chan, `\x0309[SHAZAM]\x03 ${nick} has ops for ${SHAZAM_MINUTES} minutes. 🦇`);
+    log('MOD', `Shazam: ${nick} took ops in ${chan} for ${SHAZAM_MINUTES}m.`);
+    for (const m of channelMods()) {
+        if (m.toLowerCase() !== k) notice(m, `\x0306[SHAZAM]\x03 ${nick} took ops in ${chan}.`);
+    }
+    setTimeout(() => {
+        if (!opped.has(ch)) return;
+        if (isAdmin(nick) || isOwner(nick)) return;      // they had ops of their own
+        send(`MODE ${chan} -o ${nick}`);
+        log('MOD', `Shazam expired for ${nick} in ${chan}.`);
+    }, SHAZAM_MINUTES * 60000);
+    return true;
+}
+
 function endGuard(chan, victim) {
     const ch = chanKey(chan);
     if (!guardian.owes(ch, victim)) return;          // already taken back
@@ -2798,6 +2843,7 @@ function handleCommand(chan, nick, message) {
                 + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
                 + '!!history on|off, '
                 + '!!access, !!unwarn <nick>, !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
+                + 'say \x02shazam\x02 for 5m of ops if you are trusted, '
                 + '!!active on|off (AI moderation; off = cool), '
                 + '!!trust add|del|seed|reload <nick> (sticks), !!untrust add|del|seed <nick>, '
             + '!!whitelist add|remove <nick> (this run only), '
@@ -3453,18 +3499,23 @@ function handleCommand(chan, nick, message) {
             }
             break;
         }
+        // One concept, one command. "Whitelisted" and "trusted" were the same
+        // idea with two stores and two commands, and the difference between
+        // them was invisible at the point of use: !!whitelist add edited
+        // memory for one run, !!trust add wrote to the channel and survived.
+        // Somebody using the wrong one found their change gone within the
+        // hour with nothing to explain why.
+        //
+        // Kept as an alias rather than deleted, because it is in muscle memory
+        // and in old notes — but it does the durable thing now, and says so.
         case 'whitelist':
             if (!admin) { reply('Access denied.'); break; }
-            if (args[0] === 'add' && args[1]) { whitelist.add(args[1].toLowerCase()); reply( `${args[1]} is trusted now — immune to auto-mod. 🩸`); }
-            else if (args[0] === 'remove' && args[1]) {
-                whitelist.delete(args[1].toLowerCase());
-                // Say plainly that this does not survive a restart. Somebody
-                // removing a name and assuming it stuck would find them trusted
-                // again within the hour, with nothing to explain why.
-                reply(`${args[1]} removed from the whitelist — for THIS run only. `
-                    + `Add them to the UNTRUST secret to make it stick.`);
-            }
-            else reply( `Whitelist (${whitelist.size}): ${[...whitelist].join(', ') || '(empty)'}.`);
+            reply('\x02!!whitelist\x02 is now \x02!!trust\x02 — one list, one store. '
+                + `It lives on ${trust.channel || '(no trust channel set)'} and survives `
+                + 'restarts, which the old whitelist did not.');
+            reply(`Trusted (${whitelist.size}): ${[...whitelist].slice(0, 30).join(', ') || '(empty)'}`
+                + `${whitelist.size > 30 ? ` +${whitelist.size - 30} more` : ''}. `
+                + 'Use \x02!!trust add|del <nick>\x02.');
             break;
         case 'announce':
             if (!admin) { reply('Access denied.'); break; } if (!args.length) break;
@@ -4386,6 +4437,13 @@ function handleLine(line) {
         // And a question naming all three produced three replies in the same
         // second. Whoever is named first takes it; every bot reaches the same
         // answer from the same text without needing to agree on anything.
+        // The word itself, from anybody trusted. No prefix: it is meant to be
+        // reachable in a hurry, and a regular under attack should not have to
+        // remember which bot uses which punctuation.
+        if (/^\s*shazam\s*[!.]*$/i.test(msg) && isOurChannel(tgt)) {
+            if (shazam(tgt, nick)) return;
+        }
+
         if (addressedTo(msg, config.nick)) {
             const everyBot = [...PROTECTED_NICKS, ...(handshake.peers || [])];
             const speaker = firstNamed(msg, everyBot);
