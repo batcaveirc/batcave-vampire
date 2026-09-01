@@ -70,5 +70,21 @@ console.log('\n— the linking rule —');
     c('but an identical full cloak still does', alts('rahulm45').join(',') === 'sahil45m');
 }
 
+
+console.log('\n— a rename must link both names —');
+// The one place this was missing, and the most important one. A NICK change
+// is the moment somebody becomes a different person on paper: the bot watched
+// "Lucifer is now known as darkworld" happen in the room and recorded nothing,
+// because the handler copied the host across without indexing it.
+c('the rename handler records both names', /rememberHost\(nick, h\); rememberHost\(newNick, h\)/.test(src));
+c('and logs that it is the same connection', /same connection/.test(src));
+
+console.log('\n— an empty answer must say why —');
+// "No alts" printed nothing at all, which is indistinguishable from the
+// feature being broken. That is how it was reported.
+c('no host on file says so', /no connection on file yet/.test(src));
+c('no alts says it is bounded by the restart', /since I last restarted/.test(src));
+c('and does not claim it as proof', /not proof they have none/.test(src));
+
 console.log(f ? `\n${f} FAILED` : '\nALL PASS');
 process.exit(f ? 1 : 0);

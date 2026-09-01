@@ -195,6 +195,12 @@ function rememberHost(nick, userHost) {
  * way at all. Lucifer and darkworld are the same person by their own nick
  * change, and their two records carry different cloaks.
  */
+/** How long this process has been alive, in words. */
+function uptimeShort() {
+    const m = Math.floor(process.uptime() / 60);
+    return m < 60 ? `up ${m}m` : `up ${Math.floor(m / 60)}h${m % 60}m`;
+}
+
 function altsOf(nick) {
     const uh = hostOf.get(String(nick).toLowerCase());
     if (!uh) return [];
@@ -2849,9 +2855,19 @@ function handleCommand(chan, nick, message) {
             // somebody under four different names with a clean record each
             // time.
             const alts = altsOf(who);
+            const known = hostOf.get(k);
             if (alts.length) {
                 reply(`${who} — \x02also seen on this connection\x02: ${alts.slice(0, 12).join(', ')}`
                     + `${alts.length > 12 ? ` +${alts.length - 12} more` : ''}. Same host, so the same person.`);
+            } else if (!known) {
+                // Say WHY there is nothing, or "no alts" reads as "the feature
+                // is broken" — which is exactly how it was reported.
+                reply(`${who} — no connection on file yet. I learn it from WHO or when they `
+                    + 'speak; ask again in a moment.');
+            } else {
+                reply(`${who} — no other names on this connection \x02since I last restarted\x02 `
+                    + `(${uptimeShort()}). I only link names I have seen together, and I am wiped `
+                    + 'every few hours, so this is not proof they have none.');
             }
             // WHOWAS reaches back past a disconnect, which is exactly when
             // somebody has just changed name to escape a warning.
@@ -3612,6 +3628,14 @@ function handleLine(line) {
         } else if (newNick) {
             const h = hostOf.get(nick.toLowerCase());
             if (h) hostOf.set(newNick.toLowerCase(), h);
+            // Record BOTH names against the connection. This is the single
+            // most important place for it and it was the one place missing:
+            // a NICK change is the moment somebody becomes a different person
+            // on paper, and it is exactly what "Lucifer is now known as
+            // darkworld" looked like in the room. Without this the bot watched
+            // the rename happen and remembered nothing about it.
+            if (h) { rememberHost(nick, h); rememberHost(newNick, h); }
+            log('INFO', `${nick} is now ${newNick}${h ? ` (same connection)` : ''}.`);
             game.onNick(nick, newNick);
         }
     }
