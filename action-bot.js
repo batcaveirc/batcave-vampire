@@ -148,7 +148,9 @@ const warns = new Map();           // nick(lower) -> strike count
 // Punishment has to be state the bot HOLDS, not merely a mode it once set.
 const serving = new Map();
 const floodLog = new Map();        // nick(lower) -> [timestamps]
-const repeatLog = new Map();       // nick(lower) -> { text, count }
+const repeatLog = new Map();
+// nick -> [{at, flat}] for the 15-minute near-identical window.
+const repeatWindow = new Map();       // nick(lower) -> [{at, flat}], 15-minute window
 const hostOf = new Map();          // nick(lower) -> user@host (for real bans)
 const ignored = new Set();         // nick(lower) -> bot ignores them entirely
 const opped = new Set();           // channel(lower) we currently hold +o in
@@ -1675,6 +1677,37 @@ function scriptedModeration(chan, nick, message) {
         if (rep.count >= 3) { repeatLog.set(k, { text: message, count: 0 }); warnUser(chan, nick, 'stop repeating'); return true; }
     } else {
         repeatLog.set(k, { text: message, count: 1 });
+    }
+
+    // The advert repeated all day, which the rule above cannot see.
+    //
+    // Mined from 40,264 recorded messages: the dominant attack in these rooms
+    // is not abuse, it is one person posting the same line over and over.
+    //
+    //   137x  "fit cam, m 23, my cam your voice"
+    //   117x  "hello, 45 married male from Delhi, looking for..."
+    //   105x  "two mslm bulls looking for a 30+ f for real 3sm..."
+    //   101x  a reddit video link
+    //
+    // The consecutive-exact rule misses all of it: they space the posts out,
+    // and one changed character resets the counter. So keep a window instead,
+    // and compare on the letters — punctuation, digits and case are exactly
+    // what a spammer varies.
+    //
+    // Only for messages of 15+ characters. "hi" is the most repeated string in
+    // the corpus by a wide margin and is somebody greeting the room, not an
+    // attack, and this is deterministic so it acts with the model switched off.
+    if (message.replace(/\s/g, '').length >= 15) {
+        const flat = message.toLowerCase().replace(/[^a-z]/g, '');
+        const seen = (repeatWindow.get(k) || []).filter((e) => now - e.at < 15 * 60000);
+        const same = seen.filter((e) => e.flat === flat).length;
+        seen.push({ at: now, flat });
+        repeatWindow.set(k, seen);
+        if (same >= 2) {                       // this is the third in 15 minutes
+            repeatWindow.set(k, []);
+            kickUser(chan, nick, 'posting the same thing over and over');
+            return true;
+        }
     }
     return false;
 }
