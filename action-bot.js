@@ -1526,7 +1526,16 @@ const shazamUsed = new Map();          // nick(lower) -> when
 function shazam(chan, nick) {
     const ch = chanKey(chan);
     const k = nick.toLowerCase();
-    if (!isTrusted(nick) && !isAdmin(nick) && !isOwner(nick)) return false;
+    // A refusal must SAY so. Returning false silently meant lisu typed the
+    // word three times, got nothing at all, and reported "kuch bhi nhi" —
+    // indistinguishable from the feature being broken, which is how it was
+    // read in the room.
+    if (!isTrusted(nick) && !isAdmin(nick) && !isOwner(nick) && !isChannelMod(chan, nick)) {
+        notice(nick, `\x0304[SHAZAM]\x03 That is for trusted regulars, and you are not on `
+            + `the list yet. An operator can add you with \x02!!trust add ${nick}\x02.`);
+        log('MOD', `Shazam refused for ${nick} in ${chan}: not trusted.`);
+        return true;
+    }
     if (!opped.has(ch)) { notice(nick, 'I have no ops here myself.'); return true; }
     if (/[~&@]/.test(prefixIn(chan, nick))) { notice(nick, 'You already have ops.'); return true; }
     const since = Date.now() - (shazamUsed.get(k) || 0);

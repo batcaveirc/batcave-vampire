@@ -10,7 +10,12 @@ let f = 0;
 const c = (n, ok, d = '') => { if (!ok) f++; console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${n}${!ok && d ? ' — ' + d : ''}`); };
 
 console.log('— who may —');
-c('trusted, admin or owner only', /if \(!isTrusted\(nick\) && !isAdmin\(nick\) && !isOwner\(nick\)\) return false/.test(src));
+c('trusted, admin, owner or a channel op', src.includes('!isChannelMod(chan, nick)'));
+// lisu typed it three times, got nothing at all, and said "kuch bhi nhi".
+// A silent refusal is indistinguishable from a broken feature, and that is
+// exactly how the room read it.
+c('a refusal SAYS so', src.includes('That is for trusted regulars'));
+c('and names the command to fix it', src.includes('!!trust add ${nick}'));
 c('and that means the trust list, not voice',
   !/voiceIsSelective/.test(src.slice(src.indexOf('function shazam'), src.indexOf('function shazam') + 900)),
   'everybody in this room has voice, so voice cannot be the test');
