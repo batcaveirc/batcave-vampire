@@ -2869,9 +2869,21 @@ function handleCommand(chan, nick, message) {
                     + `(${uptimeShort()}). I only link names I have seen together, and I am wiped `
                     + 'every few hours, so this is not proof they have none.');
             }
+            // Two server-side lookups, because neither alone is enough.
+            //
             // WHOWAS reaches back past a disconnect, which is exactly when
-            // somebody has just changed name to escape a warning.
+            // somebody has just changed name to escape a warning. USERHOST
+            // answers for anyone online RIGHT NOW even if they share no
+            // channel with us — so a nick seen misbehaving in a room we do not
+            // sit in can still be tied to a connection.
+            //
+            // What neither can do is the reverse: "who else is on this cloak".
+            // Measured against this server — WHO by host, by host mask and by
+            // nick mask all return nothing, because mask lookups are
+            // oper-only here. That is why the index is built by watching and
+            // cannot simply be queried.
             send(`WHOWAS ${who} 5`);
+            send(`USERHOST ${who}`);
             break;
         }
         // The switch a moderator actually reaches for, rather than a redeploy.
@@ -4028,6 +4040,16 @@ function handleLine(line) {
     }
     // WHO reply -> learn every user's host, so a ban works even for someone
     // who has not spoken yet (otherwise we fall back to a weak nick mask).
+    // USERHOST (302) — "nick=+user@host" for up to five nicks at once, and it
+    // works for anybody online, not only people we share a channel with.
+    if (command === '302') {
+        for (const ent of (params.slice(1).join(' ').replace(/^:/, '')).split(/\s+/)) {
+            const m = ent.match(/^([^=]+)=[+-](.+)$/);
+            if (!m) continue;
+            hostOf.set(m[1].toLowerCase(), m[2]);
+            rememberHost(m[1], m[2]);
+        }
+    }
     // WHOWAS (314) — a nick's history, including the host it used. Fed into
     // the same index, so asking about somebody who has already left still
     // links their names together.

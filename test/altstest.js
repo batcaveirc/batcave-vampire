@@ -86,5 +86,34 @@ c('no host on file says so', /no connection on file yet/.test(src));
 c('no alts says it is bounded by the restart', /since I last restarted/.test(src));
 c('and does not claim it as proof', /not proof they have none/.test(src));
 
+
+console.log('\n— what the server will and will not answer —');
+// Measured against the live server, not assumed:
+//   WHO <nick>              works
+//   WHO <host>              nothing
+//   WHO *!*@<host>          nothing      mask lookups are oper-only here
+//   WHO <nick>*             nothing
+//   USERHOST a b c          works, five at a time, any online user
+// So "who else is on this cloak" cannot be asked, which is exactly why the
+// index has to be built by watching rather than queried on demand.
+c('USERHOST replies are parsed', /command === '302'/.test(src));
+c('the +/- away marker is stripped', /=\[\+-\]/.test(src) || /\[\+-\]/.test(src),
+  'the reply is "nick=+user@host" or "nick=-user@host"');
+c('!!info asks for it', /send\(`USERHOST \$\{who\}`\)/.test(src));
+c('and the impossibility is written down', /oper-only here/.test(src),
+  'so nobody re-derives it by trying WHO masks again');
+{
+    // The exact reply the live server gave.
+    const line = ':srv 302 me :Dracula=+Dracula@Sat.Chit.Ananda Luna1=+Luna1@Keeping.The.Night.Company Johnny=-webchat@Your.Name.here';
+    const params = line.split(' ').slice(2);
+    const got = [];
+    for (const ent of (params.slice(1).join(' ').replace(/^:/, '')).split(/\s+/)) {
+        const m = ent.match(/^([^=]+)=[+-](.+)$/);
+        if (m) got.push(`${m[1]}|${m[2]}`);
+    }
+    c('all three hosts come out of one reply', got.length === 3, got.join(' '));
+    c('and the host is clean of the away marker', got[0] === 'Dracula|Dracula@Sat.Chit.Ananda', got[0]);
+}
+
 console.log(f ? `\n${f} FAILED` : '\nALL PASS');
 process.exit(f ? 1 : 0);
