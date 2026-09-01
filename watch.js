@@ -120,6 +120,39 @@ class Watch {
         return [...new Set(hist.map((s) => s.chan))];
     }
 
+    /**
+     * Remember the CONNECTION a sighting came from, not just the name.
+     *
+     * The whole point of listening abroad is to know somebody before they
+     * arrive, and a nick is the one thing they change on the way. A cloak
+     * hashes the address, so it survives the walk from one room to the next.
+     */
+    rememberHost(nick, host) {
+        if (!host || /^\d+\.\d+\./.test(host)) return;   // not yet cloaked
+        const k = String(nick).toLowerCase();
+        this.hosts = this.hosts || new Map();
+        this.hosts.set(k, host);
+        this.byHost = this.byHost || new Map();
+        const set = this.byHost.get(host) || new Set();
+        set.add(k);
+        this.byHost.set(host, set);
+    }
+
+    /**
+     * Was this CONNECTION heard misbehaving abroad, under any name?
+     *
+     * @returns {{nick:string, chan:string, why:string}|null}
+     */
+    sameConnectionSeen(host) {
+        if (!host || !this.byHost) return null;
+        const now = Date.now();
+        for (const n of this.byHost.get(host) || []) {
+            const hist = (this.sightings.get(n) || []).filter((s) => now - s.at < MEMORY_MS);
+            if (hist.length) return { nick: n, chan: hist[0].chan, why: hist[0].why };
+        }
+        return null;
+    }
+
     /** Have we heard this nick recently enough to greet them differently? */
     isFlagged(nick) {
         return this.seenIn(nick).length > 0;

@@ -175,6 +175,7 @@ function rememberHost(nick, userHost) {
     if (!nick || !userHost) return;
     const host = String(userHost).split('@').pop();
     if (!host) return;
+    watch.rememberHost(nick, host);
     const set = nicksOnHost.get(host) || new Set();
     set.add(String(nick).toLowerCase());
     nicksOnHost.set(host, set);
@@ -1606,10 +1607,49 @@ function verdictNotice(nick, reason, outcome) {
         + 'on the wrong side of it. The room is still here when you are ready to be civil. 🦇');
 }
 
+/**
+ * Remember the CONNECTION, not just the name.
+ *
+ * Every ladder here counts per nick, so a banned person returns under a new
+ * one with a clean record — which is how Lucifer was targeted by Guest4407,
+ * Turner94, cute_pup and perfect20 in half an hour, and how one connection in
+ * the logs carries terrym50, housewife48, jessica32 and three more.
+ *
+ * The cloak is a hash of the address, so it survives a nick change. Written
+ * into the trust channel as a denied mask, it also survives the restart that
+ * wipes everything this process knows — the runners are ephemeral and the
+ * in-memory index dies every six hours, which is why remembering in RAM was
+ * never going to be enough.
+ *
+ * Deliberately only for a BAN, never a kick. A ban is already the considered
+ * end of the ladder, and a cloak can be shared — a family, a hostel, a
+ * university NAT. Attaching one to a warning would eventually silence a
+ * building.
+ */
+function rememberOffendingHost(nick, reason) {
+    if (!trust.enabled || !trust.loaded) return;
+    const uh = hostOf.get(String(nick).toLowerCase());
+    const host = uh && uh.includes('@') ? uh.split('@')[1] : '';
+    // A cloak, not a raw address, and not a provider-wide one: an IP-shaped
+    // host means the cloak had not applied yet and banning it would catch
+    // whoever else that range serves.
+    if (!host || host.length < 8 || /^\d+\.\d+\./.test(host)) return;
+    const mask = `*!*@${host}`;
+    if (trust.denyMasks.has(mask)) return;
+    trust.deny(mask);
+    log('MOD', `Remembered ${nick}'s connection as ${mask} — ${reason}. `
+        + 'They come back under any name and it is already known.');
+    for (const m of channelMods()) {
+        notice(m, `\x0304[MOD]\x03 ${nick}'s connection recorded on ${trust.channel} `
+            + `as \x02${mask}\x02. Undo with \x02!!untrust del ${mask}\x02.`);
+    }
+}
+
 function banUser(chan, nick, reason) {
     if (actedRecently(chan, nick, 'ban')) return;
     markActioned(chan, nick, 'ban');
     if (!requireOps(chan, `ban ${nick}`)) return;
+    rememberOffendingHost(nick, reason);
     const mask = banMask(nick);
     verdictNotice(nick, reason, 'You are banned from the channel.');
     retortBefore(chan, nick, reason);
@@ -4158,6 +4198,17 @@ function handleLine(line) {
             // friend. A verdict nobody can check is a verdict nobody can
             // overturn, and this one silences a new arrival for half an hour.
             const evidence = watch.heardFrom(nick);
+            // The same connection, under a different name.
+            const uh0 = hostOf.get(nick.toLowerCase()) || '';
+            const seen = watch.sameConnectionSeen(uh0.split('@').pop());
+            if (seen && seen.nick !== nick.toLowerCase()) {
+                for (const m of channelMods()) {
+                    notice(m, `\x0304[WATCH]\x03 \x02${nick}\x02 is the same connection as `
+                        + `\x02${seen.nick}\x02, heard ${seen.why} in ${seen.chan}. `
+                        + 'A new name, not a new person.');
+                }
+                log('MOD', `${nick} arrives on the connection last seen as ${seen.nick} (${seen.why}).`);
+            }
             for (const m of channelMods()) {
                 notice(m, `\x0304[WATCH]\x03 \x02${nick}\x02 just arrived in ${c} — heard `
                     + `advertising this room in ${where}. Muted for ${watchMuteMin}m. `
