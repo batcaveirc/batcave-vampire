@@ -296,6 +296,14 @@ function handleKnock(chan, who, why) {
             + `\x02!!letin ${who}\x02 to admit them.`
             + `${alts.length ? ` Also seen as: ${alts.slice(0, 4).join(', ')}.` : ''}`);
     }
+    // Tell the person at the door that somebody heard.
+    //
+    // All the server gives them is "NOTICE :KNOCKing on #batcave", which most
+    // clients bury among connection noise — so from their side a knock and a
+    // locked door look identical, and they leave. Anybody worth admitting is
+    // exactly the person who will not knock twice.
+    notice(who, `\x0306[DOOR]\x03 Heard you. ${chan} is invite-only and your knock has been `
+        + 'passed to the operators. If somebody is about, they will let you in shortly.');
     log('MOD', `Knock on ${chan} from ${who}${why ? `: ${why}` : ''}.`);
 }
 

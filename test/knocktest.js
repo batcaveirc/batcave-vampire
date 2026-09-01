@@ -66,5 +66,14 @@ c('and it can be turned off', src.includes('OPEN_TO_REGISTERED'));
 c('the reason is recorded', src.includes('Every attacker in these logs'),
   'Guest4407, Turner94, cute_pup, perfect20 — all unregistered');
 
+
+console.log('\n— the person at the door is answered —');
+// All the server gives them is "NOTICE :KNOCKing on #batcave", which most
+// clients bury among connection noise. From their side a knock and a locked
+// door look the same, and they leave — and the people worth admitting are
+// exactly the ones who will not knock twice.
+c('the knocker is told they were heard', src.includes('Heard you.'));
+c('and that it reached the operators', src.includes('passed to the operators'));
+
 console.log(f ? `\n${f} FAILED` : '\nALL PASS');
 process.exit(f ? 1 : 0);
