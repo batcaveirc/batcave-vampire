@@ -75,5 +75,29 @@ console.log('\n— the person at the door is answered —');
 c('the knocker is told they were heard', src.includes('Heard you.'));
 c('and that it reached the operators', src.includes('passed to the operators'));
 
+
+console.log('\n— the delivery format, captured from the live server —');
+// Guessed twice and got nothing both times. Settled by opping a probe in the
+// channel and knocking at it from a second connection:
+//
+//   :cloud.hybridirc.com NOTICE @#batcave
+//     :User doorguest7 is KNOCKing on #batcave (letting me in please)
+//
+// It is a NOTICE to the op-prefixed channel, not the 710 numeric. Which of
+// the two a server sends is <knock:notify> in its config, and this one does
+// not use the numeric — so the numeric-only handler saw nothing, the knock
+// worked, and the room was told nothing.
+c('the op-prefixed channel notice is handled', src.includes("/^[@%&~+]*#/.test(tgt")); 
+c('and the exact wording is parsed', src.includes('/^User\\s+(\\S+)\\s+is\\s+KNOCK/i'));
+c('the numeric is still handled too', src.includes("command === '710'"),
+  'other builds do use it, and which one is not ours to choose');
+{
+    const msg = 'User doorguest7 is KNOCKing on #batcave (letting me in please)';
+    const m = msg.match(/^User\s+(\S+)\s+is\s+KNOCK/i);
+    const why = (msg.match(/\(([^)]{1,80})\)\s*$/) || [])[1] || '';
+    c('the real line yields the nick', m && m[1] === 'doorguest7', m ? m[1] : 'no match');
+    c('and the reason', why === 'letting me in please', why);
+}
+
 console.log(f ? `\n${f} FAILED` : '\nALL PASS');
 process.exit(f ? 1 : 0);

@@ -4375,6 +4375,33 @@ function handleLine(line) {
     }
     // WHO reply -> learn every user's host, so a ban works even for someone
     // who has not spoken yet (otherwise we fall back to a weak nick mask).
+    // A knock arrives in ONE OF TWO SHAPES, and which one is a server setting
+    // we do not control. InspIRCd's knock module can notify operators with the
+    // 710 numeric or with a NOTICE addressed to "@#channel"; the setting is
+    // <knock:notify> and this network evidently does not use the numeric.
+    //
+    // Found the hard way: a knock was accepted by the server — it answered the
+    // knocker with "KNOCKing on #batcave" — and nobody in the room saw a
+    // thing, because the only handler here was for the numeric.
+    if (command === 'NOTICE' && /^[@%&~+]*#/.test(tgt || '') && /knock/i.test(msg || '')) {
+        const ch2 = String(tgt).replace(/^[@%&~+]+/, '');
+        // The EXACT wording this server sends, captured by opping a probe and
+        // knocking at it from a second connection:
+        //
+        //   :cloud.hybridirc.com NOTICE @#batcave
+        //     :User doorguest7 is KNOCKing on #batcave (letting me in please)
+        //
+        // I had guessed "<nick> has knocked" and got nothing, twice. The
+        // fallbacks below cover the other shapes InspIRCd builds use, but the
+        // first pattern is the one that is known to be right here.
+        const m2 = String(msg).match(/^User\s+(\S+)\s+is\s+KNOCK/i)
+            || String(msg).match(/([A-Za-z0-9_\[\]{}\\|^`-]+)(?:!\S+)?\s+(?:has\s+)?knocked/i)
+            || String(msg).match(/\[KNOCK\]\s+\S+\s+([A-Za-z0-9_\[\]{}\\|^`-]+)/i);
+        const who2 = m2 ? m2[1].split('!')[0] : '';
+        const why2 = (String(msg).match(/\(([^)]{1,80})\)\s*$/) || [])[1] || '';
+        if (who2 && isOurChannel(ch2)) handleKnock(ch2, who2, why2);
+        return;
+    }
     // 710 — somebody knocked on a +i channel we hold ops in.
     if (command === '710' && params[1]) {
         const who = (params[2] || '').split('!')[0];
