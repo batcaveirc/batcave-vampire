@@ -416,7 +416,7 @@ function signpost(chan, current) {
 //
 // PROTECTED_NICKS is the wrong list to reuse here: it contains ChanServ and
 // other people's bots, which must never be invited anywhere.
-const FLEET = new Set((process.env.FLEET_NICKS || 'Carmilla,Bankai,Katerina,Drusilla')
+const FLEET = new Set((process.env.FLEET_NICKS || 'Carmilla,Bankai,Katerina')
     .split(',').map((n) => n.trim().toLowerCase()).filter(Boolean));
 
 const faultsTold = new Set();          // one owner notice per distinct fault

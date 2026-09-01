@@ -85,7 +85,11 @@ jobs:
           # by the realname test and sit outside a +i #batcave — locked out of
           # the room they exist to defend, unable to ask, and with no +I
           # exception that fits an unregistered bot.
-          FLEET_NICKS: ${{ secrets.FLEET_NICKS || 'Carmilla,Bankai,Katerina,Drusilla' }}
+          # MUST match the standby matrix. Drusilla is NOT on it — commit
+          # c6e0653 replaced her with Bankai — so listing her here would
+          # have invited whoever happens to be wearing that unregistered
+          # nick into the locked room, on this bot's own authority.
+          FLEET_NICKS: ${{ secrets.FLEET_NICKS || 'Carmilla,Bankai,Katerina' }}
           TRUST_FLAG: ${{ secrets.TRUST_FLAG || 'V' }}
           # Standing that follows behaviour. Off makes trust manual again.
           AUTO_TRUST: ${{ secrets.AUTO_TRUST || 'on' }}
