@@ -1382,8 +1382,65 @@ function guardVictim(chan, attacker, message) {
     say(chan, `\x0309[GUARD]\x03 ${victim} — you are being targeted, so you have ops for `
         + `${guardian.minutes}m. Deal with ${attacker} however you see fit. 🦇`);
     log('MOD', `Guardian: opped ${victim} in ${chan} (targeted by ${attacker}).`);
+    notePersistentTargeting(chan, victim, attacker);
 
     setTimeout(() => endGuard(chan, victim), guardian.minutes * 60000);
+}
+
+/**
+ * The same person attacked by a series of DIFFERENT names.
+ *
+ * From the logs:
+ *
+ *   Guardian: opped Lucifer (targeted by Guest4407)
+ *   Guardian: opped Lucifer (targeted by Turner94)
+ *   Guardian: opped Lucifer (targeted by cute_pup)
+ *   Guardian: opped Lucifer (targeted by perfect20)
+ *
+ * That is not four people who each decided to go after Lucifer. It is one
+ * person changing nick, and every single defence we have is aimed at a NICK —
+ * warnings, strikes, devoices, the ladder. Each new name arrives with a clean
+ * record and the count starts again, so the victim gets armed over and over
+ * and the attacker pays nothing.
+ *
+ * The pattern is only visible from the VICTIM's side, which is why nothing
+ * caught it: three different attackers on one person inside half an hour is
+ * one campaign, however many names it wore.
+ *
+ * The answer is +R — registered only. It costs a nick-cycler everything,
+ * because throwaway names like Guest4407 are unregistered by definition, and
+ * it costs a genuine visitor a few minutes. Short, announced, and lifted
+ * automatically: a lock nobody remembers to remove is how a room dies quietly.
+ */
+const targetedBy = new Map();            // victim(lower) -> [{at, attacker}]
+let lockedUntil = 0;
+function notePersistentTargeting(chan, victim, attacker) {
+    const k = String(victim).toLowerCase();
+    const now = Date.now();
+    const hist = (targetedBy.get(k) || []).filter((e) => now - e.at < 30 * 60000);
+    if (!hist.some((e) => e.attacker === String(attacker).toLowerCase())) {
+        hist.push({ at: now, attacker: String(attacker).toLowerCase() });
+    }
+    targetedBy.set(k, hist);
+    if (hist.length < 3 || Date.now() < lockedUntil) return;
+
+    lockedUntil = Date.now() + 10 * 60000;
+    const names = hist.map((e) => e.attacker).join(', ');
+    log('MOD', `${victim} targeted by ${hist.length} different nicks in 30m (${names}) `
+        + '— registered-only for 10m.');
+    send(`MODE ${chan} +R`);
+    say(chan, `\x0304[GUARD]\x03 ${victim} has been targeted by ${hist.length} different `
+        + 'names in half an hour. Registered nicks only for 10 minutes. 🦇');
+    for (const o of config.owners) {
+        notice(o, `\x0304[GUARD]\x03 \x02${victim}\x02 targeted by ${hist.length} nicks in 30m: `
+            + `${names}. That is one person cycling names — every ladder we have counts per NICK, `
+            + `so each arrives with a clean record. ${chan} is +R for 10m.`);
+    }
+    setTimeout(() => {
+        send(`MODE ${chan} -R`);
+        log('MOD', `Registered-only lifted on ${chan}.`);
+        targetedBy.set(k, []);
+    }, 10 * 60000);
 }
 
 /** Take back a temporary grant. Safe to call twice; does nothing the second time. */
