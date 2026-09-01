@@ -70,6 +70,10 @@ jobs:
           # !!trust, survives restarts, and readable — which a secret is not.
           # Empty or unregistered and the two secrets above hold, unchanged.
           TRUST_CHANNEL: ${{ secrets.TRUST_CHANNEL }}
+          # The realname our own decorative bots carry, so they can be spotted
+          # in the open room and invited into the locked one without ever
+          # having to speak. Unset = the feature is off.
+          CHORUS_MARK: ${{ secrets.CHORUS_MARK }}
           TRUST_FLAG: ${{ secrets.TRUST_FLAG || 'V' }}
           # Standing that follows behaviour. Off makes trust manual again.
           AUTO_TRUST: ${{ secrets.AUTO_TRUST || 'on' }}

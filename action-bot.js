@@ -4395,6 +4395,30 @@ function handleLine(line) {
     if (command === '352' && params[5] && params[2] && params[3]) {
         hostOf.set(params[5].toLowerCase(), `${params[2]}@${params[3]}`);
         rememberHost(params[5], `${params[2]}@${params[3]}`);
+        // Our own scenery, recognised by its REALNAME rather than its nick.
+        //
+        // The owner's idea: the decorative bots land in the open room and get
+        // invited across. That solves the problem I was stuck on — their nicks
+        // rotate every restart, so nobody can invite them by name — because
+        // here they can simply be SEEN.
+        //
+        // The realname is set at connect and comes back in this reply, so they
+        // are identified without ever sending a line. That matters: the chorus
+        // was built with no outgoing message path at all, asserted by a test,
+        // and every other way of announcing themselves would have spent it.
+        const realname = params.slice(7).join(' ').replace(/^:\d+\s*/, '').trim();
+        const mark = (process.env.CHORUS_MARK || '').trim();
+        if (mark && realname && realname === mark) {
+            const who = params[5];
+            for (const c of config.channels) {
+                const inIt = [...(members.get(chanKey(c)) || new Set())]
+                    .some((m) => m.toLowerCase() === who.toLowerCase());
+                if (!inIt) {
+                    send(`INVITE ${who} ${c}`);
+                    log('INFO', `Invited our own ${who} into ${c} (seen by realname).`);
+                }
+            }
+        }
     }
     if (command === 'PART' && nick) {
         (members.get(chanKey(tgt)) || new Set()).delete(nick);
