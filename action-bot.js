@@ -3475,9 +3475,24 @@ function handleCommand(chan, nick, message) {
             }
             const who = args[1];
             if (args[0] === 'add' && who) {
-                trust.add(trustKeyFor(who).key); refreshTrust();
-                reply(`${who} is trusted as ${trustKeyFor(who).how} — stored on `
-                    + `${trust.channel}, survives restarts. 🩸`);
+                // Say what was SENT, then what actually happened. Claiming
+                // success first produced two contradictory lines a second
+                // apart — "stored on #batcave-trust, survives restarts 🩸"
+                // immediately followed by "ChanServ refused a change" — which
+                // leaves nobody knowing whether the person is trusted or not.
+                const key = trustKeyFor(who);
+                trust.add(key.key); refreshTrust();
+                reply(`Sending ${who} to ${trust.channel} as ${key.how} — verifying…`);
+                trust.verify(1, () => {
+                    if (trust.has(key.key)) {
+                        reply(`${who} is trusted, stored as \x02${key.key}\x02. Survives restarts. 🩸`);
+                    } else {
+                        const alt = altsOf(who).find((n) => accountOf.get(n));
+                        reply(`${who} was NOT stored — ChanServ keys on accounts and it did not `
+                            + `accept that.${alt ? ` They are logged in as \x02${accountOf.get(alt)}\x02 `
+                            + `on another name; try \x02!!trust add ${accountOf.get(alt)}\x02.` : ''}`);
+                    }
+                });
             } else if ((args[0] === 'del' || args[0] === 'remove') && who) {
                 trust.remove(who); refreshTrust();
                 reply(`${who} is no longer trusted — stored on ${trust.channel}.`);
@@ -3797,6 +3812,14 @@ function handleLine(line) {
         } else if (newNick) {
             const h = hostOf.get(nick.toLowerCase());
             if (h) hostOf.set(newNick.toLowerCase(), h);
+            // The ACCOUNT travels with them too. It did not, and it cost a
+            // real trust entry: Amant renamed to Sautela_Baby, the owner ran
+            // "!!trust add sautela_baby", and ChanServ refused — "not
+            // registered" — because the bot had forgotten he was logged in as
+            // Amant and sent the NICK. A rename does not log anybody out;
+            // WHOIS said "is logged in as Amant" the whole time.
+            const a = accountOf.get(nick.toLowerCase());
+            if (a !== undefined) accountOf.set(newNick.toLowerCase(), a);
             // Record BOTH names against the connection. This is the single
             // most important place for it and it was the one place missing:
             // a NICK change is the moment somebody becomes a different person
