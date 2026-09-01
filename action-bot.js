@@ -4068,6 +4068,9 @@ function handleLine(line) {
                 // which notices a hand-edit in 5 minutes instead of 15 while
                 // sending a fraction of the traffic.
                 setInterval(() => trust.poll(), 5 * 60000).unref?.();
+                // Our own bots restart every few hours and, being unregistered
+                // by design, cannot get back into a +i room on their own.
+                setInterval(() => config.channels.forEach((c) => inviteOwnBots(c)), 120000).unref?.();
                 // A slow full re-read anyway, so a missed COUNT cannot leave
                 // us wrong forever.
                 setInterval(() => trust.refresh(), 60 * 60000).unref?.();
