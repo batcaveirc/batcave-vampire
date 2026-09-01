@@ -382,11 +382,23 @@ function signpost(chan, current) {
     const key = chanKey(chan);
     if (topicSet.has(key)) return;                 // once per run, whatever happens
     if (!opped.has(key)) return;                   // +t means ops only; wait until we are
-    const now = String(current || '');
-    if (now.includes(TOPIC_MARK)) { topicSet.add(key); return; }   // already signposted
+    const now = String(current || '').trim();
     topicSet.add(key);
+    if (now.includes(TOPIC_MARK)) return;          // already signposted
+    if (now) {
+        // A topic somebody WROTE is not ours to replace. The first version of
+        // this overwrote any topic that did not already mention !!help, which
+        // is every topic a person has ever set, and I described it in the
+        // commit as leaving human topics alone. It did not.
+        for (const o of config.owners) {
+            notice(o, `\x0306[TOPIC]\x03 ${chan} has a topic already, so I left it. `
+                + `To use mine instead: \x02!!topic ${chan}\x02`);
+        }
+        log('INFO', `${chan} already has a topic — left alone.`);
+        return;
+    }
     send(`TOPIC ${chan} :${desiredTopic(chan)}`);
-    log('INFO', `Signposted ${chan}${now ? ' (replacing a topic with no help pointer)' : ' (it had none)'}.`);
+    log('INFO', `Signposted ${chan} (it had none).`);
 }
 
 const knockSeen = new Map();           // nick(lower) -> last knock
@@ -3308,6 +3320,22 @@ function handleCommand(chan, nick, message) {
         }
 
         // The door, and the key.
+        case 'topic': {
+            // Deliberate, because the automatic version only ever fills a room
+            // that has NO topic. A topic somebody wrote is theirs.
+            if (!admin) { reply('Access denied.'); break; }
+            const room = (target || '').startsWith('#') ? target : chan;
+            if (!opped.has(chanKey(room))) {
+                reply(`I have no ops in ${room}, so the server will refuse a topic change.`);
+                break;
+            }
+            send(`TOPIC ${room} :${desiredTopic(room)}`);
+            topicSet.add(chanKey(room));
+            reply(`Topic set on ${room}. If it snaps back, the channel has TOPICLOCK `
+                + 'and ChanServ has to make the change: /msg ChanServ TOPIC ' + room + ' <text>');
+            log('MOD', `${nick} set the signpost topic on ${room}.`);
+            break;
+        }
         case 'door': {
             if (!admin) { reply('Access denied.'); break; }
             const arg = (target || '').toLowerCase();
