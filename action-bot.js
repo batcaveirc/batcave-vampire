@@ -269,6 +269,18 @@ function syncInviteExceptions(chan, reply) {
     return n;
 }
 
+// One invitation per person per room per ten minutes. Without it a WHO sweep
+// re-invites everybody every time it runs, which is a notice storm for them
+// and looks like a malfunction to the room.
+const invitedAt = new Map();
+function invitedRecently(who, chan) {
+    const key = `${chanKey(chan)}|${String(who).toLowerCase()}`;
+    const last = invitedAt.get(key) || 0;
+    if (Date.now() - last < 10 * 60000) return true;
+    invitedAt.set(key, Date.now());
+    return false;
+}
+
 const knockSeen = new Map();           // nick(lower) -> last knock
 function handleKnock(chan, who, why) {
     const k = String(who).toLowerCase();
@@ -3052,21 +3064,35 @@ function handleCommand(chan, nick, message) {
     if (fun.handle(nick, chan, cmd, args)) return;
 
     switch (cmd) {
-        case 'help':
-            reply( 'Everyone: !!seen <nick>, !!status, !!info [nick], !!rules. '
-                + 'Fun: !!bite, !!slap, !!hug, !!pat, !!8ball <q>, !!ship <a> <b>, !!fortune, !!rip, !!vibe. '
-                + 'Talk: !!icebreaker, !!hotseat [nick], !!story, !!toast [nick]. '
-                + 'Mods: !!join/!!part #room, !!rooms, !!mass kick|ban|voice|devoice, '
-                + '!!autoban add|remove|list <mask>, !!strict on|off, !!linkfilter on|off, '
-                + '!!raidguard on|off, !!protect add|remove <nick|mask>, !!hardban <nick>, !!aicheck, '
-                + '!!history on|off, '
-                + '!!access, !!unwarn <nick>, !!sentient on|off, !!moderate on|off, !!autovoice on|off, !!fun on|off, !!recruit on|off|now, !!badword add|remove <w>, '
-                + '!!door on|off (invite-only + knocking), !!letin <nick>, '
-                + '!!active on|off (AI moderation; off = cool), '
-                + '!!trust add|del|seed|reload <nick> (sticks), !!untrust add|del|seed <nick>, '
-            + '!!whitelist add|remove <nick> (this run only), '
-            + '!!announce <msg>.');
+        // Help by ROLE, and shorter for it.
+        //
+        // One blob listed every moderator command to everybody, so a newcomer
+        // asking what the bot does got thirty commands they cannot run, and
+        // the four they can were buried in the middle. IRC truncates a long
+        // line silently at ~512 bytes too, so the tail was being lost.
+        case 'help': {
+            reply('\x02Everyone\x02: !!seen <nick> · !!info [nick] · !!rules · !!status · '
+                + '!!8ball <q> · !!ship <a> <b> · !!hug|!!pat|!!slap <nick> · !!fortune · !!vibe');
+            if (isTrusted(nick) || admin) {
+                reply('\x02Trusted regulars\x02: say \x02shazam\x02 and I remove whoever is '
+                    + 'attacking you — no ops needed, no name to type.');
+            }
+            if (!admin) {
+                reply('Games live in the game room; the standbys answer $$help and Luna1 '
+                    + 'answers $help. Ask an operator if you need something here.');
+                break;
+            }
+            reply('\x02Mods — the room\x02: !!moderate on|off · !!active on|off (AI; off = cool) · '
+                + '!!door on|off|sync (invite-only) · !!letin <nick> · !!autovoice on|off · '
+                + '!!history on|off · !!fun on|off · !!announce <msg>');
+            reply('\x02Mods — people\x02: !!trust add|del|seed <nick> · !!untrust add|del|seed <nick> · '
+                + '!!unwarn <nick> · !!protect add|remove <nick> · !!hardban <nick> · '
+                + '!!autoban add|remove|list <mask> · !!mass kick|ban|voice|devoice');
+            reply('\x02Mods — the bot\x02: !!join|!!part #room · !!rooms · !!access · !!aicheck · '
+                + '!!recruit on|off|now · !!badword add|remove <w> · !!strict on|off · '
+                + '!!linkfilter on|off · !!raidguard on|off · !!sentient on|off');
             break;
+        }
         case 'seen': {
             if (!target) { reply( 'Usage: !!seen <nick>'); break; }
             const st = seenUsers[target.toLowerCase()];
@@ -4443,15 +4469,34 @@ function handleLine(line) {
         // and every other way of announcing themselves would have spent it.
         const realname = params.slice(7).join(' ').replace(/^:\d+\s*/, '').trim();
         const mark = (process.env.CHORUS_MARK || '').trim();
-        if (mark && realname && realname === mark) {
-            const who = params[5];
+        const who = params[5];
+        const isOurs = mark && realname && realname === mark;
+        // A TRUSTED regular seen in any room we sit in is invited to the ones
+        // they are missing from.
+        //
+        // The open room is the foyer: somebody locked out of #batcave goes
+        // there and gets brought across. The owner has already told a regular
+        // exactly that — "go to the emoji room, dracula will invite u" — and
+        // until now only the scenery was invited, so he would have waited
+        // forever in a room being told to be patient.
+        //
+        // Trust by NICK is weaker than trust by account: an impostor wearing a
+        // regular's unregistered nick gets carried in too. They arrive with no
+        // ops and no voice, into every other defence, which is the same
+        // exposure the trust list already carries — this does not add to it.
+        const worthCarrying = isOurs || isTrusted(who) || isAdmin(who) || isOwner(who);
+        if (worthCarrying) {
             for (const c of config.channels) {
                 const inIt = [...(members.get(chanKey(c)) || new Set())]
                     .some((m) => m.toLowerCase() === who.toLowerCase());
-                if (!inIt) {
-                    send(`INVITE ${who} ${c}`);
-                    log('INFO', `Invited our own ${who} into ${c} (seen by realname).`);
-                }
+                if (inIt) continue;
+                if (!opped.has(chanKey(c))) continue;
+                if (isForfeited(who)) continue;            // denied is denied
+                if (invitedRecently(who, c)) continue;
+                send(`INVITE ${who} ${c}`);
+                log('INFO', `Invited ${who} into ${c} (${isOurs ? 'ours, by realname' : 'trusted'}).`);
+                notice(who, `\x0306[DOOR]\x03 ${c} is invite-only; you are on the trust list, `
+                    + 'so I have let you in. Join whenever you like.');
             }
         }
     }
