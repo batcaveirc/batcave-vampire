@@ -43,8 +43,13 @@ function run(carryPeople, done) {
                     send(`:srv 366 D ${ch} :end`);
                     send(`:srv MODE ${ch} +o D`);
                 }
+                // BOTH rooms are OPEN in this fixture now. That is the state
+                // the owner's room was actually in, and it silently stopped
+                // the scenery being invited anywhere: an open room needs no
+                // invitation for a person, but the scenery only ever MOVES on
+                // one, so "no lock" meant "never called across".
                 const m = l.match(/^MODE (\S+)\s*$/);
-                if (m) send(m[1] === LOCKED ? `:srv 324 D ${m[1]} +int` : `:srv 324 D ${m[1]} +nt`);
+                if (m) send(`:srv 324 D ${m[1]} +nt`);
                 const w = l.match(/^WHO (\S+)/);
                 if (w && w[1] === OPEN) {
                     send(`:srv 354 D ${OPEN} u host johnny johnnyacct :a person`);
@@ -94,13 +99,15 @@ function run(carryPeople, done) {
 console.log('— opted in (CARRY_PEOPLE=on) —');
 run('on', (r) => {
     c('it swept more than once', r.sweeps >= 2, `only ${r.sweeps} WHO — a repeat could not show up`);
-    c('a locked-out regular IS carried in', r.toLocked.some((l) => /johnny/i.test(l)),
-      r.invites.join(' | ') || '(no invite at all)');
+    c('our own bots are carried in even when the room is OPEN',
+      r.toLocked.some((l) => /carmilla/i.test(l)) && r.toLocked.some((l) => /zain22/i.test(l)),
+      r.invites.join(' | ') || '(nothing invited — they only move on an invitation)');
     c('exactly once, however many sweeps run',
-      r.toLocked.filter((l) => /johnny/i.test(l)).length === 1,
-      `${r.toLocked.filter((l) => /johnny/i.test(l)).length} invites across ${r.sweeps} sweeps`);
-    c('and NEVER into the open room', r.toOpen.length === 0,
-      r.toOpen.join(' | ') + ' — an open door needs no invitation');
+      r.toLocked.filter((l) => /carmilla/i.test(l)).length === 1,
+      `${r.toLocked.filter((l) => /carmilla/i.test(l)).length} invites across ${r.sweeps} sweeps`);
+    c('and a PERSON is still never invited to an open room',
+      !r.toOpen.some((l) => /johnny/i.test(l)),
+      r.toOpen.join(' | ') + ' — they can simply walk in');
     c('it asked what the door state was', r.askedModes,
       'without this it cannot tell a locked room from an open one');
     // The fault the owner read straight off the room list: Carmilla and

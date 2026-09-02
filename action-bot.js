@@ -343,7 +343,14 @@ function carryIn(who, realname) {
             .some((m) => m.toLowerCase() === who.toLowerCase());
         if (inIt) continue;
         if (!opped.has(chanKey(c))) continue;              // cannot invite without ops
-        if (!isInviteOnly(c)) continue;                    // an open room needs no invitation
+        // An open room needs no invitation — for a PERSON, who can simply
+        // walk in. Our own scenery cannot: it joins one room and then only
+        // ever moves on an invitation, because its nicks rotate and nothing
+        // else can address it. Gating this on +i meant that the moment the
+        // door was opened, the decorative bots stopped being invited and sat
+        // in the foyer indefinitely — the invitation is their signal to come,
+        // not a key to a lock.
+        if (!isOurs && !isInviteOnly(c)) continue;
         if (alreadyInvited(who, c)) continue;
         send(`INVITE ${who} ${c}`);
         log('INFO', `Invited ${who} into ${c} (${isOurs ? 'ours, by realname' : 'trusted'}).`);
