@@ -5,7 +5,18 @@ on:
     branches: [ main ]
   schedule:
     # Every 5 minutes: if the previous run has ended, start a fresh one.
-    - cron: '*/5 * * * *'
+    # Every 30 minutes, not every 5.
+    #
+    # The jobs last 350 minutes, so the cron only has to notice that one ENDED
+    # — checking six times an hour to catch an event that happens every six
+    # hours produced 37 run records a day, nearly all of them cancelled the
+    # moment they were created. That churn is the visible part of "this
+    # repository is hosting a service", and the account running the standby
+    # fleet was suspended for exactly that pattern at six times this volume.
+    #
+    # The cost is a restart gap of up to 30 minutes if a bot dies early. That
+    # is the right trade against losing the account entirely.
+    - cron: '*/30 * * * *'
   workflow_dispatch: {}
 
 # One instance at a time. cancel-in-progress:false means the 5-minute cron
