@@ -582,7 +582,9 @@ const game = new FindIt(bot);
 const handshake = new Handshake({
     secret: process.env.PEER_SECRET || '',
     prevSecret: process.env.PEER_SECRET_PREV || '',
-    peers: (process.env.PEER_BOTS || 'Carmilla,Drusilla,Katerina').split(',').map((x) => x.trim()).filter(Boolean),
+    // MUST match the standby matrix. It said Drusilla, who was replaced by
+    // Bankai in c6e0653, so the bot moderated its own game dealer.
+    peers: (process.env.PEER_BOTS || 'Carmilla,Bankai,Katerina').split(',').map((x) => x.trim()).filter(Boolean),
 });
 // Let a peer through our own CALLERID, but only once we can SEE them: an
 // ACCEPT for a nick that is not online does not stick. Doing it at
@@ -811,6 +813,20 @@ function isExempt(nick, chan) {
     // later, in front of the room. A bot policing another bot is nobody's idea
     // of moderation, and the standby cannot argue back.
     if (handshake.isCandidate(n)) return true;
+    // OUR OWN FLEET — the standbys by name, the scenery by the realname it
+    // wears. This is a second list of the same bots, and it drifted exactly as
+    // the first one did:
+    //
+    //   <Dracula> [MOD] Bankai removed — flooding — unregistered guests get
+    //             no warnings. They can rejoin. 🦇
+    //   <Lucifer> Khud kick hogya
+    //
+    // Bankai deals UNO hands in bursts, is unregistered by design, and
+    // PEER_BOTS still named Drusilla — replaced by Bankai weeks ago — so the
+    // bot was moderating its own game dealer in front of the room. FLEET is
+    // the list the workflow actually passes and the one carryIn already uses,
+    // so exempting through it cannot drift away from the matrix again.
+    if (isOneOfOurs(nick)) return true;
     // Whitelisted regulars are outside automated moderation entirely — owner's
     // call, 2026-08-22. They previously got a warning quota so that genuine
     // abuse from a trusted account was still caught; the trade now is that a

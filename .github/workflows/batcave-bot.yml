@@ -128,7 +128,9 @@ jobs:
           # trust the NAME alone — the nick is unregistered and anyone can
           # take it. No secret set means no recognition at all.
           PEER_SECRET: ${{ secrets.PEER_SECRET }}
-          PEER_BOTS: ${{ secrets.PEER_BOTS || 'Carmilla,Drusilla,Katerina' }}
+          # MUST match the standby matrix in the renfield repo. Drusilla was
+          # replaced by Bankai; leaving her here moderated our own bots.
+          PEER_BOTS: ${{ secrets.PEER_BOTS || 'Carmilla,Bankai,Katerina' }}
           WATCH: ${{ secrets.WATCH || 'on' }}
           GUARDIAN: ${{ secrets.GUARDIAN || 'on' }}
           GUARDIAN_MINUTES: ${{ secrets.GUARDIAN_MINUTES || '10' }}
