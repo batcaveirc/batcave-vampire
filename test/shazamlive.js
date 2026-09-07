@@ -81,5 +81,10 @@ server.listen(0, '127.0.0.1', () => {
         server.close();
         console.log(fails ? `\n${fails} FAILED` : '\nALL PASS');
         process.exit(fails ? 1 : 0);
-    }, 9000);
+        // 9000 was right at five lines a second. The bot now paces at two —
+        // five got it killed by the server for flooding — so a scenario that
+        // drives four separate people through a WHOIS-and-answer path needs
+        // longer. Verified as timing, not behaviour: every assertion here
+        // passes unchanged with a longer window.
+    }, 18000);
 });

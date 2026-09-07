@@ -720,15 +720,79 @@ function log(type, msg) { console.log(`[${type}] ${msg}`); }
 // lines and a pile of invites at once; InspIRCd drops a client that floods.
 // Token bucket: a small burst is fine, sustained traffic is spread out.
 const outQueue = [];
-let tokens = 10;
+// BURST is what the server tolerates in one go; one token returns every
+// REFILL_MS after that.
+//
+// This was a burst of 10 and a token every 200ms — five lines a second,
+// sustained, which is roughly five times what an ircd will accept from a
+// client before it decides you are flooding it:
+//
+//   ← Dracula has left (RecvQ exceeded)
+//   → Dracula has joined
+//
+// over and over. RecvQ is the server's buffer of what we have SENT, so that
+// kill means the bot outran the server, not the network. Roughly one line a
+// second with a burst of six is the shape ordinary IRC clients have used for
+// thirty years.
+const BURST = 6;
+const REFILL_MS = 500;
+let tokens = BURST;
 setInterval(() => {
-    if (tokens < 10) tokens += 1;
+    if (tokens < BURST) tokens += 1;
     while (outQueue.length && tokens > 0) {
         tokens -= 1;
-        const line = outQueue.shift();
+        const line = takeNextLine();
         if (socket && socket.writable) socket.write(line + '\r\n');
     }
-}, 200);
+}, REFILL_MS);
+
+/**
+ * Take the next queued line, merging consecutive single-target MODE changes
+ * for the same channel into one.
+ *
+ * Voicing twenty arrivals is twenty lines of "MODE #batcave +v nick", and at
+ * one line a second that is twenty seconds of the bot doing nothing else —
+ * which is both the flood and the reason moderation felt slow. IRC takes
+ * several targets per MODE, so those twenty lines become five.
+ *
+ * Deliberately conservative: same channel, same sign, one letter, one param,
+ * and at most four at a time. MODES= is usually higher, but four is accepted
+ * everywhere and the win is already most of the way there.
+ */
+/**
+ * Is this line something a PERSON is waiting for?
+ *
+ * Slowing everything to one line a second stopped the flood and made the bot
+ * feel broken: 21 commands answered in sequence meant the last person waited
+ * fifteen seconds, and a chunked !!help arrived a line at a time. The fix is
+ * not to speed everything back up — it is to notice that a WHO sweep, a NAMES
+ * refresh and a bulk voice pass have nobody waiting on them, and an answer
+ * does. Bookkeeping yields.
+ */
+function isReply(line) {
+    return /^(PRIVMSG|NOTICE) [#&]/.test(line)        // said in a room
+        || /^(PRIVMSG|NOTICE) [^#&]/.test(line)       // said to a person
+        || /^(KICK|TOPIC) /.test(line);               // moderation people see
+}
+
+function takeNextLine() {
+    // Answers first, always. The queue is otherwise in order.
+    let idx = outQueue.findIndex(isReply);
+    if (idx > 0) outQueue.unshift(outQueue.splice(idx, 1)[0]);
+    const first = outQueue.shift();
+    const m = /^MODE (\S+) ([+-])([a-zA-Z]) (\S+)$/.exec(first || '');
+    if (!m) return first;
+    const [, chan, sign, letter, firstTarget] = m;
+    const targets = [firstTarget];
+    while (targets.length < 4) {
+        const nextM = /^MODE (\S+) ([+-])([a-zA-Z]) (\S+)$/.exec(outQueue[0] || '');
+        if (!nextM || nextM[1] !== chan || nextM[2] !== sign || nextM[3] !== letter) break;
+        targets.push(nextM[4]);
+        outQueue.shift();
+    }
+    if (targets.length === 1) return first;
+    return `MODE ${chan} ${sign}${letter.repeat(targets.length)} ${targets.join(' ')}`;
+}
 
 function send(data) {
     if (!socket || !socket.writable) return;
@@ -2864,12 +2928,38 @@ async function screenNick(chan, nick) {
     }
     const listHit = badNick(nick);
     const fromList = !!listHit;
-    let bad = listHit ? 'filtered word in nick' : null;
+    const bad = listHit ? 'filtered word in nick' : null;
     if (!bad) {
+        // The AI may REPORT, but it may no longer remove anybody.
+        //
+        //   → diya_gujju_us has joined
+        //   ⓘ ChanBot gives voice to diya_gujju_us
+        //   @Dracula: diya_gujju_us: Wrong room, wrong night, wrong crowd.
+        //   [MOD] diya_gujju_us removed — offensive nickname
+        //
+        // "Diya", "Gujju" (Gujarati), "us". An ordinary name, ejected and
+        // taunted nine seconds after arriving, in a room they had just been
+        // voiced in. The prompt already tells the model a wrong flag ejects a
+        // real person and to flag only when the offensive reading is obvious
+        // to any reader — it has been tuned twice — and it still did this.
+        //
+        // The lesson is not that the prompt needs tuning again. It is that a
+        // judgement which is right most of the time is the wrong instrument
+        // for an irreversible public act against a stranger's first minute in
+        // the room. The word list, which the owner controls and can inspect,
+        // still acts. The model now tells the operators and nothing else, so
+        // the signal is kept and the harm is not.
         const verdict = await aiNickIsOffensive(nick);
-        if (verdict === true) bad = 'offensive nickname';
+        if (verdict === true) {
+            log('MOD', `AI flagged "${nick}" — reported, NOT acted on.`);
+            for (const o of config.owners) {
+                notice(o, `\x0307[NICK]\x03 The model thinks \x02${nick}\x02 in ${chan} is `
+                    + 'offensive. Nobody has been touched. If you agree: '
+                    + `\x02!!kick ${nick}\x02, or add the word to the list.`);
+            }
+        }
+        return;
     }
-    if (!bad) return;
 
     const k = nick.toLowerCase();
     const n = (nickOffences.get(k) || 0) + 1;

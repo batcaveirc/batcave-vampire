@@ -69,7 +69,17 @@ const callerFor = (cmd) => (FUN.has(cmd) ? `Tester${++testerN}` : 'Vikram');
     for (const cmd of advertised) {
       out.length=0;
       say(room, callerFor(cmd), `!!${cmd}${ARG[cmd] ? ' ' + ARG[cmd] : ''}`);
-      await wait(600);
+      // 600ms was right when the bot sent five lines a second. It now sends
+      // two, deliberately — five got it killed by the server for flooding
+      // ("RecvQ exceeded", over and over, in front of the room). A command
+      // whose answer is more than one line needs more than 600ms, and firing
+      // thirty of them 600ms apart built a backlog that made the LAST ones
+      // look dead when they were simply still queued.
+      //
+      // This is the rate changing on purpose, not the bot getting slower: a
+      // real room does not issue thirty commands in eighteen seconds, and
+      // answers now jump ahead of sweeps so a person waits less than before.
+      await wait(1200);
       if (!out.some(l=>/^(NOTICE \S+|PRIVMSG #|MODE |TOPIC )/.test(l))) dead.push(cmd);
     }
     c(`all ${advertised.length} answer in ${room}`, dead.length === 0,

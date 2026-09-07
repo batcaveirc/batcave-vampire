@@ -70,7 +70,11 @@ srv.listen(0,'127.0.0.1', async () => {
   await wait(1200);
   c('!!untrust still exists', notices().some(l=>/soul is untrusted/.test(l)), notices().join(' | '));
   out.length=0; say('boss','!!untrust');
-  await wait(1200);
+  // 1200 was right at five lines a second; the bot now paces at two, because
+  // five got it killed for flooding. A !!untrust here is a ChanServ round trip
+  // AND a listing read back from the trust channel — several lines, and the
+  // window was sized for none of that. Verified as timing, not behaviour.
+  await wait(3600);
   // Asserts the INTENT, not a count. The listing now reads from the trust
   // channel's deny entries rather than the runtime set, so the number depends
   // on what the channel already holds — which is the point of storing it there.

@@ -36,14 +36,20 @@ srv.listen(0,'127.0.0.1', async() => {
  check('never sets +m on its own',
        !out.some(l=>/^MODE #batcave \+m$/.test(l)),
        'a room going silent must be a human decision: ' + out.filter(l=>/^MODE #batcave/.test(l)).join(' | '));
+ // Matches the merged form too. Consecutive mode changes are now coalesced —
+ // "MODE #batcave +vv vikram joker" instead of two lines — because voicing a
+ // room one line at a time is both slower and part of what got the bot killed
+ // for flooding. What matters is that joker ENDS UP voiced, not how many lines
+ // it took, and asserting the line shape was asserting the implementation.
  check('voices everyone present in a moderated room',
-       sent(/^MODE #batcave \+v joker$/), out.filter(l=>/\+v/.test(l)).join(' | '));
+       sent(/^MODE #batcave \+v+ (\S+ )*joker(\s|$)/),
+       out.filter(l=>/\+v/.test(l)).join(' | '));
 
  // a newcomer must be able to speak straight away, or +m locks them out
  out.length=0;
  sock.write(':newbie!n@1.1.1.1 JOIN #batcave * :real\r\n');
  await wait(1200);
- check('voices a newcomer on arrival', sent(/^MODE #batcave \+v newbie$/),
+ check('voices a newcomer on arrival', sent(/^MODE #batcave \+v+ (\S+ )*newbie(\s|$)/),
        'without this, +m means a newcomer joins into silence');
 
  // first offence: devoiced, NOT kicked
