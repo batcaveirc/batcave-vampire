@@ -554,6 +554,18 @@ const protectMasks = new Set(list(process.env.PROTECT_MASKS));
 // Off by default. KICK_PROTECT=on brings it back if it is ever wanted again;
 // the machinery is untouched, just unreachable.
 const KICK_PROTECT = /^(1|true|yes|on)$/i.test(process.env.KICK_PROTECT || '');
+
+// Protecting OUR OWN BOTS is a different question, and the answer is yes.
+//
+// A moderator's decision about a PERSON stands — that is KICK_PROTECT, off.
+// But the fleet is not a person: kicking Luna or a standby does not settle an
+// argument, it just removes moderation from the room, and the bot cannot ask
+// to come back. Anybody with @ can do it, deliberately or by mistake, and
+// nothing would notice.
+//
+// So: if one of ours is kicked or banned by anybody other than an owner, the
+// ban comes off and it comes back. On by default; FLEET_PROTECT=off disables.
+const FLEET_PROTECT = !/^(0|off|false|no)$/i.test(process.env.FLEET_PROTECT || 'on');
 // Trust that follows the HOST, not the nick. A regular who arrives as "libu"
 // one day and "flood" the next needs one entry, not one per nick — and a nick
 // list can never keep up with someone who changes theirs.
@@ -4682,6 +4694,33 @@ function handleLine(line) {
             // Once, deliberately. Reverting in a loop against a determined op
             // is a mode war that fills the room with noise and ends when one
             // side is deopped anyway.
+            // A ban that would keep one of OUR BOTS out.
+            //
+            // Rescuing from a kick is useless while the ban stands — the bot
+            // is re-invited and refused at the door, which is exactly what
+            // "Cannot join channel (you're banned)" looked like when the owner
+            // tested it on himself. The ban has to come off first.
+            //
+            // Only OUR fleet, only bans set by somebody who is not an owner,
+            // and only in rooms we hold. A ban on a PERSON is left alone —
+            // that is a moderator's decision and it stands.
+            if (ch === 'b' && adding && FLEET_PROTECT && nick && !isOwner(nick)
+                && nick.toLowerCase() !== currentNick.toLowerCase()
+                && !/serv$|^chanbot$/i.test(nick)) {
+                const mask = targets[ti] || '';
+                const hitsOurs = [...FLEET, currentNick.toLowerCase()].some((b) => {
+                    const uh = hostOf.get(b) || '*@*';
+                    try { return globToRe(mask).test(`${b}!${uh}`); } catch (e) { return false; }
+                });
+                if (mask && hitsOurs) {
+                    send(`MODE ${tgt} -b ${mask}`);
+                    log('MOD', `${nick} banned ${mask} which covers our own bots — removed.`);
+                    for (const o of config.owners) {
+                        notice(o, `\x0304[FLEET]\x03 ${nick} set +b ${mask} in ${tgt}, `
+                            + 'which would have locked out our own bots. Ban removed.');
+                    }
+                }
+            }
             if ('ikmlR'.includes(ch) && adding && nick
                 && !isTrusted(nick) && !isAdmin(nick) && !isOwner(nick)
                 && nick.toLowerCase() !== currentNick.toLowerCase()
@@ -5121,7 +5160,9 @@ function handleLine(line) {
             opped.delete(chanKey(tgt));
             setTimeout(() => send(`JOIN ${tgt}`), 3000);
         } else if (ready && nick && nick.toLowerCase() !== currentNick.toLowerCase()
-                   && isProtectedFromKick(victim)) {
+                   && !isOwner(nick)
+                   && (isProtectedFromKick(victim)
+                       || (FLEET_PROTECT && isOneOfOurs(victim)))) {
             // Someone else kicked a protected user. (Our own kicks are excluded
             // above, or we would undo our own moderation.)
             rescueFromKick(tgt, victim, nick, params.slice(2).join(' ').replace(/^:/, ''));

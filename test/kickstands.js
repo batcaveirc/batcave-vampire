@@ -36,8 +36,19 @@ c('so nobody is protected, whitelisted or not',
 console.log('— the rescue is unreachable, not deleted —');
 c('rescueFromKick still exists', /function rescueFromKick/.test(src),
   'keep the machinery so turning it back on is one secret');
-c('but it is only ever called behind the check',
-  /isProtectedFromKick\(victim\)\) \{\s*\n[\s\S]{0,200}rescueFromKick\(/.test(src));
+// Asserts the PROPERTY, not the line shape: the rescue only ever runs inside
+// a branch guarded by a protection check. The condition became multi-line when
+// FLEET_PROTECT was added, and pinning the old single-line form failed for a
+// reason that had nothing to do with whether the rescue was still gated.
+const kickBlock = src.slice(src.indexOf("command === 'KICK'"),
+                            src.indexOf("command === 'KICK'") + 900);
+c('but it is only ever called behind a protection check',
+  /isProtectedFromKick\(victim\)/.test(kickBlock)
+    && kickBlock.indexOf('isProtectedFromKick(victim)') < kickBlock.indexOf('rescueFromKick('),
+  'the guard must come before the call, not after it');
+c('and a PERSON is still only rescued when KICK_PROTECT is on',
+  /if \(!KICK_PROTECT\) return false;/.test(src),
+  'fleet protection must not quietly restore protection for people');
 
 console.log('— it says so when asked —');
 const cmd = src.slice(src.indexOf("case 'protect':"), src.indexOf("case 'protect':") + 1600);
