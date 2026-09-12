@@ -182,6 +182,10 @@ jobs:
           # Hosts protected from other moderators' kicks (the whitelist is
           # protected automatically). Comma-separated globs.
           PROTECT_MASKS: ${{ secrets.PROTECT_MASKS }}
+          # Undoing another moderator's kick. OFF: a ban by a mod stands, and
+          # nobody is invited back or unbanned. Set the secret to "on" only if
+          # that is genuinely wanted again.
+          KICK_PROTECT: ${{ secrets.KICK_PROTECT }}
           # Trust that follows the HOST: a regular who changes nick needs one
           # entry here, not one per nick in WHITELIST.
           TRUSTED_MASKS: ${{ secrets.TRUSTED_MASKS }}

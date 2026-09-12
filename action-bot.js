@@ -538,6 +538,22 @@ let connectTime = Date.now();
 // Hosts protected from being kicked by other moderators, independent of nick
 // (e.g. *!*@ku0.6ol.235.110.IP). The WHITELIST is protected automatically.
 const protectMasks = new Set(list(process.env.PROTECT_MASKS));
+// Undoing another moderator's kick is OFF.
+//
+//   ← Navs was kicked from #batcave by soul
+//   @Dracula: [MOD] Navs is protected — kicked by soul. Invited back and
+//             bans cleared. 🦇
+//   → Navs has joined
+//
+// A human moderator removed somebody and the bot put her straight back,
+// clearing the ban on the way. Whatever the reasoning was when this was
+// built, it means no moderator's decision sticks — and the owner's answer is
+// that a ban is a ban: "once they are banned by mod i dont want to invite
+// them back and they should stay banned".
+//
+// Off by default. KICK_PROTECT=on brings it back if it is ever wanted again;
+// the machinery is untouched, just unreachable.
+const KICK_PROTECT = /^(1|true|yes|on)$/i.test(process.env.KICK_PROTECT || '');
 // Trust that follows the HOST, not the nick. A regular who arrives as "libu"
 // one day and "flood" the next needs one entry, not one per nick — and a nick
 // list can never keep up with someone who changes theirs.
@@ -2251,6 +2267,7 @@ function requireOps(chan, what) {
 // Protected from OTHER moderators' kicks: the whitelist, plus any host mask in
 // PROTECT_MASKS (so protection survives a nick change).
 function isProtectedFromKick(nick) {
+    if (!KICK_PROTECT) return false;           // a kick stands, whoever it was
     const n = nick.toLowerCase();
     if (isTrusted(nick) || isAdmin(nick)) return true;
     const uh = hostOf.get(n);
@@ -3705,13 +3722,18 @@ function handleCommand(chan, nick, message) {
                 protectMasks.add(toMask(args[1]));
                 reply( `Protected from other mods' kicks: ${toMask(args[1])} (${protectMasks.size} masks + the whitelist).`);
             } else if (args[0] === 'remove' && args[1]) {
-                const m = protectMasks.has(args[1]) ? args[1] : toMask(args[1]);
-                protectMasks.delete(m);
-                reply( `Removed ${m} (${protectMasks.size} left).`);
+                const who = args[1];
+                const m = protectMasks.has(who) ? who : toMask(who);
+                const hadMask = protectMasks.delete(m);
+                reply(hadMask ? `Removed ${m} (${protectMasks.size} left).`
+                    : `${who} was not in the mask list — nothing to remove.`);
             } else {
-                reply( `Kick-protected: all ${whitelist.size} whitelisted users`
-                    + `${protectMasks.size ? ' + masks: ' + [...protectMasks].join(', ') : ''}. `
-                    + 'Use !!protect add|remove <nick|mask>.');
+                reply(KICK_PROTECT
+                    ? `Kick-protection is ON: all ${whitelist.size} whitelisted users`
+                      + `${protectMasks.size ? ' + masks: ' + [...protectMasks].join(', ') : ''}. `
+                      + 'Use !!protect add|remove <nick|mask>.'
+                    : 'Kick-protection is OFF — a kick by any moderator stands, and '
+                      + 'nobody is invited back or unbanned. Set KICK_PROTECT=on to change that.');
             }
             break;
         // A normal ban dies the moment they reconnect with a fresh cloak. This
