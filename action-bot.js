@@ -353,6 +353,7 @@ function carryIn(who, realname) {
         if (!isOurs && !isInviteOnly(c)) continue;
         if (alreadyInvited(who, c)) continue;
         send(`INVITE ${who} ${c}`);
+        vouchedFor.set(String(who).toLowerCase(), Date.now());
         log('INFO', `Invited ${who} into ${c} (${isOurs ? 'ours, by realname' : 'trusted'}).`);
         if (!isOurs) {
             notice(who, `\x0306[DOOR]\x03 ${c} is invite-only; you are on the trust list, `
@@ -488,6 +489,55 @@ const ignored = new Set();         // nick(lower) -> bot ignores them entirely
 const opped = new Set();           // channel(lower) we currently hold +o in
 const joinLog = new Map();         // channel(lower) -> [join timestamps] (raid detect)
 const lockedByRaid = new Set();    // channels auto-locked, so we can auto-unlock
+const lockedOut = new Map();       // channel(lower) -> times we have asked to be let in
+// Host tails that must be VOUCHED FOR, not banned.
+//
+// The owner asked to keep "4900.2401.IP" out after tracing an abuser there.
+// That tail is Reliance Jio, and this project already measured what banning it
+// would cost: nine cloaks across four idents, of which "king" and "deepak" are
+// whitelisted regulars, and Lucifer wears it too. A ban on the tail removes
+// several of the room's own people to stop one person.
+//
+// So the range is not banned — it is GUARDED. From a guarded tail you get in
+// by being one of three things: registered with services, already trusted, or
+// invited by us. An attacker can still register, but a registered account is
+// an identity that can be banned and stays banned, which a rotating cloak is
+// not.
+const guardedHosts = new Set(list(process.env.GUARDED_HOSTS));
+// nick(lower) -> when we or a trusted user invited them.
+const vouchedFor = new Map();
+
+/** Does this person's host sit in a range we are guarding? */
+function onGuardedHost(nick) {
+    if (!guardedHosts.size) return false;
+    const uh = hostOf.get(String(nick).toLowerCase());
+    if (!uh) return false;
+    const host = uh.split('@').pop();
+    for (const pat of guardedHosts) if (globToRe(pat).test(host)) return true;
+    return false;
+}
+
+/**
+ * Somebody arriving from a guarded range who is none of the three things.
+ *
+ * Answered with a kick and an explanation, never a ban: the point is to make
+ * them register, and a ban stops them doing the very thing being asked of
+ * them. Registering is a minute's work and it is the same bar the room
+ * already sets for the trust list.
+ */
+function guardArrival(chan, nick) {
+    if (!onGuardedHost(nick)) return false;
+    if (isTrusted(nick) || isAdmin(nick) || isOwner(nick) || isOneOfOurs(nick)) return false;
+    if (isRegistered(nick)) return false;
+    if (vouchedFor.has(String(nick).toLowerCase())) return false;
+    notice(nick, `\x0306[DOOR]\x03 ${chan} asks people on your network to be registered, `
+        + 'because it has been attacked from there. Register once and you are in for good: '
+        + '\x02/msg NickServ REGISTER <password> <email>\x02 — then rejoin. '
+        + 'Or ask a regular to invite you.');
+    kickUser(chan, nick, 'register with NickServ and come straight back — /msg NickServ REGISTER');
+    log('MOD', `${nick} arrived from a guarded range unregistered — asked to register.`);
+    return true;
+}
 // Arrivals we had to act on, per channel. A raid of abusers is not
 // characterised by VOLUME — this room was attacked by a steady drip that never
 // came close to the burst threshold — but by how many of the arrivals turn out
@@ -3617,6 +3667,9 @@ function handleCommand(chan, nick, message) {
             if (!admin) { reply('Access denied.'); break; }
             if (!target) { reply('Usage: !!letin <nick>'); break; }
             send(`INVITE ${target} ${chan}`);
+            // An operator letting somebody in vouches for them: they must not
+            // then be met at the door and asked to register.
+            vouchedFor.set(String(target).toLowerCase(), Date.now());
             notice(target, `\x0306[DOOR]\x03 ${nick} let you in. Join ${chan} when ready.`);
             say(chan, `\x0306[DOOR]\x03 ${nick} let \x02${target}\x02 in. 🦇`);
             log('MOD', `${nick} admitted ${target} to ${chan}.`);
@@ -4066,6 +4119,33 @@ function handleCommand(chan, nick, message) {
             } else if (args[0] === 'reload') {
                 trust.refresh();
                 reply(`Re-reading ${trust.channel}…`);
+            } else if (args[0] === 'export' || args[0] === 'backup') {
+                // Read the list BACK OUT, in a form you can paste back in.
+                //
+                // The owner asked where lost information can be refilled from,
+                // and the honest answer was nowhere. ChanServ holds the list,
+                // the WHITELIST secret is the only backup, and a secret is
+                // WRITE-ONLY — you cannot read it to see what it says, so you
+                // cannot tell whether it is still current. If the access list
+                // is ever lost, the fallback is a year-old guess.
+                const names = [...whitelist].sort();
+                const masks = [...(trust.masks || [])].sort();
+                const denied = [...untrust, ...(trust.deniedList ? trust.deniedList() : [])]
+                    .map((n) => String(n).toLowerCase()).sort();
+                const uniq = (a) => [...new Set(a)];
+                reply(`\x02TRUSTED\x02 (${uniq(names).length}) — paste into the WHITELIST secret:`);
+                for (const piece of chunk(uniq(names).join(','), 380)) reply(piece);
+                if (masks.length) {
+                    reply(`\x02BY MASK\x02 (${uniq(masks).length}) — TRUSTED_MASKS:`);
+                    for (const piece of chunk(uniq(masks).join(','), 380)) reply(piece);
+                }
+                if (denied.length) {
+                    reply(`\x02DENIED\x02 (${uniq(denied).length}) — UNTRUST:`);
+                    for (const piece of chunk(uniq(denied).join(','), 380)) reply(piece);
+                }
+                reply(`Source: ${trust.enabled ? `${trust.channel} via ChanServ` : 'the WHITELIST secret only'}.`
+                    + ' Keep a copy somewhere you can READ — this is the only place it lives.');
+                log('MOD', `${nick} exported the trust list (${uniq(names).length} names).`);
             } else if (args[0] === 'seed') {
                 // The migration step. Without it, moving to a trust channel
                 // means every regular loses their standing until somebody adds
@@ -4536,6 +4616,26 @@ function handleLine(line) {
                 // A slow full re-read anyway, so a missed COUNT cannot leave
                 // us wrong forever.
                 setInterval(() => trust.refresh(), 60 * 60000).unref?.();
+                // A rolling backup nobody has to remember to take.
+                //
+                // The whole list, printed to the RUN LOG every hour. GitHub
+                // keeps those logs, so `gh run view --log | grep TRUSTBACKUP`
+                // recovers the roster from any run in the retention window —
+                // which is the difference between "ChanServ lost it" being an
+                // inconvenience and being the end of the whitelist.
+                //
+                // The log, deliberately, and not the room: posting the list of
+                // names worth impersonating into a channel is the exact
+                // exposure the trust channel exists to avoid.
+                const backup = () => {
+                    const names = [...new Set([...whitelist])].sort();
+                    if (!names.length) return;
+                    log('TRUSTBACKUP', `${names.length} trusted: ${names.join(',')}`);
+                    const m = [...new Set([...(trust.masks || [])])].sort();
+                    if (m.length) log('TRUSTBACKUP', `${m.length} masks: ${m.join(',')}`);
+                };
+                setTimeout(backup, 90000);
+                setInterval(backup, 60 * 60000).unref?.();
             }
             // Not immediately: registration queues joins, WHO, NAMES, mode
             // sets and the quiet-list request through a 5-lines/second
@@ -4661,6 +4761,41 @@ function handleLine(line) {
 
     // 482 = we tried an op-only action without ops. Drop the stale ops flag so
     // requireOps() stops lying, and ask ChanServ to fix it.
+    // Locked out of one of OUR OWN rooms.
+    //
+    // The owner hit this live: the room went invite-only and Dracula could not
+    // get back in after a restart. It holds ChanServ flags for that channel —
+    // it can simply ASK — but it never did, so a bot with every privilege
+    // needed sat outside a room it moderates, waiting for a human to notice.
+    //
+    //   473  invite only        -> ChanServ INVITE
+    //   474  banned             -> ChanServ UNBAN (clears bans matching us)
+    //   475  key set            -> nothing we can do; say so
+    //
+    // Once per channel per attempt, with a retry after. Asking in a loop when
+    // ChanServ is going to refuse is a flood, not persistence.
+    if (['473', '474', '475'].includes(command) && params[1] && isOurChannel(params[1])) {
+        const chan = params[1];
+        const key = chanKey(chan);
+        const tried = (lockedOut.get(key) || 0) + 1;
+        lockedOut.set(key, tried);
+        if (tried > 3) {
+            if (tried === 4) {
+                log('ERR', `Locked out of ${chan} (${command}) after three attempts — giving up.`);
+                for (const o of config.owners) {
+                    notice(o, `\x0304[LOCKED OUT]\x03 I cannot get into ${chan} (${command}) `
+                        + 'and ChanServ will not let me in. A human needs to invite me.');
+                }
+            }
+            return;
+        }
+        if (command === '473') send(`PRIVMSG ChanServ :INVITE ${chan}`);
+        else if (command === '474') send(`PRIVMSG ChanServ :UNBAN ${chan}`);
+        else log('ERR', `${chan} has a key set — I cannot join without it.`);
+        log('WARN', `Locked out of ${chan} (${command}) — asked ChanServ (attempt ${tried}).`);
+        setTimeout(() => { if (!members.has(key)) send(`JOIN ${chan}`); }, 4000);
+        return;
+    }
     if (command === '482') {
         const c = params[1] || '';
         opped.delete(chanKey(c));
@@ -5079,6 +5214,20 @@ function handleLine(line) {
                 log('INFO', `Challenged ${nick} in ${c}.`);
             }
             return;                      // never nick-screen a peer under test
+        }
+
+        // The guarded-range door, checked on a DELAY.
+        //
+        // The account arrives AFTER the join on this network — extended-join
+        // carries it, but a client that does not send it means we only learn
+        // the account from the WHO sweep seconds later. Judging instantly
+        // would kick registered people for not having been asked yet.
+        if (ready && !moderationOff(c) && guardedHosts.size) {
+            setTimeout(() => {
+                const stillHere = [...(members.get(chanKey(c)) || new Set())]
+                    .some((m) => m.toLowerCase() === nick.toLowerCase());
+                if (stillHere) guardArrival(c, nick);
+            }, 6000);
         }
 
         if (ready && strictNicks && !moderationOff(c)) { screenNick(c, nick); }

@@ -182,6 +182,12 @@ jobs:
           # Hosts protected from other moderators' kicks (the whitelist is
           # protected automatically). Comma-separated globs.
           PROTECT_MASKS: ${{ secrets.PROTECT_MASKS }}
+          # Host tails that must be VOUCHED FOR — registered, trusted, or
+          # invited — rather than banned. Empty by default: "4900.2401.IP" is
+          # Reliance Jio, and this room's own king, deepak and Lucifer wear it,
+          # so banning the tail would remove regulars to stop one attacker.
+          # Set it deliberately, knowing that cost.
+          GUARDED_HOSTS: ${{ secrets.GUARDED_HOSTS }}
           # Undoing another moderator's kick of a PERSON. OFF: a ban by a mod
           # stands, and nobody is invited back or unbanned.
           KICK_PROTECT: ${{ secrets.KICK_PROTECT }}
