@@ -40,8 +40,13 @@ c('rescueFromKick still exists', /function rescueFromKick/.test(src),
 // a branch guarded by a protection check. The condition became multi-line when
 // FLEET_PROTECT was added, and pinning the old single-line form failed for a
 // reason that had nothing to do with whether the rescue was still gated.
-const kickBlock = src.slice(src.indexOf("command === 'KICK'"),
-                            src.indexOf("command === 'KICK'") + 900);
+// ...and the WINDOW is the handler's own extent, not a byte count. The comment
+// above was already right about not pinning the line shape, while the slice
+// below still pinned a magic 900 characters — so adding a comment inside the
+// handler failed this for a reason unrelated to whether the rescue is gated.
+const kickFrom = src.indexOf("command === 'KICK'");
+const kickTo = src.indexOf("if (command === '", kickFrom + 20);
+const kickBlock = src.slice(kickFrom, kickTo > kickFrom ? kickTo : kickFrom + 2500);
 c('but it is only ever called behind a protection check',
   /isProtectedFromKick\(victim\)/.test(kickBlock)
     && kickBlock.indexOf('isProtectedFromKick(victim)') < kickBlock.indexOf('rescueFromKick('),

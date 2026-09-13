@@ -86,12 +86,19 @@ server.listen(0, '127.0.0.1', () => {
     setTimeout(() => {
         const all = sent.join('\n');
         const kicked = (who) => new RegExp(`^KICK ${CHAN} ${who}\\b`, 'im').test(all);
-        c('the unregistered abuser is stopped at the door', kicked('samosa'),
-          sent.filter((l) => /^KICK/.test(l)).join(' | ') || '(nothing)');
-        c('and told how to get in, not just removed',
-          /NOTICE samosa .*REGISTER/i.test(all),
-          sent.filter((l) => /NOTICE samosa/.test(l)).join(' | ') || '(no explanation)');
-        c('removed with a KICK, never a ban',
+        c('the unregistered arrival is NOT kicked', !kicked('samosa'),
+          sent.filter((l) => /^KICK/.test(l)).join(' | ')
+            + ' — a kick reads as punishment for arriving, and cannot be undone by a mod');
+        c('they are left without voice instead',
+          !/^MODE #batcave \+v samosa\b/im.test(all),
+          sent.filter((l) => /MODE #batcave [+-]v samosa/i.test(l)).join(' | '));
+        c('and nothing is said in the room about them',
+          !/^PRIVMSG #batcave [^\n]*samosa/im.test(all),
+          sent.filter((l) => /^PRIVMSG #batcave/.test(l)).join(' | '));
+        c('a moderator is told privately, with the reason and the fix',
+          /^NOTICE \S+ [^\n]*samosa[^\n]*\+v samosa/im.test(all.replace(/\x03\d{0,2}|[\x02\x0f]/g, '')),
+          sent.filter((l) => /^NOTICE/.test(l)).join(' | ') || '(nobody told)');
+        c('never a ban',
           !/MODE #batcave \+b [^\n]*samosa/i.test(all) && !/\+b \*!\*@\*\.4900/i.test(all),
           'a ban stops them doing the very thing being asked of them');
 

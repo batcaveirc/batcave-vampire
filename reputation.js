@@ -44,6 +44,11 @@ class Reputation {
         // And they must have actually TALKED here, not merely idled.
         this.minMessages = opts.minMessages == null ? 40 : opts.minMessages;
         this.maxStrikes = opts.maxStrikes == null ? 3 : opts.maxStrikes;
+        // The second door — see earnsByDays() below. How many SEPARATE days
+        // somebody has been heard on, and how old their account must be for
+        // those days to count.
+        this.minDaysSeen = opts.minDaysSeen == null ? 7 : opts.minDaysSeen;
+        this.minAccountDaysSeen = opts.minAccountDaysSeen == null ? 7 : opts.minAccountDaysSeen;
         this.said = new Map();        // nick -> messages seen this run
         this.offences = new Map();    // nick -> offences seen this run
     }
@@ -104,6 +109,42 @@ class Reputation {
         if (this.strikes(nick) > 0) return '';
         return `${Math.floor(days)} days registered as ${who.account}, `
             + `${this.messages(nick)} messages here, no warnings`;
+    }
+
+    /**
+     * Has this person earned trust by TURNING UP, rather than by talking a lot
+     * in one sitting?
+     *
+     * earns() above has never once promoted anybody, and not because it is
+     * wrong: it needs 40 messages, and it counts them in a Map created when
+     * this process starts and discarded when the host hands over every six
+     * hours. The owner described the people he wants trusted as the ones who
+     * "talk normally everyday" — exactly the pattern that can never accumulate.
+     * Fifteen lines a day for a fortnight scores fifteen, forever. One noisy
+     * afternoon scores forty and qualifies.
+     *
+     * So this door counts DAYS instead of lines, and the count comes from
+     * outside: Luna relays the room into Discord, Discord keeps it, and weeks of
+     * "who spoke on which day" is durable in a way nothing in this process is.
+     *
+     * The account floor is lower here (a week, not a month) because the evidence
+     * is stronger. A month-old account that said forty things this afternoon is
+     * one sitting; a week of separate days is a week of patience, which is the
+     * expensive thing to fake. Both doors still demand a registered account and
+     * a clean sheet — activity earns a LOOK, never the standing by itself.
+     *
+     * @param {{account:string, registeredAt:number, daysSeen:number}} who
+     */
+    earnsByDays(nick, who = {}) {
+        if (!who.account) return '';
+        if (!who.registeredAt) return '';
+        const seen = Number(who.daysSeen || 0);
+        if (!Number.isFinite(seen) || seen < this.minDaysSeen) return '';
+        const days = (Date.now() - who.registeredAt) / 86400000;
+        if (days < this.minAccountDaysSeen) return '';
+        if (this.strikes(nick) > 0) return '';
+        return `heard on ${seen} separate days, registered ${Math.floor(days)} `
+            + `days ago as ${who.account}, no warnings`;
     }
 
     /** Forget somebody entirely — used when a moderator settles it by hand. */

@@ -48,4 +48,31 @@ c('500 messages from a brand new account earns nothing',
   R.earns('raider', {account:'raider', registeredAt: Date.now() - 1*DAY}) === '',
   'the account age is the part that cannot be rushed');
 
+console.log('\n— the second door: turning up, not talking a lot —');
+// Why this exists: earns() above has never promoted anybody live, because it
+// needs 40 messages inside ONE six-hour process. The owner wants the people who
+// "talk normally everyday", and they are precisely the ones that cannot reach
+// it. This door counts separate DAYS, supplied from Luna's Discord history,
+// which is the only durable record of the room that exists.
+R = new Reputation({ minDaysSeen: 7, minAccountDaysSeen: 7 });
+const week = (n) => ({ account: 'aishwarya', registeredAt: Date.now() - n * DAY });
+c('a week of separate days earns it',
+  R.earnsByDays('Aishwarya', { ...week(8), daysSeen: 9 }) !== '',
+  R.earnsByDays('Aishwarya', { ...week(8), daysSeen: 9 }));
+c('and the reason SAYS it was days, so a mod can judge it',
+  /heard on 9 separate days/.test(R.earnsByDays('Aishwarya', { ...week(8), daysSeen: 9 })));
+c('two days is not a regular', R.earnsByDays('Aishwarya', { ...week(8), daysSeen: 2 }) === '');
+c('an UNREGISTERED nick earns nothing, however many days',
+  R.earnsByDays('ghost', { account: '', registeredAt: Date.now() - 90 * DAY, daysSeen: 60 }) === '',
+  'a nick nobody owns is trust handed to whoever takes it next');
+c('an account registered yesterday earns nothing',
+  R.earnsByDays('fresh', { account: 'fresh', registeredAt: Date.now() - 1 * DAY, daysSeen: 30 }) === '',
+  'claiming 30 active days on a one-day-old account is a forged report, not a regular');
+R.offended('Aishwarya');
+c('one warning this run disqualifies',
+  R.earnsByDays('Aishwarya', { ...week(8), daysSeen: 30 }) === '',
+  'somebody earning trust is not somebody the filter has had to speak to today');
+c('a nonsense day count earns nothing',
+  R.earnsByDays('odd', { account: 'odd', registeredAt: Date.now() - 90 * DAY, daysSeen: NaN }) === '');
+
 console.log(f?`\n${f} FAILED`:'\nALL PASS'); process.exit(f?1:0);

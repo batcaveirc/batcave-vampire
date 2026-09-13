@@ -13,6 +13,7 @@ const { Feuds, severityOf, aimedAt, isBanter, hasLaughter, isBenignHinglish } = 
 const { TrustList, effective } = require('./trust');
 const { pack } = require('./trustrelay');
 const { Reputation } = require('./reputation');
+const { Attendance, verifyReport } = require('./attendance');
 const { solicits } = require('./solicit');
 const { severeAbuse } = require('./abuse');
 
@@ -277,6 +278,22 @@ function syncInviteExceptions(chan, reply) {
 // The bot restarts every few hours, so a genuinely new offer still reaches
 // somebody who wants it later; it just stops arriving on a loop.
 const invitedThisRun = new Set();
+// Who was INVITED here, and by whom.
+//
+// The owner: "we can keep unknown uninvited users devoiced. as most users who
+// are abusers are uninvited and they start abusing."
+//
+// That is the useful distinction, and the room already generates it for free:
+// almost everybody who belongs here either registered a nick, was invited by a
+// regular, or was carried in by the recruiter. An arrival matching none of those
+// is not necessarily hostile — but it is the population every raid has come out
+// of, and voice is the one thing worth withholding until somebody looks.
+const invitedHere = new Map();     // nick(lower) -> {chan, by, at}
+function noteInvite(chan, who, by) {
+    if (!who) return;
+    invitedHere.set(String(who).toLowerCase(), { chan, by: by || 'us', at: Date.now() });
+}
+function wasInvited(who) { return invitedHere.has(String(who).toLowerCase()); }
 function alreadyInvited(who, chan) {
     const key = `${chanKey(chan)}|${String(who).toLowerCase()}`;
     if (invitedThisRun.has(key)) return true;
@@ -352,6 +369,7 @@ function carryIn(who, realname) {
         // not a key to a lock.
         if (!isOurs && !isInviteOnly(c)) continue;
         if (alreadyInvited(who, c)) continue;
+        noteInvite(c, who, currentNick);
         send(`INVITE ${who} ${c}`);
         vouchedFor.set(String(who).toLowerCase(), Date.now());
         log('INFO', `Invited ${who} into ${c} (${isOurs ? 'ours, by realname' : 'trusted'}).`);
@@ -490,6 +508,26 @@ const opped = new Set();           // channel(lower) we currently hold +o in
 const joinLog = new Map();         // channel(lower) -> [join timestamps] (raid detect)
 const lockedByRaid = new Set();    // channels auto-locked, so we can auto-unlock
 const lockedOut = new Map();       // channel(lower) -> times we have asked to be let in
+// Channels we have already asked to be entitled on, once per run.
+const entitled = new Set();
+// The outstanding flag grant, so ChanServ's answer can be matched to it.
+let flagGrant = null;
+// What we ask ChanServ to give our own account on a channel we moderate:
+//
+//   +i  we may invite ourselves  — an invite-only room can never lock us out
+//   +O  autoop on join           — ops come back after a restart with no human
+//   +e  exempt from akick/ban    — the channel's own automatic entries do not
+//                                  remove the bot that is sitting in it
+//
+// Deliberately NOT +f. The power to rewrite the access list is the power to
+// trust anybody, and a bot able to grant itself that turns one compromised run
+// into a lost channel. Where we lack it, a human is told the exact command.
+const WANT_FLAGS = 'iOe';
+// Mirror channel bans and invite exceptions into ChanServ's durable lists, so
+// they are not lost when the channel empties or the service cycles. ON: the
+// owner's stated policy is that a moderator's ban should stay.
+const BAN_PERSIST = /^(0|off|no|false)$/i.test(String(process.env.BAN_PERSIST || '').trim())
+    ? false : true;
 // Host tails that must be VOUCHED FOR, not banned.
 //
 // The owner asked to keep "4900.2401.IP" out after tracing an abuser there.
@@ -512,8 +550,16 @@ function onGuardedHost(nick) {
     if (!guardedHosts.size) return false;
     const uh = hostOf.get(String(nick).toLowerCase());
     if (!uh) return false;
-    const host = uh.split('@').pop();
-    for (const pat of guardedHosts) if (globToRe(pat).test(host)) return true;
+    const host = uh.split('@').pop().toLowerCase();
+    for (const pat of guardedHosts) {
+        const p = String(pat).toLowerCase();
+        if (!p) continue;
+        if (!p.includes('*') && !p.includes('?')) {
+            if (host === p || host.endsWith(`.${p}`)) return true;   // a tail
+            continue;
+        }
+        if (globToRe(p).test(host)) return true;                     // an explicit glob
+    }
     return false;
 }
 
@@ -525,18 +571,175 @@ function onGuardedHost(nick) {
  * them. Registering is a minute's work and it is the same bar the room
  * already sets for the trust list.
  */
+// ── Held back, not thrown out ───────────────────────────────────────────────
+//
+// The owner watched this happen and was right about it:
+//
+//   ⓘ ChanBot gives voice to Priya35
+//   @ Dracula  Priya35: You had one job here — be tolerable — and you fumbled
+//              it immediately.
+//   ← Priya35 was kicked from #batcave by Dracula
+//
+// "instead of removing them i think keeping them devoice is better option so
+// normal mods can give her voice and let her talk. and also these message are
+// annoying for other users."
+//
+// A kick is the wrong instrument for "we do not know you yet". It reads as
+// punishment for arriving, the room sees an insult aimed at somebody who has
+// not said a word, and the newcomer cannot be recovered by a moderator who
+// thinks they are fine. A silent devoice can be: any mod who trusts them just
+// gives voice, and the hold is released.
+//
+// So: no kick, nothing said in the room, and the moderators told privately once
+// with the reason and the fix.
+//
+// Note this has to REMOVE voice rather than withhold it. ChanBot voices arrivals
+// by itself, which is how both of the owner's examples got voice — deservesVoice()
+// was never consulted, because Dracula was not the one granting it.
+const heldBack = new Map();        // "chan|nick" -> {why, at, times}
+const HOLD_MAX = 2;                // devoices per person per room, per run
+let holdQueue = [];                // {chan,nick,why} held since the last summary
+const lastWhoAt = new Map();       // chanKey -> when we last asked WHO (loop guard)
+let holdTimer = null;
+let lastHoldTold = 0;        // so the FIRST hold is reported at once, not after the batch
+// Unknown AND uninvited arrivals get no voice in a moderated room. ON: the
+// owner's own layer, and the room it protects is moderated-only by design.
+// "off" restores the previous behaviour of voicing every arrival there.
+const HOLD_UNINVITED = !/^(0|off|no|false)$/i.test(String(process.env.HOLD_UNINVITED || '').trim());
+
+function holdKey(chan, nick) { return `${chanKey(chan)}|${String(nick).toLowerCase()}`; }
+
+/** Tell the moderators who is being held — one person by name, a burst as a list. */
+function flushHolds() {
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+    const batch = holdQueue.splice(0);
+    if (!batch.length) return;
+    lastHoldTold = Date.now();
+    if (batch.length === 1) {
+        const one = batch[0];
+        tellMods(`\x0307[HOLD]\x03 \x02${one.nick}\x02 is unvoiced in ${one.chan} — ${one.why}. `
+            + 'Nothing was said in the room. If they look fine, just voice them: '
+            + `\x02/mode ${one.chan} +v ${one.nick}\x02 and the hold is released.`);
+        return;
+    }
+    const where = batch[0].chan;
+    const names = batch.map((b) => b.nick).join(', ');
+    tellMods(`\x0307[HOLD]\x03 ${batch.length} unvoiced in ${where}: \x02${names}\x02. `
+        + 'None of them were spoken to and nothing was said in the room. '
+        + `Voice anyone who looks fine — \x02/mode ${where} +v <nick>\x02 — and the hold lifts.`);
+}
+function isHeldBack(chan, nick) { return heldBack.has(holdKey(chan, nick)); }
+
+/**
+ * Keep somebody quiet without removing them, and tell the moderators why.
+ *
+ * Capped per person per room: ChanBot re-voices on its own, and two bots taking
+ * turns on one nick is a mode war that fills the room with exactly the noise
+ * this change exists to stop.
+ */
+function holdBack(chan, nick, why, hasVoice = false, tellThem = false) {
+    if (!chan || !nick) return false;
+    // Standing always wins. These checks are the reason the feature is safe to
+    // leave on: nobody who has earned anything here can be caught by it.
+    if (isTrusted(nick) || isAdmin(nick) || isOwner(nick) || isOneOfOurs(nick)) return false;
+    // Our own scenery wears our mark as its REALNAME and a rotating nick, so
+    // isOneOfOurs() above cannot recognise it. Without this the bot devoices its
+    // own decoration and sends it advice about registering with NickServ.
+    const mark = (process.env.CHORUS_MARK || '').trim();
+    if (mark && realnameOf.get(String(nick).toLowerCase()) === mark) return false;
+    const key = holdKey(chan, nick);
+    const prev = heldBack.get(key);
+    if (prev && prev.times >= HOLD_MAX) return false;
+    heldBack.set(key, { why, at: Date.now(), times: (prev ? prev.times : 0) + 1 });
+    // Only if they actually hold it — a -v against somebody who has no voice is
+    // a wasted line and shows up in the room's mode history for nothing.
+    // hasVoice is passed by the caller that has just SEEN the +v go by: the
+    // prefix bookkeeping is updated later in the same mode loop, so reading it
+    // here would say they have nothing and skip the -v that is the whole point.
+    if (hasVoice || /\+/.test(prefixIn(chan, nick))) sendFirst(`MODE ${chan} -v ${nick}`);
+    if (prev) return true;                       // mods already know; do not repeat
+    log('MOD', `Holding ${nick} back in ${chan} (no voice): ${why}`);
+    // One private line to them, and only when this came from them ARRIVING.
+    // NOT in the room — that is the part the owner objected to — but this project
+    // has already shipped the other failure twice: +m on, voice withheld, and
+    // people unable to speak or even ask why. The sweep does not send it: walking
+    // the room and messaging everybody who happens to be unvoiced is a different
+    // thing from answering somebody who just walked in.
+    if (tellThem) notice(nick, `\x0306[${chan}]\x03 This room is moderated, so you need voice to talk. `
+        + 'A moderator can give it to you in a second — just ask, or register your nick '
+        + 'with \x02/msg NickServ REGISTER <password> <email>\x02 and it comes automatically.');
+    holdQueue.push({ chan, nick, why });
+    if (!holdTimer && Date.now() - lastHoldTold > 10000) {
+        flushHolds();
+        return true;
+    }
+    if (!holdTimer) {
+        holdTimer = setTimeout(flushHolds, 10000);
+        holdTimer.unref?.();
+    }
+    return true;
+}
+
+/**
+ * Somebody arriving from a range this room has been attacked from.
+ *
+ * It used to kick. It now holds back, silently — see holdBack() above.
+ */
 function guardArrival(chan, nick) {
     if (!onGuardedHost(nick)) return false;
     if (isTrusted(nick) || isAdmin(nick) || isOwner(nick) || isOneOfOurs(nick)) return false;
     if (isRegistered(nick)) return false;
     if (vouchedFor.has(String(nick).toLowerCase())) return false;
-    notice(nick, `\x0306[DOOR]\x03 ${chan} asks people on your network to be registered, `
-        + 'because it has been attacked from there. Register once and you are in for good: '
-        + '\x02/msg NickServ REGISTER <password> <email>\x02 — then rejoin. '
-        + 'Or ask a regular to invite you.');
-    kickUser(chan, nick, 'register with NickServ and come straight back — /msg NickServ REGISTER');
-    log('MOD', `${nick} arrived from a guarded range unregistered — asked to register.`);
-    return true;
+    return holdBack(chan, nick, 'unregistered, on a range this room has been attacked from',
+                    false, true);
+}
+
+/**
+ * Is this host one we recognise?
+ *
+ * The owner: "be easy on indian users usa users and uk users but if they join in
+ * from unknown countries then keep them devoiced cause sometimes these vpn
+ * countries are abusers."
+ *
+ * We cannot see anybody's country. HybridIRC cloaks the address, so the real IP
+ * never reaches us and no geolocation is possible — claiming otherwise would be
+ * inventing a signal. What the cloak DOES keep is its last two groups, which
+ * name the carrier: "4900.2401.IP" is Reliance Jio. So the honest version of the
+ * same protection is a list of carrier tails the room already knows, and a hold
+ * for arrivals on anything else — which catches the VPN exits too, since a VPN
+ * endpoint is a hosting provider nobody's regulars are on.
+ *
+ * EMPTY BY DEFAULT, and that default matters: with no list configured this must
+ * not decide that every single arrival is foreign. It returns true — known —
+ * until somebody has actually said what "known" means here.
+ */
+function hostTailOf(nick) {
+    const uh = String(hostOf.get(String(nick).toLowerCase()) || '');
+    return uh ? uh.split('@').pop().toLowerCase() : '';
+}
+
+/** A carrier the room recognises. False when nothing is configured. */
+function hostIsHome(nick) {
+    const tails = list(process.env.HOME_HOSTS);
+    if (!tails.length) return false;
+    const host = hostTailOf(nick);
+    if (!host) return false;
+    return tails.some((t) => host.endsWith(String(t).toLowerCase()));
+}
+
+/**
+ * A carrier the room does NOT recognise — the honest form of "unknown country".
+ *
+ * False when nothing is configured, and false when we do not know their host:
+ * absence of a signal is not a signal. Only a configured list and a real
+ * mismatch counts, so turning this on is a deliberate act.
+ */
+function hostIsForeign(nick) {
+    const tails = list(process.env.HOME_HOSTS);
+    if (!tails.length) return false;
+    const host = hostTailOf(nick);
+    if (!host) return false;
+    return !tails.some((t) => host.endsWith(String(t).toLowerCase()));
 }
 // Arrivals we had to act on, per channel. A raid of abusers is not
 // characterised by VOLUME — this room was attacked by a steady drip that never
@@ -812,12 +1015,15 @@ const outQueue = [];
 // kill means the bot outran the server, not the network. Roughly one line a
 // second with a burst of six is the shape ordinary IRC clients have used for
 // thirty years.
+// Actions somebody is waiting on. Drained before outQueue, and never subject to
+// the answers-first promotion that kept stepping over them.
+const outUrgent = [];
 const BURST = 6;
 const REFILL_MS = 500;
 let tokens = BURST;
 setInterval(() => {
     if (tokens < BURST) tokens += 1;
-    while (outQueue.length && tokens > 0) {
+    while ((outUrgent.length || outQueue.length) && tokens > 0) {
         tokens -= 1;
         const line = takeNextLine();
         if (socket && socket.writable) socket.write(line + '\r\n');
@@ -847,26 +1053,49 @@ setInterval(() => {
  * refresh and a bulk voice pass have nobody waiting on them, and an answer
  * does. Bookkeeping yields.
  */
+// Reports we send moderators because something happened, not because anybody
+// asked. They carry a bracketed tag, and they must NOT be promoted to the front
+// of the queue: measured in ordersocket.js, a batch of these jumped ahead of a
+// KICK a moderator had just asked for and the kick arrived seconds late. Every
+// NOTICE to a person counted as an answer, so bookkeeping outranked moderation.
+const UNSOLICITED = /^NOTICE \S+ :(?:\x03\d{0,2}(?:,\d{1,2})?|[\x02\x0f])*\[(?:HOLD|TRUST|ACCESS|FLEET|WATCH|TOPIC)\]/;
+
 function isReply(line) {
+    if (UNSOLICITED.test(line)) return false;         // a report, not an answer
     return /^(PRIVMSG|NOTICE) [#&]/.test(line)        // said in a room
         || /^(PRIVMSG|NOTICE) [^#&]/.test(line)       // said to a person
         || /^(KICK|TOPIC) /.test(line);               // moderation people see
 }
 
 function takeNextLine() {
+    // Actions somebody is waiting on come off their own queue, ahead of
+    // everything — including the "answers first" promotion below, which is what
+    // kept jumping over them. Putting a kick at the FRONT of the ordinary queue
+    // was not enough: the promotion searches for the first reply-like line and
+    // moves it to index 0, so a mode change sitting there was stepped over by the
+    // very announcement describing it.
+    if (outUrgent.length) {
+        const urgent = outUrgent.shift();
+        return coalesceModes(urgent, outUrgent);
+    }
     // Answers first, always. The queue is otherwise in order.
     let idx = outQueue.findIndex(isReply);
     if (idx > 0) outQueue.unshift(outQueue.splice(idx, 1)[0]);
     const first = outQueue.shift();
+    return coalesceModes(first, outQueue);
+}
+
+/** Merge consecutive single-target MODE changes for one channel into one line. */
+function coalesceModes(first, queue) {
     const m = /^MODE (\S+) ([+-])([a-zA-Z]) (\S+)$/.exec(first || '');
     if (!m) return first;
     const [, chan, sign, letter, firstTarget] = m;
     const targets = [firstTarget];
     while (targets.length < 4) {
-        const nextM = /^MODE (\S+) ([+-])([a-zA-Z]) (\S+)$/.exec(outQueue[0] || '');
+        const nextM = /^MODE (\S+) ([+-])([a-zA-Z]) (\S+)$/.exec(queue[0] || '');
         if (!nextM || nextM[1] !== chan || nextM[2] !== sign || nextM[3] !== letter) break;
         targets.push(nextM[4]);
-        outQueue.shift();
+        queue.shift();
     }
     if (targets.length === 1) return first;
     return `MODE ${chan} ${sign}${letter.repeat(targets.length)} ${targets.join(' ')}`;
@@ -878,6 +1107,27 @@ function send(data) {
     if (/^(PONG|PING|QUIT)/.test(data)) { socket.write(data + '\r\n'); return; }
     if (tokens > 0 && !outQueue.length) { tokens -= 1; socket.write(data + '\r\n'); return; }
     if (outQueue.length < 400) outQueue.push(data);
+}
+
+/**
+ * An ACTION somebody is waiting on: to the front of the queue.
+ *
+ * Urgency is a property of the call, not of the text. Ranking every MODE as
+ * urgent was wrong in the other direction — a bulk voice sweep is a MODE too, and
+ * routine housekeeping then outranked somebody's question. Only the sites that
+ * take an action a person just asked for use this.
+ *
+ * What it fixes, measured: a moderator said "Dracula kick troll42" and the KICK
+ * arrived 1.6 seconds later, behind two notices and a line to the room; and the
+ * room read "troll42 de-voiced" a full second before the -v that did it, because
+ * a PRIVMSG counted as an answer and the mode change did not.
+ */
+function sendFirst(data) {
+    if (!socket || !socket.writable) return;
+    if (tokens > 0 && !outUrgent.length && !outQueue.length) {
+        tokens -= 1; socket.write(data + '\r\n'); return;
+    }
+    if (outUrgent.length < 200) outUrgent.push(data);
 }
 // IRC drops anything past ~512 bytes for the whole line, so a long answer is
 // silently truncated mid-word — which is how !!help lost its last third. Split
@@ -1202,7 +1452,36 @@ function deservesVoice(nick, chan) {
     // later — which is what it looked like live, and reads as the bot arguing
     // with itself rather than making a decision.
     if (watch.isFlagged(nick)) return false;
-    if (chan && moderatedRooms.has(chanKey(chan))) return true;
+    // Being held back outranks everything below, including the blanket yes for a
+    // moderated room. That blanket came first, so a held-back arrival was voiced
+    // by the next sweep anyway and the hold meant nothing.
+    if (chan && isHeldBack(chan, nick)) return false;
+    // An unregistered arrival on a carrier this room does not recognise. See
+    // hostIsForeign(): off unless HOME_HOSTS says what "recognised" means.
+    if (!isRegistered(nick) && hostIsForeign(nick)) return false;
+    // A moderated room used to voice EVERY arrival, on the reasoning that where
+    // +m is set voice is simply the right to speak, and a newcomer who cannot
+    // speak never finds out why. That is a real failure and the private notice
+    // in holdBack() answers it — but the blanket also ran BEFORE every other
+    // check here, so it is what voiced the guarded-range arrival the owner
+    // watched, and the spammer already known from another room.
+    //
+    // The owner's layer: "we can keep unknown uninvited users devoiced. as most
+    // users who are abusers are uninvited and they start abusing." So voice in a
+    // moderated room now needs ONE of the ordinary reasons to be here —
+    // registered, invited, vouched for by a moderator, or on a carrier the room
+    // knows. Nobody is removed and nothing is said in the room; a moderator sees
+    // the hold and can undo it with one command.
+    if (chan && moderatedRooms.has(chanKey(chan))) {
+        if (!HOLD_UNINVITED) return true;
+        // The people who run the room, before any test meant for newcomers.
+        if (isTrusted(nick) || isAdmin(nick) || isOwner(nick) || isOneOfOurs(nick)) return true;
+        if (isRegistered(nick)) return true;
+        if (wasInvited(nick)) return true;
+        if (vouchedFor.has(String(nick).toLowerCase())) return true;
+        if (hostIsHome(nick)) return true;
+        return false;
+    }
     return isTrusted(nick) || (voiceRegistered && isRegistered(nick));
 }
 
@@ -1439,13 +1718,13 @@ function handleOrder(chan, nick, msg) {
         case 'kick':    kickUser(chan, target, why); break;
         case 'ban':     banUser(chan, target, why); break;
         case 'mute':    quietUser(chan, target, quietMinutes, why); break;
-        case 'unmute':  send(`MODE ${chan} -q ${target}!*@*`);
+        case 'unmute':  sendFirst(`MODE ${chan} -q ${target}!*@*`);
                         say(chan, `\x0309[MOD]\x03 ${target} un-quieted — ${why}.`); break;
-        case 'voice':   send(`MODE ${chan} +v ${target}`);
+        case 'voice':   sendFirst(`MODE ${chan} +v ${target}`);
                         say(chan, `\x0309[MOD]\x03 ${target} voiced — ${why}.`); break;
-        case 'devoice': send(`MODE ${chan} -v ${target}`);
+        case 'devoice': sendFirst(`MODE ${chan} -v ${target}`);
                         say(chan, `\x0304[MOD]\x03 ${target} de-voiced — ${why}.`); break;
-        case 'unban':   send(`MODE ${chan} -b ${target}!*@*`);
+        case 'unban':   sendFirst(`MODE ${chan} -b ${target}!*@*`);
                         say(chan, `\x0309[MOD]\x03 ${target} un-banned — ${why}.`); break;
         case 'warn':    warnUser(chan, target, why); break;
         default:        return false;
@@ -1511,6 +1790,66 @@ function reportTrustRefusal(line) {
     if (Date.now() - lastTrustGripe < 60000) return;
     lastTrustGripe = Date.now();
     for (const o of config.owners) notice(o, `\x0304[TRUST]\x03 ${why}`);
+}
+
+/**
+ * Get ourselves the privileges that keep us in a room, before the room needs
+ * them.
+ *
+ * The lockout recovery answers a refused JOIN by asking ChanServ for an invite
+ * — which only works if our ACCOUNT holds +i on that channel. Nothing ever
+ * checked whether it did, so the recovery rested on the same kind of
+ * unverified assumption that produced the lockout: the owner found Dracula
+ * sitting outside #batcave, holding, we assumed, every privilege it needed.
+ *
+ * This deliberately does NOT read the flag list to find out. ChanServ's
+ * listing rows do not name their channel — only the "End of" line does — and
+ * the trust parser absorbs any numbered row while a listing is open, so asking
+ * for a second listing would quietly rewrite the whitelist out of another
+ * channel's access list. Attempting the write needs no listing at all, is
+ * idempotent when we already hold the flags, and the server's own answer is
+ * the only honest report of whether we are allowed.
+ */
+function entitle(chan) {
+    const key = chanKey(chan);
+    if (entitled.has(key)) return;                  // once per channel per run
+    // ChanServ keys on the account and nothing else. Asking it to set flags on
+    // our NICK would either fail or, worse, entitle whoever wears that nick
+    // next — and our nick is the one thing about us anybody can take.
+    const acct = accountOf.get(String(currentNick).toLowerCase()) || trust.self || '';
+    if (!acct) return;                              // not identified yet; the next JOIN retries
+    entitled.add(key);
+    flagGrant = { chan, acct, at: Date.now() };
+    send(`PRIVMSG ChanServ :FLAGS ${chan} ${acct} +${WANT_FLAGS}`);
+    log('INFO', `Asked ChanServ for +${WANT_FLAGS} on ${chan} as ${acct} `
+        + '- so an invite-only room cannot lock me out and ops return by themselves.');
+}
+
+/**
+ * ChanServ's verdict on that write.
+ *
+ * A refusal here is the difference between "the recovery will work" and "the
+ * recovery will fail at the moment it is needed", so it is never swallowed —
+ * and the message carries the command a founder can paste, because a failure
+ * nobody can act on is the same as no message at all.
+ */
+function reportFlagGrant(line) {
+    if (!flagGrant || Date.now() - flagGrant.at > 30000) return;
+    const { chan, acct } = flagGrant;
+    if (/were set on|already has|no change/i.test(line)) {
+        flagGrant = null;
+        log('OK', `Entitled on ${chan}: ${String(line).trim().slice(0, 90)}`);
+        return;
+    }
+    if (!/not authoriz|insufficient|denied|refus|is not registered/i.test(line)) return;
+    flagGrant = null;
+    log('WARN', `ChanServ refused me +${WANT_FLAGS} on ${chan} - I do not hold +f there. `
+        + `A founder has to run: /msg ChanServ FLAGS ${chan} ${acct} +${WANT_FLAGS}`);
+    for (const o of config.owners) {
+        notice(o, `\x0304[ACCESS]\x03 I cannot give myself the flags that keep me in ${chan}. `
+            + `As founder: \x02/msg ChanServ FLAGS ${chan} ${acct} +${WANT_FLAGS}\x02 `
+            + '- +i lets me back into an invite-only room, +O returns my ops after a restart.');
+    }
 }
 
 /**
@@ -1602,7 +1941,15 @@ const reputation = new Reputation({
     minAccountDays: Number(process.env.TRUST_EARN_DAYS || 30),
     minMessages: Number(process.env.TRUST_EARN_MESSAGES || 40),
     maxStrikes: Number(process.env.TRUST_LOSE_STRIKES || 3),
+    // The second door: separate days heard, and the account floor that applies
+    // to it. See reputation.js earnsByDays() for why this one is lower.
+    minDaysSeen: Number(process.env.TRUST_EARN_DAYS_SEEN || 7),
+    minAccountDaysSeen: Number(process.env.TRUST_EARN_MIN_DAYS || 7),
 });
+// How many separate days each nick has been heard on, as Luna reports it out of
+// the Discord history. Empty until a signed report arrives, and empty is not
+// "everybody qualifies" — it is "this door stays shut".
+const attendance = new Attendance();
 const autoTrust = onOff(process.env.AUTO_TRUST || 'on');
 const promoted = new Set();     // announced once, not once per message
 
@@ -1677,11 +2024,86 @@ function loseTrust(nick, what, chan) {
         whitelist.delete(k);
     }
     log('MOD', `Trust withdrawn from ${nick}: ${reason}`);
-    for (const m of channelMods()) {
-        notice(m, `\x0304[TRUST]\x03 \x02${nick}\x02 is no longer a trusted regular — ${reason}. `
+    {
+        tellMods(`\x0304[TRUST]\x03 \x02${nick}\x02 is no longer a trusted regular — ${reason}. `
             + (trust.enabled && trust.loaded
                 ? `Stored on ${trust.channel}. \x02!!trust add ${nick}\x02 to undo.`
                 : 'THIS RUN ONLY — set TRUST_CHANNEL to make it stick.'));
+    }
+}
+
+// Reports we have already complained about, so a broken sender is mentioned
+// once rather than every half hour.
+const badReports = new Set();
+
+/**
+ * Take Luna's word for who turns up — after it proves it is Luna.
+ *
+ * The report carries EVIDENCE, never authority: it says "this nick was heard on
+ * nine separate days", and every other gate still applies afterwards. That
+ * split is the whole security design. Luna watches a relay, where a nick is
+ * just text somebody typed; it cannot tell aishwarya from whoever took her name
+ * this morning. Dracula is the side that can ask the network who somebody
+ * actually is, so it does, before any of this counts for anything.
+ */
+function absorbRegulars(from, line) {
+    const res = verifyReport(
+        line, [process.env.PEER_SECRET, process.env.PEER_SECRET_PREV], Date.now(),
+    );
+    if (!res.ok) {
+        // Silence here would be the worst of both worlds: the feed would look
+        // configured and do nothing, which is how a spare API key sat unused
+        // for two weeks in this project while the primary was failing.
+        const sig = `${String(from).toLowerCase()}:${res.why}`;
+        if (!badReports.has(sig)) {
+            badReports.add(sig);
+            log('WARN', `Refused a regulars report from ${from}: ${res.why}.`);
+            if (/no PEER_SECRET/.test(res.why)) {
+                for (const o of config.owners) {
+                    notice(o, `\x0304[TRUST]\x03 ${from} is sending me activity reports and I `
+                        + 'cannot check them — PEER_SECRET is not set here. Set the same value '
+                        + 'in both bots and I will start using them.');
+                }
+            }
+        }
+        return false;
+    }
+    if (!attendance.absorb(res.days)) return false;
+    const top = [...res.days.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)
+        .map(([n, d]) => `${n}:${d}`).join(' ');
+    log('OK', `Attendance from ${from}: ${attendance.size} nick(s) — busiest ${top}`);
+    // Consider the people who are actually HERE. Nothing is granted from this
+    // loop: it only asks NickServ how old their account is, which is the fact
+    // the promotion needs and the one thing no report can supply.
+    for (const c of config.channels) {
+        for (const n of members.get(chanKey(c)) || []) {
+            if (attendance.daysFor(n) < reputation.minDaysSeen) continue;
+            if (whitelist.has(String(n).toLowerCase())) continue;
+            askRegistration(n);
+            // NickServ answers in its own time, so the decision waits for it.
+            setTimeout(() => gainTrust(n, c), 6000);
+        }
+    }
+    return true;
+}
+
+/**
+ * Tell the people who need to know about a standing change.
+ *
+ * channelMods() is only who is PRESENT and opped, which was fine while every
+ * promotion was typed by somebody standing in the room. Now that trust can be
+ * granted automatically out of Luna's record, the quiet hours are exactly when
+ * it will happen — and a standing change that reaches nobody is a standing
+ * change nobody can disagree with. The owners are told as well, deduplicated so
+ * an owner holding ops does not get it twice.
+ */
+function tellMods(text) {
+    const seen = new Set();
+    for (const who of [...channelMods(), ...config.owners]) {
+        const k = String(who).toLowerCase();
+        if (!who || seen.has(k)) continue;
+        seen.add(k);
+        notice(who, text);
     }
 }
 
@@ -1694,10 +2116,16 @@ function gainTrust(nick, chan) {
     // somebody who lost trust for a slur is eligible again the moment their
     // account is old enough and they have said forty quiet things.
     if (isForfeited(nick)) return;
-    const why = reputation.earns(nick, {
+    const who = {
         account: accountOf.get(k) || '',
         registeredAt: registeredAt.get(k) || 0,
-    });
+        daysSeen: attendance.daysFor(nick),
+    };
+    // Two doors, and a person only needs one. The original counts messages
+    // inside this run, which no ordinary regular can reach before the host
+    // hands over; the second counts separate days out of Luna's record of the
+    // room, which is the only durable memory either bot has.
+    const why = reputation.earns(nick, who) || reputation.earnsByDays(nick, who);
     if (!why) return;
     promoted.add(k);
     // Deliberately the ACCOUNT, never a mask. reputation.earns() already
@@ -1708,10 +2136,8 @@ function gainTrust(nick, chan) {
     trust.add(accountOf.get(k) || nick);
     refreshTrust();
     log('MOD', `Trust granted to ${nick}: ${why}`);
-    for (const m of channelMods()) {
-        notice(m, `\x0306[TRUST]\x03 \x02${nick}\x02 is now a trusted regular — ${why}. `
-            + `\x02!!trust del ${nick}\x02 if you disagree.`);
-    }
+    tellMods(`\x0306[TRUST]\x03 \x02${nick}\x02 is now a trusted regular — ${why}. `
+        + `\x02!!trust del ${nick}\x02 if you disagree.`);
 }
 
 // Two regulars going at each other. See feud.js for why this judges the SHAPE
@@ -2201,9 +2627,18 @@ function kickUser(chan, nick, reason, fromAI = false) {
     if (actedRecently(chan, nick, 'kick')) return;
     markActioned(chan, nick, 'kick');
     if (!requireOps(chan, `kick ${nick}`)) return;
+    // The ACTION first, then the commentary about it.
+    //
+    // This sent two notices and a line to the room before the KICK itself, so the
+    // removal was fourth in an outbound queue that paces at six lines and then one
+    // every 500ms. Measured: a kick a moderator had just asked for landed 1.6s
+    // after the order — and under real congestion the person is told "you have
+    // been removed" while still sitting in the room reading it.
+    //
+    // The notices still go out, just no longer ahead of the thing they describe.
+    sendFirst(`KICK ${chan} ${nick} :${reason}`);
     verdictNotice(nick, reason, 'You have been removed. You can rejoin.');
     retortBefore(chan, nick, reason, fromAI);
-    send(`KICK ${chan} ${nick} :${reason}`);
     // "Banished" is what a BAN is. Saying it for a kick told the room somebody
     // was gone for good when they could have walked straight back in —
     // observed live: one regular asked "how can he re enter", another
@@ -2664,6 +3099,51 @@ function quoteNamesTheProblem(quote) {
             'a', 'an', 'the', 'its', 'it', 'thats', 'stop', 'dont', 'not'].includes(w));
 }
 
+/**
+ * Is the model's entire evidence just somebody's NAME?
+ *
+ * Live, from a full run's log:
+ *
+ *   [AI] Aishwarya [trusted] → ban (AI: slur) quote="Khadus"
+ *
+ * "khadus" is another regular in that room, registered since 2019, and an
+ * ordinary Hindi word for someone grumpy. The model read a person's name as a
+ * slur. Her standing did not save her — the verdict path runs before that
+ * matters — and only cool mode did. Driven in a test with the model allowed to
+ * act, a STRANGER saying the same name is kicked, which is the version that
+ * costs the room a newcomer for greeting somebody.
+ *
+ * A false positive is worse than a miss here. People forgive a filter that
+ * misses something; they leave over one that punishes them wrongly. Nothing is
+ * lost by declining the model's opinion when its only evidence is a name,
+ * because the deterministic word list still bans real slurs on its own.
+ *
+ * Only when the quote is ONE or TWO tokens: a model quoting a whole abusive
+ * sentence that happens to contain a name is still acted on.
+ *
+ * @returns {string} the name it matched, or '' if the quote is something else
+ */
+function quoteIsSomebodysName(quote) {
+    const words = flatten(quote).split(' ').filter(Boolean);
+    if (!words.length || words.length > 2) return '';
+    // A real slur in the quote means it is not merely a name.
+    if (words.some((w) => severeWords.has(w) || badwords.has(w))) return '';
+    const names = new Set([...whitelist]);
+    for (const c of config.channels) {
+        for (const m of members.get(chanKey(c)) || []) names.add(String(m).toLowerCase());
+    }
+    // Anyone heard here recently, not just who is standing here now — this room
+    // reconnects constantly, and the same person is in and out all evening.
+    for (const k of Object.keys(seenUsers)) names.add(k);
+    for (const w of words) {
+        if (w.length < 3) continue;
+        if (names.has(w)) return w;
+        // Folded, so "kh4dus" is recognised as the same person's name.
+        for (const n of names) if (n.length >= 4 && foldNick(n) === foldNick(w)) return n;
+    }
+    return '';
+}
+
 async function sentientModeration(chan, nick, message) {
     if (isExempt(nick, chan) || moderationOff(chan) || !config.groqKey || message.length < 4) return;
     if (!aiRateOk()) return;                        // busy → scripted filter still covers it
@@ -2769,6 +3249,14 @@ async function sentientModeration(chan, nick, message) {
         // offence. This is the exact shape of the live false positive.
         if (quoteNamesTheProblem(verdict.quote || '')) {
             log('AI', `Ignoring ${action} on ${nick}: quoted "${verdict.quote}", which names abuse rather than being it.`);
+            return;
+        }
+
+        // Gate 3c — the evidence is somebody's NAME. See quoteIsSomebodysName().
+        const named = quoteIsSomebodysName(verdict.quote || '');
+        if (named) {
+            log('AI', `Ignoring ${action} on ${nick}: quoted "${verdict.quote}", `
+                + `which is a nick in this room (${named}) rather than abuse.`);
             return;
         }
 
@@ -3407,12 +3895,29 @@ function voiceSweep(ch) {
     // One WHO per sweep at most, and only when somebody is actually unknown.
     let unknown = 0;
     for (const n of members.get(ch) || []) {
-        if (/[~&@%+]/.test(prefixIn(ch, n))) continue;          // already has something
+        const pfx = prefixIn(ch, n);
+        // Somebody ELSE gave them voice. This used to `continue` on any prefix at
+        // all, so ChanBot's automatic +v was simply never looked at — which is
+        // how both of the arrivals the owner asked about came to be voiced, and
+        // why withholding voice was never going to be enough on its own.
+        // Operators and half-operators are left alone: outranking us is a
+        // decision somebody with access made.
+        if (/[~&@%]/.test(pfx)) continue;
+        if (pfx.includes('+')) {
+            if (!deservesVoice(n, ch)) holdBack(ch, n, voiceReason(n, ch).why || 'not voiced here yet');
+            continue;
+        }
         if (deservesVoice(n, ch)) { send(`MODE ${ch} +v ${n}`); continue; }
+        // No voice and not getting any. Worth telling a moderator only where
+        // voice IS the right to speak — in an ordinary room it is a mark of
+        // standing, most guests never have it, and announcing each one would be
+        // a running commentary on everybody who ever visits.
+        if (moderatedRooms.has(ch)) holdBack(ch, n, voiceReason(n, ch).why || 'not voiced here yet');
         if (!accountOf.has(String(n).toLowerCase())) unknown += 1;
         else noteVoiceDenial(n, ch);                            // known, and still no
     }
-    if (unknown) {
+    if (unknown && Date.now() - (lastWhoAt.get(ch) || 0) > 60000) {
+        lastWhoAt.set(ch, Date.now());
         log('MOD', `${unknown} member(s) of ${ch} have no account on file — asking the server.`);
         send(`WHO ${ch} %cuhnar,152`);
     }
@@ -3693,6 +4198,8 @@ function handleCommand(chan, nick, message) {
             if (!had) { reply(`${target} has no strikes to clear.`); break; }
             warns.delete(k);
             serving.delete(`${chanKey(chan)}|${k}`);
+            heldBack.delete(holdKey(chan, target));
+            vouchedFor.set(k, Date.now());
             if (moderatedRooms.has(chanKey(chan)) && deservesVoice(target, chan)) {
                 send(`MODE ${chan} +v ${target}`);
             }
@@ -4648,6 +5155,33 @@ function handleLine(line) {
             // minutes. Cheap: the prefix check makes it a no-op for anyone who
             // already has voice.
             setInterval(() => config.channels.forEach((c) => voiceSweep(chanKey(c))), 30000);
+            // ── Keep knocking ────────────────────────────────────────────
+            //
+            // Live, 10:09:23: a moderator banned the account and kicked the bot
+            // out of #batcave; ChanBot lifted the ban four seconds later and the
+            // bot never came back. The KICK handler fired exactly ONE rejoin,
+            // three seconds afterwards, which landed while the ban was still up
+            // and was refused — and that was the end of it, permanently.
+            //
+            // A door that opens a moment after the single knock is a locked
+            // door to a bot that only knocks once. So this knocks for as long as
+            // we are outside a room we are supposed to be in, whatever the
+            // reason: ban lifted later, invite-only dropped later, a netsplit, a
+            // JOIN that lost its place in the outbound queue.
+            //
+            // SLOWLY, deliberately — a minute apart. Retrying a refused join in
+            // a tight loop is a flood, and this network Z-lines for less. The
+            // ChanServ asks stay capped at three (nagging a service that has
+            // already refused achieves nothing); it is the cheap retry against
+            // the server that eventually finds the door open.
+            setInterval(() => {
+                if (!ready) return;
+                for (const c of config.channels) {
+                    if (members.has(chanKey(c))) continue;
+                    log('INFO', `Still outside ${c} — knocking again.`);
+                    send(`JOIN ${c}`);
+                }
+            }, Math.max(3, Number(process.env.REJOIN_EVERY_SEC || 60)) * 1000).unref?.();
             // Recruiting rooms belong to other people, and the bot is a guest
             // there: it can be dropped by a netsplit, a kick, or a JOIN that
             // simply lost its place in the outbound queue at startup. This used
@@ -4747,8 +5281,17 @@ function handleLine(line) {
         // absorb() only looks at notices while a LISTING is open, so a refused
         // WRITE used to fall straight through here and vanish.
         reportTrustRefusal(msg);
+        reportFlagGrant(msg);
     }
     if (command === 'NOTICE' && /^nickserv$/i.test(nick || '')) readNickInfo(msg);
+    // The regulars feed. Addressed to us privately, never to a channel — the
+    // list of who is about to be trusted is not something to publish in the
+    // room it applies to.
+    if (nick && (command === 'NOTICE' || command === 'PRIVMSG')
+        && !String(tgt || '').startsWith('#') && /^REGULARS\s/.test(String(msg).trim())) {
+        absorbRegulars(nick, String(msg).trim());
+        return;
+    }
     // The server's verdict on a !!history MODE change: 472 unknown mode char
     // (chanhistory not loaded), 482 not opped, 467/461 malformed. Silence means
     // it was accepted.
@@ -4839,6 +5382,56 @@ function handleLine(line) {
             // Only OUR fleet, only bans set by somebody who is not an owner,
             // and only in rooms we hold. A ban on a PERSON is left alone —
             // that is a moderator's decision and it stands.
+            // ── Make a ban outlive the channel ───────────────────────────
+            //
+            // The owner: "the invited users and banned users list gets empty
+            // everytime chanbot resets is there a fix for that?"
+            //
+            // The cause is a property of IRC, not a bug: +b and +I live in the
+            // SERVER's memory for a channel, and a channel exists only while
+            // somebody is in it. Empty the room, split the net, or cycle the
+            // service and every ban a moderator set is gone. Nothing here
+            // noticed, because from the bot's side nothing happened.
+            //
+            // Atheme keeps lists that do survive it, so each change is mirrored
+            // into them:
+            //
+            //   +b  ->  AKICK ADD <mask> !P     permanent, re-enforced on join
+            //   -b  ->  AKICK DEL <mask>        or the ban returns by itself,
+            //                                   which looks exactly like a bug
+            //   +I  ->  FLAGS <mask> +i         may invite themselves in, the
+            //                                   durable form of a +I entry.
+            //                                   ChanServ takes a HOSTMASK here,
+            //                                   verified live in this project:
+            //                                   "Flags +V were set on Carmilla!*@*"
+            //
+            // The policy this rests on is the owner's, already settled: "once
+            // they are banned by mod i dont want to invite them back and they
+            // should stay banned."
+            //
+            // Never mirrored: anything a SERVICE set. ChanServ enforcing its own
+            // AKICK list, written back into that list, is a loop.
+            if ((ch === 'b' || ch === 'I') && nick && BAN_PERSIST
+                && !/serv$|^chanbot$/i.test(nick)) {
+                const mask = targets[ti] || '';
+                // A bare nick is not a mask and would store the wrong thing.
+                if (mask && mask.includes('@')) {
+                    if (ch === 'b' && adding) {
+                        send(`PRIVMSG ChanServ :AKICK ${tgt} ADD ${mask} !P Set by ${nick} in ${tgt}`);
+                        log('MOD', `Mirrored ${nick}'s ban on ${mask} into AKICK so it survives a reset. `
+                            + `To lift it: /msg ChanServ AKICK ${tgt} DEL ${mask}`);
+                    } else if (ch === 'b') {
+                        send(`PRIVMSG ChanServ :AKICK ${tgt} DEL ${mask}`);
+                        log('MOD', `${nick} lifted the ban on ${mask} — removed it from AKICK too.`);
+                    } else if (adding) {
+                        send(`PRIVMSG ChanServ :FLAGS ${tgt} ${mask} +i`);
+                        log('MOD', `Mirrored ${nick}'s invite exception for ${mask} into ChanServ (+i).`);
+                    } else {
+                        send(`PRIVMSG ChanServ :FLAGS ${tgt} ${mask} -i`);
+                        log('MOD', `${nick} removed the invite exception for ${mask} — removed the +i too.`);
+                    }
+                }
+            }
             if (ch === 'b' && adding && FLEET_PROTECT && nick && !isOwner(nick)
                 && nick.toLowerCase() !== currentNick.toLowerCase()
                 && !/serv$|^chanbot$/i.test(nick)) {
@@ -4892,6 +5485,31 @@ function handleLine(line) {
                         serving.delete(skey);
                         log('MOD', `${nick} voiced ${who} in ${tgt} — devoice cleared, they outrank the timer.`);
                     }
+                    // A moderator deciding somebody is fine is the whole point of
+                    // holding them back instead of removing them: they are here to
+                    // be vouched for, and this is the vouching.
+                    if (heldBack.delete(skey)) {
+                        vouchedFor.set(who.toLowerCase(), Date.now());
+                        log('MOD', `${nick} voiced ${who} in ${tgt} — hold released.`);
+                    }
+                }
+                // Voice from anybody who is NOT a moderator — ChanBot's automatic
+                // grant, in practice — does not release a hold. It is what handed
+                // voice to both of the arrivals the owner asked about, so it has to
+                // be undone rather than accepted.
+                if (ch === 'v' && adding && who && nick
+                    && nick.toLowerCase() !== currentNick.toLowerCase()
+                    && !(isAdmin(nick) || isOwner(nick) || isChannelMod(tgt, nick))
+                    && isOurChannel(tgt) && opped.has(chanKey(tgt))
+                    && !deservesVoice(who, tgt)) {
+                    const where = watch.seenIn(who);
+                    const why = isHeldBack(tgt, who)
+                        ? (heldBack.get(holdKey(tgt, who)) || {}).why
+                        : (where.length ? `heard advertising or abusing in ${where.join(', ')}`
+                            : (!isRegistered(who) && hostIsForeign(who)
+                                ? 'unregistered, on a network this room does not recognise'
+                                : 'not voiced here yet'));
+                    holdBack(tgt, who, why, true, true);
                 }
                 if ('ovhq'.includes(ch) && who) {          // track everyone's status
                     const key = `${chanKey(tgt)}|${who.toLowerCase()}`;
@@ -5089,6 +5707,16 @@ function handleLine(line) {
         game.onQuit(nick);
     }
 
+    // Somebody was invited here by a person. That is one of the ordinary reasons
+    // to be in this room, and the voice layer counts it — an invitation from a
+    // regular is a human vouching, which is exactly what we cannot compute.
+    if (command === 'INVITE' && nick && params[1]) {
+        const room = (params[2] || msg || '').replace(/^:/, '');
+        if (isOurChannel(room) && nick.toLowerCase() !== currentNick.toLowerCase()) {
+            noteInvite(room, params[1], nick);
+            log('INFO', `${nick} invited ${params[1]} to ${room} — counts as vouched for voice.`);
+        }
+    }
     if (command === 'JOIN' && nick.toLowerCase() === config.nick.toLowerCase()) {
         hasJoined = true;
         const c = (tgt || msg).replace(/^:/, '');
@@ -5097,6 +5725,7 @@ function handleLine(line) {
         send(`WHO ${c} %cuhnar,152`);                       // WHOX: hosts AND accounts
         send(`NAMES ${c}`);                                 // and our own op status
         send(`MODE ${c}`);                                  // and whether the door is shut
+        entitle(c);                                         // and the flags to stay
         // Deliberately silent. This used to announce "Dracula stirs" in every
         // room it owns, which was useful while the rooms were being set up and
         // is noise now: the host hands the job over roughly every six hours and
@@ -5222,11 +5851,15 @@ function handleLine(line) {
         // carries it, but a client that does not send it means we only learn
         // the account from the WHO sweep seconds later. Judging instantly
         // would kick registered people for not having been asked yet.
-        if (ready && !moderationOff(c) && guardedHosts.size) {
+        if (ready && !moderationOff(c) && (guardedHosts.size || moderatedRooms.has(chanKey(c)))) {
             setTimeout(() => {
                 const stillHere = [...(members.get(chanKey(c)) || new Set())]
                     .some((m) => m.toLowerCase() === nick.toLowerCase());
-                if (stillHere) guardArrival(c, nick);
+                if (!stillHere) return;
+                if (guardArrival(c, nick)) return;          // already held, and told
+                if (!moderatedRooms.has(chanKey(c))) return;
+                if (deservesVoice(nick, c)) return;
+                holdBack(c, nick, voiceReason(nick, c).why || 'not voiced here yet', false, true);
             }, 6000);
         }
 
@@ -5305,8 +5938,15 @@ function handleLine(line) {
     }
     if (command === 'KICK' && params[1] && isOurChannel(tgt)) {
         const victim = params[1];
-        if (victim.toLowerCase() === config.nick.toLowerCase()) {
+        // Whatever name we are wearing. This compared the victim against the
+        // CONFIGURED nick only, so a bot that had been renamed — by NickServ
+        // enforcement, or by taking a suffixed name when its own was held —
+        // did not recognise its own kick and never rejoined at all.
+        const itsUs = victim.toLowerCase() === String(currentNick).toLowerCase()
+            || victim.toLowerCase() === config.nick.toLowerCase();
+        if (itsUs) {
             opped.delete(chanKey(tgt));
+            members.delete(chanKey(tgt));            // so the watchdog knows we are out
             setTimeout(() => send(`JOIN ${tgt}`), 3000);
         } else if (ready && nick && nick.toLowerCase() !== currentNick.toLowerCase()
                    && !isOwner(nick)

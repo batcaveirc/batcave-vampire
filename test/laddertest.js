@@ -41,16 +41,25 @@ srv.listen(0,'127.0.0.1', async() => {
  // room one line at a time is both slower and part of what got the bot killed
  // for flooding. What matters is that joker ENDS UP voiced, not how many lines
  // it took, and asserting the line shape was asserting the implementation.
- check('voices everyone present in a moderated room',
-       sent(/^MODE #batcave \+v+ (\S+ )*joker(\s|$)/),
+ check('a trusted regular present in a moderated room is voiced',
+       sent(/^MODE #batcave \+v+ (\S+ )*vikram(\s|$)/),
        out.filter(l=>/\+v/.test(l)).join(' | '));
+ check('an unknown, uninvited arrival is NOT',
+       !sent(/^MODE #batcave \+v+ (\S+ )*joker(\s|$)/),
+       out.filter(l=>/\+v/.test(l)).join(' | ')
+         + ' — abusers arrive uninvited, and voice is the right to speak here');
 
- // a newcomer must be able to speak straight away, or +m locks them out
+ // A newcomer must still find out WHY they cannot speak — the old blanket voice
+ // existed for that reason, and dropping it without replacing it would reproduce
+ // a failure this project has already shipped twice.
  out.length=0;
  sock.write(':newbie!n@1.1.1.1 JOIN #batcave * :real\r\n');
- await wait(1200);
- check('voices a newcomer on arrival', sent(/^MODE #batcave \+v+ (\S+ )*newbie(\s|$)/),
-       'without this, +m means a newcomer joins into silence');
+ await wait(1500);
+ check('a newcomer is not voiced either', !sent(/^MODE #batcave \+v+ (\S+ )*newbie(\s|$)/),
+       out.filter(l=>/\+v/.test(l)).join(' | '));
+ check('and nothing is said about them in the room',
+       !sent(/^PRIVMSG #batcave [^\n]*newbie/),
+       out.filter(l=>/^PRIVMSG #batcave/.test(l)).join(' | '));
 
  // first offence: devoiced, NOT kicked
  out.length=0;

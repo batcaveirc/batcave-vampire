@@ -182,6 +182,60 @@ jobs:
           # Hosts protected from other moderators' kicks (the whitelist is
           # protected automatically). Comma-separated globs.
           PROTECT_MASKS: ${{ secrets.PROTECT_MASKS }}
+          # ── Earning trust by turning up ──────────────────────────────
+          #
+          # The original door needs 40 messages inside ONE run, and a run is
+          # ~350 minutes, so an ordinary regular who says fifteen lines a day
+          # never reaches it — measured: not one automatic promotion has ever
+          # happened. The second door counts separate DAYS, reported by Luna out
+          # of the Discord history, which is the only durable record of this room
+          # that exists.
+          #
+          # TRUST_EARN_DAYS_SEEN  how many separate days make somebody a regular
+          # TRUST_EARN_MIN_DAYS   how old their account must be for those to count
+          #
+          # The account floor is lower here than the 30 days the message door
+          # uses, because the evidence is stronger: a week of separate days is a
+          # week of patience, which is the expensive thing to fake. Both doors
+          # still require a registered account and a clean record.
+          TRUST_EARN_DAYS_SEEN: ${{ secrets.TRUST_EARN_DAYS_SEEN || '7' }}
+          TRUST_EARN_MIN_DAYS: ${{ secrets.TRUST_EARN_MIN_DAYS || '7' }}
+          # How often to knock on the door of a room we are supposed to be in
+          # and are not. A moderator banned the account, kicked the bot, and
+          # ChanBot lifted the ban four seconds later — the bot had already made
+          # its single rejoin attempt and never came back.
+          REJOIN_EVERY_SEC: ${{ secrets.REJOIN_EVERY_SEC || '60' }}
+          # Mirror channel bans and invite exceptions into ChanServ's durable
+          # lists. +b and +I live in the SERVER's memory for a channel, and a
+          # channel exists only while somebody is in it — so emptying the room
+          # or cycling the service loses every ban a moderator set, which is
+          # what the owner reported. A +b becomes a permanent AKICK, a -b
+          # removes it again, and a +I becomes FLAGS <mask> +i ("may invite
+          # themselves"). Set to "off" to stop mirroring.
+          BAN_PERSIST: ${{ secrets.BAN_PERSIST }}
+          # ── Unknown and uninvited arrivals ───────────────────────────
+          #
+          # The room is moderated-only by design, so voice IS the right to speak
+          # there. It used to be given to every arrival, which is how a guarded
+          # range arrival and a spammer already known from another room both came
+          # to be voiced. The owner's layer: "we can keep unknown uninvited users
+          # devoiced. as most users who are abusers are uninvited and they start
+          # abusing." Voice now needs one ordinary reason — registered, invited,
+          # vouched for by a moderator, or on a recognised carrier. Nobody is
+          # removed, nothing is said in the room, and one /mode +v releases it.
+          # Set to "off" to go back to voicing every arrival.
+          HOLD_UNINVITED: ${{ secrets.HOLD_UNINVITED }}
+          # Carrier tails this room recognises, comma separated — the honest form
+          # of "be easy on Indian, US and UK users, hold the unknown countries".
+          # We cannot see anybody's country: the network cloaks the address, so no
+          # geolocation is possible. What the cloak keeps is its last two groups,
+          # which name the CARRIER ("4900.2401.IP" is Reliance Jio) — so this is a
+          # list of carriers, which also catches VPN exits, since a VPN endpoint is
+          # a hosting provider no regular is on.
+          #
+          # EMPTY BY DEFAULT and that matters: with no list, nobody is treated as
+          # foreign. An empty value must never mean "everyone is a stranger".
+          HOME_HOSTS: ${{ secrets.HOME_HOSTS }}
           # Host tails that must be VOUCHED FOR — registered, trusted, or
           # invited — rather than banned. Empty by default: "4900.2401.IP" is
           # Reliance Jio, and this room's own king, deepak and Lucifer wear it,

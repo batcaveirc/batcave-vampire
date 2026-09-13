@@ -28,14 +28,29 @@ c('separate from KICK_PROTECT, which stays off',
   'people stay kicked; bots do not');
 
 console.log('— a kick on one of ours is undone —');
-const kick = src.slice(src.indexOf("command === 'KICK'"), src.indexOf("command === 'KICK'") + 900);
+// The handler's own extent, not a byte count. This used to slice a fixed 900
+// characters, so adding a COMMENT inside the handler pushed the assertion out of
+// the window and failed a test whose subject had not changed at all. That has
+// happened more than once in this suite; a window defined by the code's shape
+// cannot drift the way a magic number does.
+const kickAt = src.indexOf("command === 'KICK'");
+const kickEnd = src.indexOf("if (command === '", kickAt + 20);
+const kick = src.slice(kickAt, kickEnd > kickAt ? kickEnd : kickAt + 2500);
 c('the rescue covers our fleet', /FLEET_PROTECT && isOneOfOurs\(victim\)/.test(kick), kick.slice(0, 200));
 c('but never when an OWNER did the kicking', /!isOwner\(nick\)/.test(kick),
   'the owner must always be able to remove their own bot');
 c('and never our own kicks', /nick\.toLowerCase\(\) !== currentNick\.toLowerCase\(\)/.test(kick));
 
 console.log('— and the ban that would keep it out —');
-const ban = src.slice(src.indexOf("ch === 'b' && adding"), src.indexOf("ch === 'b' && adding") + 1200);
+// The FLEET_PROTECT ban check specifically, not merely the first thing that
+// mentions a +b. A second feature (mirroring bans into ChanServ so they survive
+// a channel reset) now also tests `ch === 'b' && adding`, and appears earlier —
+// so this slice was reading that block instead and failed on code that had not
+// changed. Anchor on the distinguishing condition, and size the window by the
+// block rather than by a magic number.
+const banAt = src.indexOf("ch === 'b' && adding && FLEET_PROTECT");
+const banTo = src.indexOf("if ('ovhbeIkl'.includes(ch))", banAt > 0 ? banAt : 0);
+const ban = src.slice(banAt, banTo > banAt ? banTo : banAt + 1600);
 c('a +b covering our bots is removed', /send\(`MODE \$\{tgt\} -b \$\{mask\}`\)/.test(ban),
   'a rescue is useless while the ban stands — re-invited, then refused at the door');
 c('matched against the fleet, not guessed', /\[\.\.\.FLEET, currentNick/.test(ban));
