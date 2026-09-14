@@ -600,6 +600,8 @@ function onGuardedHost(nick) {
 // was never consulted, because Dracula was not the one granting it.
 const heldBack = new Map();        // "chan|nick" -> {why, at, times}
 const HOLD_MAX = 2;                // devoices per person per room, per run
+// What each CONNECTION has spent, so a rename does not buy a fresh allowance.
+const holdSpend = new Map();
 let holdQueue = [];                // {chan,nick,why} held since the last summary
 const lastWhoAt = new Map();       // chanKey -> when we last asked WHO (loop guard)
 let holdTimer = null;
@@ -651,8 +653,18 @@ function holdBack(chan, nick, why, opts = {}) {
     const mark = (process.env.CHORUS_MARK || '').trim();
     if (mark && realnameOf.get(String(nick).toLowerCase()) === mark) return false;
     const key = holdKey(chan, nick);
+    const host = hostOf.get(String(nick).toLowerCase()) || '';
+    // Budget per CONNECTION. Keyed on the nick, a room that renames every few
+    // seconds — which this one does, constantly — got an unlimited supply of
+    // devoices, and that stream starved every reply the bot had queued.
+    const budgetKey = `${chanKey(chan)}|${host || 'nick:' + String(nick).toLowerCase()}`;
+    const spent = holdSpend.get(budgetKey) || 0;
+    if (spent >= HOLD_MAX) {
+        if (!heldBack.has(key)) heldBack.set(key, { why, at: Date.now(), times: spent });
+        return false;
+    }
+    holdSpend.set(budgetKey, spent + 1);
     const prev = heldBack.get(key);
-    if (prev && prev.times >= HOLD_MAX) return false;
     heldBack.set(key, { why, at: Date.now(), times: (prev ? prev.times : 0) + 1 });
     // Only if they actually hold it — a -v against somebody who has no voice is
     // a wasted line and shows up in the room's mode history for nothing.
@@ -1028,6 +1040,9 @@ const outQueue = [];
 // Actions somebody is waiting on. Drained before outQueue, and never subject to
 // the answers-first promotion that kept stepping over them.
 const outUrgent = [];
+let urgentRun = 0;                 // consecutive urgent lines, for fairness
+let lastQueueGripe = 0;
+let lastDropGripe = 0;
 const BURST = 6;
 const REFILL_MS = 500;
 let tokens = BURST;
@@ -1037,6 +1052,19 @@ setInterval(() => {
         tokens -= 1;
         const line = takeNextLine();
         if (socket && socket.writable) socket.write(line + '\r\n');
+    }
+    // Nothing waits forever.
+    //
+    // outUrgent was drained BEFORE outQueue with absolute priority, which is
+    // starvation, not prioritisation: in a busy room a steady stream of devoices
+    // meant command replies never left the queue at all. Measured live — !!help
+    // answered at 14:16:12, and from 14:16:24 onward nothing the bot said reached
+    // the room for four hours, including its own moderation. takeNextLine()
+    // alternates now (see there); this is only the reporting.
+    if (outQueue.length > 150 && Date.now() - lastQueueGripe > 300000) {
+        lastQueueGripe = Date.now();
+        log('WARN', `Outbound backlog: ${outQueue.length} normal, ${outUrgent.length} urgent. `
+            + 'Replies are arriving late. Something is generating more than the server accepts.');
     }
 }, REFILL_MS);
 
@@ -1084,7 +1112,13 @@ function takeNextLine() {
     // was not enough: the promotion searches for the first reply-like line and
     // moves it to index 0, so a mode change sitting there was stepped over by the
     // very announcement describing it.
-    if (outUrgent.length) {
+    // Urgent first, but never exclusively: every third line comes off the normal
+    // queue even when actions are still waiting. Absolute priority starved the
+    // ordinary queue completely — a live room generated devoices faster than the
+    // pacer drains, so no answer, no moderation and no announcement left the bot
+    // for four hours while it looked perfectly healthy.
+    urgentRun = outUrgent.length ? urgentRun + 1 : 0;
+    if (outUrgent.length && (urgentRun % 3 !== 0 || !outQueue.length)) {
         const urgent = outUrgent.shift();
         return coalesceModes(urgent, outUrgent);
     }
@@ -1116,7 +1150,14 @@ function send(data) {
     // Protocol keepalives must never sit in a queue.
     if (/^(PONG|PING|QUIT)/.test(data)) { socket.write(data + '\r\n'); return; }
     if (tokens > 0 && !outQueue.length) { tokens -= 1; socket.write(data + '\r\n'); return; }
-    if (outQueue.length < 400) outQueue.push(data);
+    if (outQueue.length < 400) { outQueue.push(data); return; }
+    // Dropping silently is how a bot goes quiet for hours with nobody able to say
+    // why. Once a minute is enough to find it in the log.
+    if (Date.now() - lastDropGripe > 60000) {
+        lastDropGripe = Date.now();
+        log('ERR', 'Outbound queue is FULL (400) — dropping lines. '
+            + 'Everything the bot says is being lost until it drains.');
+    }
 }
 
 /**
