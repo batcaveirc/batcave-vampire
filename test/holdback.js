@@ -79,7 +79,15 @@ srv.listen(0, '127.0.0.1', async () => {
         || '');
     c('she is left without voice', !out.some((l) => /^MODE #batcave \+v Priya35/.test(l)),
       out.filter((l) => /MODE #batcave [+-]v/.test(l)).join(' | '));
-    c('and a moderator is told privately, with the reason',
+    // The part that was silently missing. holdBack() used to consult its own
+    // prefix map first, and ChanBot voices an arrival in the same instant it
+    // joins, so the map said "no voice" and the removal was skipped — nine
+    // holds in one live run produced zero MODE -v.
+    c('the voice is actually TAKEN, not just recorded as held',
+      out.some((l) => /^MODE #batcave -v Priya35$/m.test(l)),
+      out.filter((l) => /MODE #batcave/.test(l)).join(' | ') || '(held on paper only)');
+    // ...and a guarded range IS worth interrupting somebody about.
+    c('a moderator is told, because this one is noteworthy',
       out.some((l) => /^NOTICE Vikram/.test(l) && /HOLD/.test(plain(l)) && /Priya35/.test(l)),
       out.filter((l) => /^NOTICE/.test(l)).map(plain).join(' | ') || '(nobody told)');
     c('and told how to let her talk',
@@ -121,10 +129,16 @@ srv.listen(0, '127.0.0.1', async () => {
     c('his voice is taken back too',
       out.some((l) => /^MODE #batcave -v fahadkhan/.test(l)),
       out.filter((l) => /MODE #batcave/.test(l)).join(' | ') || '(voiced despite being watched)');
-    c('and the mods are told, with a reason they can act on',
-      out.some((l) => /^NOTICE/.test(l) && /HOLD/.test(plain(l)) && /fahadkhan/.test(l)
-                      && /\+v fahadkhan/.test(plain(l))),
-      out.filter((l) => /^NOTICE/.test(l)).map(plain).join(' | ') || '(no reason given)');
+    c('he is told privately why he cannot talk',
+      out.some((l) => /^NOTICE fahadkhan :/.test(l) && /moderated/.test(plain(l))),
+      out.filter((l) => /^NOTICE fahadkhan/.test(l)).map(plain).join(' | ') || '(left mute, unexplained)');
+    c('but the moderators are NOT interrupted for a routine newcomer',
+      !out.some((l) => /^NOTICE (Vikram|boss)/.test(l) && /fahadkhan/.test(plain(l))),
+      out.filter((l) => /^NOTICE (Vikram|boss)/.test(l)).map(plain).join(' | ')
+        + ' — one per arrival is the flood this feature exists to remove');
+    c('and nothing about him is said in the room either',
+      !out.some((l) => /^PRIVMSG #batcave/.test(l)),
+      out.filter((l) => /^PRIVMSG #batcave/.test(l)).map(plain).join(' | '));
 
     console.log('\n— and a trusted regular is never touched —');
     out.length = 0;

@@ -225,6 +225,13 @@ jobs:
           # removed, nothing is said in the room, and one /mode +v releases it.
           # Set to "off" to go back to voicing every arrival.
           HOLD_UNINVITED: ${{ secrets.HOLD_UNINVITED }}
+          # How often the moderators get ONE line naming everybody currently
+          # waiting for a voice. Routine holds no longer interrupt anybody: in a
+          # room ChanBot voices everyone into, "an unknown person arrived" is the
+          # normal case and a notice each is a flood moved from the channel into
+          # their private windows. A guarded range or somebody already heard
+          # misbehaving elsewhere still says so at once.
+          HOLD_DIGEST_MIN: ${{ secrets.HOLD_DIGEST_MIN || '15' }}
           # Carrier tails this room recognises, comma separated — the honest form
           # of "be easy on Indian, US and UK users, hold the unknown countries".
           # We cannot see anybody's country: the network cloaks the address, so no

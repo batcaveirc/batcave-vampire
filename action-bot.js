@@ -638,7 +638,8 @@ function isHeldBack(chan, nick) { return heldBack.has(holdKey(chan, nick)); }
  * turns on one nick is a mode war that fills the room with exactly the noise
  * this change exists to stop.
  */
-function holdBack(chan, nick, why, hasVoice = false, tellThem = false) {
+function holdBack(chan, nick, why, opts = {}) {
+    const { tellThem = false, voiceless = false, notable = false } = opts;
     if (!chan || !nick) return false;
     // Standing always wins. These checks are the reason the feature is safe to
     // leave on: nobody who has earned anything here can be caught by it.
@@ -654,10 +655,7 @@ function holdBack(chan, nick, why, hasVoice = false, tellThem = false) {
     heldBack.set(key, { why, at: Date.now(), times: (prev ? prev.times : 0) + 1 });
     // Only if they actually hold it — a -v against somebody who has no voice is
     // a wasted line and shows up in the room's mode history for nothing.
-    // hasVoice is passed by the caller that has just SEEN the +v go by: the
-    // prefix bookkeeping is updated later in the same mode loop, so reading it
-    // here would say they have nothing and skip the -v that is the whole point.
-    if (hasVoice || /\+/.test(prefixIn(chan, nick))) sendFirst(`MODE ${chan} -v ${nick}`);
+    if (!voiceless) sendFirst(`MODE ${chan} -v ${nick}`);
     if (prev) return true;                       // mods already know; do not repeat
     log('MOD', `Holding ${nick} back in ${chan} (no voice): ${why}`);
     // One private line to them, and only when this came from them ARRIVING.
@@ -669,6 +667,16 @@ function holdBack(chan, nick, why, hasVoice = false, tellThem = false) {
     if (tellThem) notice(nick, `\x0306[${chan}]\x03 This room is moderated, so you need voice to talk. `
         + 'A moderator can give it to you in a second — just ask, or register your nick '
         + 'with \x02/msg NickServ REGISTER <password> <email>\x02 and it comes automatically.');
+    // Only the noteworthy ones interrupt anybody.
+    //
+    // The owner: "this shouldnt show everytime". An unknown newcomer being held
+    // is the NORMAL case in a room ChanBot voices everybody in — it happened
+    // nine times in one run — and a notice each is the same flood this feature
+    // exists to keep out of the channel, moved into the moderators' windows.
+    // Somebody arriving from a range the room has been attacked from, or already
+    // heard misbehaving elsewhere, is worth a message. "A new person arrived" is
+    // not; it goes in the log and into the digest below.
+    if (!notable) return true;
     holdQueue.push({ chan, nick, why });
     if (!holdTimer && Date.now() - lastHoldTold > 10000) {
         flushHolds();
@@ -692,7 +700,7 @@ function guardArrival(chan, nick) {
     if (isRegistered(nick)) return false;
     if (vouchedFor.has(String(nick).toLowerCase())) return false;
     return holdBack(chan, nick, 'unregistered, on a range this room has been attacked from',
-                    false, true);
+                    { tellThem: true, notable: true });
 }
 
 /**
@@ -3948,7 +3956,9 @@ function voiceSweep(ch) {
         // voice IS the right to speak — in an ordinary room it is a mark of
         // standing, most guests never have it, and announcing each one would be
         // a running commentary on everybody who ever visits.
-        if (moderatedRooms.has(ch)) holdBack(ch, n, voiceReason(n, ch).why || 'not voiced here yet');
+        if (moderatedRooms.has(ch)) {
+            holdBack(ch, n, voiceReason(n, ch).why || 'not voiced here yet', { voiceless: true });
+        }
         if (!accountOf.has(String(n).toLowerCase())) unknown += 1;
         else noteVoiceDenial(n, ch);                            // known, and still no
     }
@@ -5191,6 +5201,32 @@ function handleLine(line) {
             // minutes. Cheap: the prefix check makes it a no-op for anyone who
             // already has voice.
             setInterval(() => config.channels.forEach((c) => voiceSweep(chanKey(c))), 30000);
+            // Who is waiting for a voice, once in a while rather than once each.
+            //
+            // Routine holds no longer interrupt anybody — in a room ChanBot
+            // voices everyone into, "an unknown person arrived" happens all day
+            // and a notice each is a flood in the moderators' windows. But they
+            // still need to know who is sitting there unable to talk, so this is
+            // one line every HOLD_DIGEST_MIN naming everybody currently held, and
+            // nothing at all when the list is empty or unchanged.
+            let lastDigest = '';
+            setInterval(() => {
+                if (!ready) return;
+                const waiting = new Map();          // chan -> [nick]
+                for (const key of heldBack.keys()) {
+                    const [ch, who] = key.split('|');
+                    if (!waiting.has(ch)) waiting.set(ch, []);
+                    waiting.get(ch).push(who);
+                }
+                if (!waiting.size) { lastDigest = ''; return; }
+                const parts = [...waiting.entries()]
+                    .map(([ch, who]) => `${ch}: ${who.sort().join(', ')}`);
+                const line = parts.join(' | ');
+                if (line === lastDigest) return;    // nothing has changed; say nothing
+                lastDigest = line;
+                tellMods(`\x0307[HOLD]\x03 waiting for a voice — ${line}. `
+                    + 'Voice anyone who looks fine and the hold lifts.');
+            }, Math.max(5, Number(process.env.HOLD_DIGEST_MIN || 15)) * 60000).unref?.();
             // ── Keep knocking ────────────────────────────────────────────
             //
             // Live, 10:09:23: a moderator banned the account and kicked the bot
@@ -5545,7 +5581,7 @@ function handleLine(line) {
                             : (!isRegistered(who) && hostIsForeign(who)
                                 ? 'unregistered, on a network this room does not recognise'
                                 : 'not voiced here yet'));
-                    holdBack(tgt, who, why, true, true);
+                    holdBack(tgt, who, why, { tellThem: true, notable: where.length > 0 });
                 }
                 if ('ovhq'.includes(ch) && who) {          // track everyone's status
                     const key = `${chanKey(tgt)}|${who.toLowerCase()}`;
@@ -5897,7 +5933,7 @@ function handleLine(line) {
                 if (guardArrival(c, nick)) return;          // already held, and told
                 if (!moderatedRooms.has(chanKey(c))) return;
                 if (deservesVoice(nick, c)) return;
-                holdBack(c, nick, voiceReason(nick, c).why || 'not voiced here yet', false, true);
+                holdBack(c, nick, voiceReason(nick, c).why || 'not voiced here yet', { tellThem: true });
             }, 6000);
         }
 
