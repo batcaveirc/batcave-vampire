@@ -84,6 +84,7 @@ server.listen(0, '127.0.0.1', () => {
             ...process.env,
             IRC_SERVER: '127.0.0.1', IRC_PORT: String(server.address().port), IRC_TLS: '0',
             IRC_NICK: 'D', IRC_CHANNEL: CHAN, OWNERS: 'vikram',
+            RECRUIT_ON: 'on', RECRUIT_CHANNELS: '#chatsansar',
             WHITELIST: '', TRUST_CHANNEL: '', MOD_ENABLED: 'on',
             RECRUIT_ON: 'off', GROQ_API_KEY: '', GEMINI_API_KEY: '',
         },
@@ -116,6 +117,17 @@ server.listen(0, '127.0.0.1', () => {
             c('and it never reads the flag LIST to decide',
               !/^PRIVMSG ChanServ :FLAGS #batcave$/m.test(all),
               'a second listing would be absorbed as trust-channel rows');
+            // And never in a room we are only a guest in. The owner was told to
+            // set founder flags on #chatsansar — a room he does not own — because
+            // this ran on every JOIN rather than on our own channels. Asking
+            // somebody else's services for access is how a tolerated guest
+            // becomes a banned one.
+            c('it never asks for flags in a room that is not ours',
+              !/^PRIVMSG ChanServ :FLAGS #chatsansar/m.test(all),
+              sent.filter((l) => /chatsansar/.test(l)).join(' | '));
+            c('nor claims ops there',
+              !/^PRIVMSG ChanServ :OP #chatsansar/m.test(all),
+              sent.filter((l) => /chatsansar/.test(l)).join(' | '));
         } else {
             c('a refusal is reported, not swallowed',
               /not authorized|cannot grant|refused/i.test(out),

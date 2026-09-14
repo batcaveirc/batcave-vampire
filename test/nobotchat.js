@@ -41,8 +41,13 @@ srv.listen(0,'127.0.0.1', async() => {
  sock.write(':bob!b@h PRIVMSG #batcave :Dracula are you there\r\n');
  await wait(2500);
  check('but still answers a PERSON',
-       out.some(l=>/^PRIVMSG #batcave :bob:/.test(l)),
+       out.some(l=>/^PRIVMSG #batcave :/.test(l)),
        out.filter(l=>/PRIVMSG #batcave/.test(l)).join(' | ')||'(nothing — should have replied)');
+ // ...and the reply to a two-person exchange does NOT name them, which is the
+ // point of the change: nobody types the other person's nick on every line.
+ check('without prefixing their nick, which no person types',
+       !out.some(l=>/^PRIVMSG #batcave :bob:/.test(l)),
+       out.filter(l=>/PRIVMSG #batcave/.test(l)).join(' | '));
 
  console.log('\n=== no bot-to-bot chatter ===');
  let ok=true;for(const[n,p,d]of R){ok=ok&&p;console.log(`  [${p?'PASS':'FAIL'}] ${n}${!p&&d?' — '+d:''}`);}

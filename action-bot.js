@@ -14,6 +14,7 @@ const { TrustList, effective } = require('./trust');
 const { pack } = require('./trustrelay');
 const { Reputation } = require('./reputation');
 const { Attendance, verifyReport } = require('./attendance');
+const { transcript, needsName, typingDelay, deRobot, isRepeat } = require('./voice');
 const { solicits } = require('./solicit');
 const { severeAbuse } = require('./abuse');
 
@@ -1813,6 +1814,10 @@ function reportTrustRefusal(line) {
 function entitle(chan) {
     const key = chanKey(chan);
     if (entitled.has(key)) return;                  // once per channel per run
+    // Never in somebody else's room. Asking their services for founder-level
+    // access is how a tolerated guest becomes a banned one, and the owner was
+    // told to fix flags on #chatsansar, which is not his channel.
+    if (!isOurChannel(chan)) return;
     // ChanServ keys on the account and nothing else. Asking it to set flags on
     // our NICK would either fail or, worse, entitle whoever wears that nick
     // next — and our nick is the one thing about us anybody can take.
@@ -3541,29 +3546,60 @@ async function screenNick(chan, nick) {
 }
 
 // --- Witty AI reply (for mentions when sentient mode is off) ---
-async function getAIResponse(prompt, who) {
+async function getAIResponse(prompt, who, chan) {
     if (!config.groqKey) return null;
+    // The conversation so far. This is the change that mattered: the old version
+    // sent one line with no history, so a follow-up question met something that
+    // had already forgotten the first one. recentSaid was already collecting the
+    // room and nothing here ever read it.
+    const said = recentSaid.get(chanKey(chan || '')) || [];
+    const seen = transcript(said, { me: config.nick, limit: 8 });
+    const messages = [
+        { role: 'system', content:
+            'You are Dracula in an IRC chat room. You are a PERSON in a conversation, '
+            + 'not an assistant answering a ticket.\n'
+            + 'HOW YOU TALK: like somebody typing quickly in a chat window. Usually '
+            + 'one line, often under twelve words. No stage directions, no asterisks, '
+            + 'no emoji unless the room is using them. Do not start with the person\'s '
+            + 'name. Do not open with "Ah" or "Well". Never explain that you are '
+            + 'answering; just answer.\n'
+            + 'THE ROOM SPEAKS HINGLISH — Hindi written in Roman letters, mixed with '
+            + 'English. Match whatever register the person used: Hinglish back if they '
+            + 'wrote Hinglish, English if they wrote English. Do not translate for '
+            + 'them and do not be more formal than they were.\n'
+            + 'FOLLOW THE THREAD. You are given the recent lines. If somebody is '
+            + 'continuing an earlier point, continue it; do not answer as if the line '
+            + 'arrived out of nowhere. Never repeat something you already said - check '
+            + 'the lines marked "you".\n'
+            + 'ANSWER THE QUESTION FIRST, truthfully and specifically, in plain words; '
+            + 'atmosphere afterwards and only if it fits. If you do not know, say so. '
+            + 'Asked something real and answering with mood makes you useless.\n'
+            + 'People ask who the other bots are: Carmilla is from Sheridan Le '
+            + "Fanu's 1872 novella, Drusilla is from Buffy the Vampire Slayer and "
+            + 'Angel, Katerina (Katerina Petrova, also called Katherine Pierce) IS '
+            + 'from The Vampire Diaries, and Renfield was your servant in Bram '
+            + "Stoker's novel.\n"
+            + 'Never announce that you are a bot.' },
+    ];
+    if (seen) {
+        messages.push({ role: 'system', content: `Recent lines in the room:\n${seen}` });
+    }
+    messages.push({ role: 'user', content: `${who}: ${prompt}` });
     try {
         const data = await groqChat({
-            model: config.groqModel, temperature: 0.9, max_tokens: 120,
-            messages: [
-                { role: 'system', content:
-                    'You are Dracula, a witty gothic vampire haunting an IRC channel. '
-                    + 'ANSWER THE QUESTION FIRST, truthfully and specifically, in plain '
-                    + 'words; add the gothic flourish afterwards and only if it fits. If '
-                    + 'you do not know, say so plainly. Never dodge a factual question '
-                    + 'with atmosphere — asked something real and answered with mood, you '
-                    + 'are simply unhelpful.\n'
-                    + 'People ask who the other bots are: Carmilla is from Sheridan Le '
-                    + "Fanu's 1872 novella, Drusilla is from Buffy the Vampire Slayer and "
-                    + 'Angel, Katerina (Katerina Petrova, also called Katherine Pierce) IS '
-                    + 'from The Vampire Diaries, and Renfield was your servant in Bram '
-                    + "Stoker's novel.\n"
-                    + 'Never admit to being a bot. Keep replies to 1-2 sharp sentences.' },
-                { role: 'user', content: `${who} says: ${prompt}` },
-            ],
+            model: config.groqModel, temperature: 0.95, max_tokens: 120, messages,
         });
-        return (data?.choices?.[0]?.message?.content || '').replace(/\s+/g, ' ').trim().slice(0, 380) || null;
+        const raw = (data?.choices?.[0]?.message?.content || '');
+        const out = deRobot(raw).slice(0, 380);
+        if (!out) return null;
+        // Repetition is the loudest tell and the one no prompt fixes: the same
+        // clever line twice is worse than a dull one once. Saying nothing is a
+        // perfectly human thing to do, so that is the fallback.
+        if (isRepeat(out, ourLines)) {
+            log('INFO', `Dropped a reply to ${who} — it was something I had already said.`);
+            return null;
+        }
+        return out;
     } catch (e) { return null; }
 }
 
@@ -5721,11 +5757,13 @@ function handleLine(line) {
         hasJoined = true;
         const c = (tgt || msg).replace(/^:/, '');
         log('OK', `Joined ${c}`);
-        send(`PRIVMSG ChanServ :OP ${c} ${currentNick}`);   // claim ops up front
+        if (isOurChannel(c)) {
+            send(`PRIVMSG ChanServ :OP ${c} ${currentNick}`);   // claim ops up front
+            entitle(c);                                         // and the flags to stay
+        }
         send(`WHO ${c} %cuhnar,152`);                       // WHOX: hosts AND accounts
         send(`NAMES ${c}`);                                 // and our own op status
         send(`MODE ${c}`);                                  // and whether the door is shut
-        entitle(c);                                         // and the flags to stay
         // Deliberately silent. This used to announce "Dracula stirs" in every
         // room it owns, which was useful while the rooms were being set up and
         // is noise now: the host hands the job over roughly every six hours and
@@ -6068,7 +6106,18 @@ function handleLine(line) {
             const everyBot = [...PROTECTED_NICKS, ...(handshake.peers || [])];
             const speaker = firstNamed(msg, everyBot);
             if (!speaker || speaker === config.nick.toLowerCase()) {
-                getAIResponse(msg, nick).then((r) => { if (r) say(tgt, `${nick}: ${r}`); });
+                const askedAt = recentSaid.get(chanKey(tgt))?.length || 0;
+                getAIResponse(msg, nick, tgt).then((r) => {
+                    if (!r) return;
+                    // Name them only when somebody else has spoken since, so the
+                    // room can tell who is being answered. "nick: " on every line
+                    // is something no person types.
+                    const since = (recentSaid.get(chanKey(tgt)) || []).slice(askedAt);
+                    const line = needsName(since, nick) ? `${nick}: ${r}` : r;
+                    // And not in 400ms. An instant answer to everything is a tell
+                    // no wording can hide.
+                    setTimeout(() => say(tgt, line), typingDelay(r));
+                });
             }
             return;
         }
