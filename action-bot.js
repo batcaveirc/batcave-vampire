@@ -405,7 +405,8 @@ function desiredTopic(chan) {
             + 'just wait here a moment. Everyone else: /knock '
             + (config.channels[0] || '#batcave') + ' <reason>. Say !!help for what you can use.';
     }
-    return 'Invite-only. Say !!help for what you can use here'
+    return 'Invite-only. Say !!help for what you can use here (the answer arrives as a '
+        + 'private notice, not in the room)'
         + ' — trusted regulars can say shazam to have whoever is targeting them removed.'
         + (foyer ? ' Locked out? Join ' + foyer + ' and you will be invited across.' : '');
 }
@@ -4019,11 +4020,28 @@ function handleCommand(chan, nick, message) {
     // is what stops a slip becoming thirty removals, not the permission check.
     const admin = isAdmin(nick) || isChannelMod(chan, nick);
     log('CMD', `${nick} !!${cmd}`);
-    // Command output goes back to the caller as a NOTICE. A help listing or a
-    // status dump is for the person who asked; pasting it into the room makes
-    // every command an interruption for everyone else. Moderation
-    // announcements still go to the channel — those the room needs to see.
-    const reply = (m) => notice(nick, m);
+    // Where a command's answer goes: PRIVATELY, to whoever asked.
+    //
+    // Settled by the owner, 2026-09-14, after both alternatives were tried live.
+    // Answers briefly went to the channel, because typing !!help and seeing
+    // nothing had twice been reported as the bot being broken — the log said
+    // [CMD] Vikram !!help while the room stayed silent. The owner's decision on
+    // seeing that fixed: "this should appear as notice it shouldnt be seen by
+    // other users."
+    //
+    // He is right about the room. A help listing, a trust list or somebody's
+    // host is for the person who asked, and pasting it into the channel makes
+    // every command an interruption for everyone else — which is the thing this
+    // bot has been trimmed of repeatedly. The discoverability problem was never
+    // really the destination; it was that nobody had said where the answers go.
+    // !!help now says so in its own first line.
+    //
+    // CMD_REPLY=channel flips it back for a room that would rather see them.
+    // Moderation announcements are unaffected: those still go to the channel,
+    // because the room needs to see them.
+    const toChannel = /^channel$/i.test(String(process.env.CMD_REPLY || '').trim())
+        && String(chan || '').startsWith('#');
+    const reply = (m) => (toChannel ? say(chan, m) : notice(nick, m));
 
     // The game claims its own commands first. !!join with no argument joins a
     // lobby; !!join #room stays the admin channel command underneath.
@@ -4047,6 +4065,9 @@ function handleCommand(chan, nick, message) {
         // Twenty commands were reachable and undiscoverable, including !!kick and
         // !!ban. test/helpcoverage.js now fails if that drifts again.
         case 'help': {
+            reply('I answer commands \x02here, privately\x02 — never in the room, so nobody '
+                + 'else sees what you asked. If a command seems to do nothing, it answered '
+                + 'in this window.');
             reply('\x02Everyone\x02: !!seen <nick> · !!info [nick] · !!rules · !!status');
             reply('\x02Fun\x02: !!8ball <q> · !!ship <a> <b> · !!hug|!!pat|!!slap|!!bite <nick> · '
                 + '!!fortune · !!vibe · !!rip · !!ask <q> · !!icebreaker · !!story · '

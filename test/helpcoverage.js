@@ -98,5 +98,23 @@ const lines = [...helpBody.matchAll(/reply\(([\s\S]*?)\);/g)].map((m) => m[1]);
 const longest = Math.max(...lines.map((l) => l.replace(/[^\x20-\x7e]/g, '').length));
 c('no single help line is absurdly long', longest < 900, `longest ${longest} chars`);
 
+console.log('\n— answers are private, and help says so —');
+// Settled by the owner after both were tried live: "this should appear as notice
+// it shouldnt be seen by other users." The reason it had looked broken was never
+// the destination — it was that nothing said where the answers go. So they stay
+// private and the bot says so, in the topic and in help's own first line.
+const cmdFn = src.slice(cmdAt, src.indexOf('function ', cmdAt + 40));
+c('a command answers the person, not the room',
+  /const reply = \(m\) => \(toChannel \? say\(chan, m\) : notice\(nick, m\)\)/.test(cmdFn),
+  'a help listing pasted into the channel makes every command an interruption');
+c('and CMD_REPLY can flip it for a room that wants them visible',
+  /CMD_REPLY/.test(cmdFn));
+c('help says where its own answer went',
+  /answer commands .*here, privately/.test(helpBody),
+  'silence with no explanation was reported as a broken bot, twice');
+c('and the topic says it too, for anyone who never runs help',
+  /private notice, not in the room/.test(src),
+  'one permanent place to say it, rather than a line after every command');
+
 console.log(f ? `\n${f} FAILED` : '\nALL PASS');
 process.exit(f ? 1 : 0);

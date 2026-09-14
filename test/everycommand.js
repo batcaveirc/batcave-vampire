@@ -60,6 +60,11 @@ const callerFor = (cmd) => (FUN.has(cmd) ? `Tester${++testerN}` : 'Vikram');
 
   out.length=0; say('#batcave','Vikram','!!help'); await wait(1500);
   const helpText = out.filter(l=>/^NOTICE Vikram/.test(l)).map(plain).join(' ');
+  c('!!help answers the person PRIVATELY, not the room',
+    out.some(l=>/^NOTICE Vikram :/.test(l)) && !out.some(l=>/^PRIVMSG #batcave :/.test(l)),
+    out.filter(l=>/^(PRIVMSG|NOTICE)/.test(l)).map(plain).join(' | ').slice(0,160));
+  c('and it says so, so silence is never mistaken for a dead command',
+    /privately/i.test(helpText), helpText.slice(0, 120) || '(nothing)');
   const advertised = [...new Set((helpText.match(/!!([a-z]+)/g)||[]).map(x=>x.slice(2)))]
     .filter(x=>!SKIP.has(x));
   c('!!help answers', helpText.length > 0, '(nothing)');
