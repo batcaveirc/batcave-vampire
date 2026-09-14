@@ -16,7 +16,10 @@ const ARG = { seen:'LiBu', info:'LiBu', unwarn:'LiBu', badword:'list', whitelist
   autoban:'list', protect:'list', announce:'hello', mass:'voice', hardban:'',
   join:'', part:'', strict:'', linkfilter:'', raidguard:'', history:'', sentient:'',
   moderate:'', autovoice:'', fun:'', recruit:'', hotseat:'LiBu', toast:'LiBu' };
-const SKIP = new Set(['join','part','mass','hardban','announce','history','endgame']);
+const SKIP = new Set(['join','part','mass','hardban','announce','history','endgame',
+  // Starts a real round, which then breaks every game assertion below in this
+  // same file with "a game is already running". Driven properly further down.
+  'findit']);
 
 const srv=net.createServer((s)=>{ sock=s; s.on('error',()=>{});
   s.on('data',(d)=>{ for(const l of String(d).split('\r\n')) { if(!l) continue; out.push(l);

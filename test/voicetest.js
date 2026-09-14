@@ -56,6 +56,15 @@ c('never instant', typingDelay('k', () => 0) >= 600, String(typingDelay('k', () 
 c('never a stall', typingDelay('x'.repeat(2000), () => 1) <= 5200,
   String(typingDelay('x'.repeat(2000), () => 1)));
 c('and it varies', typingDelay('hello there', () => 0.1) !== typingDelay('hello there', () => 0.9));
+// The ceiling is configurable. It was a fixed 5.2s, which is a fine value for a
+// room and an impossible one for a test — nobotchat.js waits 2.5s and so failed
+// about one run in three, on an assertion about something else entirely.
+c('the ceiling can be lowered', typingDelay('x'.repeat(400), () => 1, 800) === 800,
+  String(typingDelay('x'.repeat(400), () => 1, 800)));
+c('and switched off entirely', typingDelay('hello', () => 0.5, 0) === 0,
+  'a room that wants instant answers should be able to have them');
+c('a cap below the floor still wins', typingDelay('k', () => 0, 50) <= 50,
+  String(typingDelay('k', () => 0, 50)));
 
 console.log('\n— the document polish comes off —');
 c('stage directions go', deRobot('*smiles darkly* haan bol', () => 1) === 'haan bol',

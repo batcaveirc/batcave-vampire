@@ -4039,24 +4039,41 @@ function handleCommand(chan, nick, message) {
         // asking what the bot does got thirty commands they cannot run, and
         // the four they can were buried in the middle. IRC truncates a long
         // line silently at ~512 bytes too, so the tail was being lost.
+        // Everything the bot answers, in one place.
+        //
+        // The owner went looking for FindIt and it was not here at all: help had
+        // been written against the main switch, and there are THREE dispatch
+        // surfaces — this switch, fun.handle() and game.handle() in findit.js.
+        // Twenty commands were reachable and undiscoverable, including !!kick and
+        // !!ban. test/helpcoverage.js now fails if that drifts again.
         case 'help': {
-            reply('\x02Everyone\x02: !!seen <nick> · !!info [nick] · !!rules · !!status · '
-                + '!!8ball <q> · !!ship <a> <b> · !!hug|!!pat|!!slap <nick> · !!fortune · !!vibe');
+            reply('\x02Everyone\x02: !!seen <nick> · !!info [nick] · !!rules · !!status');
+            reply('\x02Fun\x02: !!8ball <q> · !!ship <a> <b> · !!hug|!!pat|!!slap|!!bite <nick> · '
+                + '!!fortune · !!vibe · !!rip · !!ask <q> · !!icebreaker · !!story · '
+                + '!!toast <nick> · !!hotseat <nick>');
+            reply('\x02Games\x02: !!findit starts a round in the game room — the round itself '
+                + 'tells you what to type as it goes.');
             if (isTrusted(nick) || admin) {
                 reply('\x02Trusted regulars\x02: say \x02shazam\x02 and I remove whoever is '
                     + 'attacking you — no ops needed, no name to type.');
             }
             if (!admin) {
-                reply('Games live in the game room; the standbys answer $$help and Luna1 '
-                    + 'answers $help. Ask an operator if you need something here.');
+                reply('The standbys answer $$help and Luna1 answers $help. '
+                    + 'Ask an operator if you need something here.');
                 break;
             }
+            reply('\x02Mods — just say it\x02: \x02Dracula kick <nick>\x02 — and the same for '
+                + 'ban, unban, mute, unmute, voice, devoice, warn. Plain English, no !!, '
+                + 'and you can add a reason: \x02Dracula ban bob for spamming\x02.');
+            reply('\x02Mods — one person\x02: !!unquiet <nick> (clear a quiet) · '
+                + '!!unwarn <nick> (wipe their strikes) · !!protect add|remove <nick> · '
+                + '!!hardban <nick>');
+            reply('\x02Mods — standing\x02: !!trust add|del|seed <nick> · '
+                + '!!untrust add|del|seed <nick> · !!autoban add|remove|list <mask>');
             reply('\x02Mods — the room\x02: !!moderate on|off · !!active on|off (AI; off = cool) · '
-                + '!!door on|off|sync (invite-only) · !!letin <nick> · !!autovoice on|off · '
-                + '!!history on|off · !!fun on|off · !!announce <msg>');
-            reply('\x02Mods — people\x02: !!trust add|del|seed <nick> · !!untrust add|del|seed <nick> · '
-                + '!!unwarn <nick> · !!protect add|remove <nick> · !!hardban <nick> · '
-                + '!!autoban add|remove|list <mask> · !!mass kick|ban|voice|devoice');
+                + '!!mod on|off (auto-moderation) · !!door on|off|sync (invite-only) · '
+                + '!!letin <nick> · !!autovoice on|off · !!history on|off · !!fun on|off · '
+                + '!!topic [#room] <text> · !!announce <msg> · !!mass kick|ban|voice|devoice');
             reply('\x02Mods — the bot\x02: !!join|!!part #room · !!rooms · !!access · !!aicheck · '
                 + '!!recruit on|off|now · !!badword add|remove <w> · !!strict on|off · '
                 + '!!linkfilter on|off · !!raidguard on|off · !!sentient on|off');
@@ -4438,7 +4455,8 @@ function handleCommand(chan, nick, message) {
             else reply( `Auto-moderation is ${modEnabled ? 'ON' : 'OFF'}. Use !!mod on|off.`);
             break;
         case 'unquiet':
-            if (!admin) { reply('Access denied.'); break; } if (!target) break;
+            if (!admin) { reply('Access denied.'); break; }
+            if (!target) { reply('Usage: !!unquiet <nick>'); break; }
             send(`MODE ${chan} -q ${target}!*@*`);
             reply( `Cleared any quiet on ${target}.`);
             break;
@@ -6152,7 +6170,8 @@ function handleLine(line) {
                     const line = needsName(since, nick) ? `${nick}: ${r}` : r;
                     // And not in 400ms. An instant answer to everything is a tell
                     // no wording can hide.
-                    setTimeout(() => say(tgt, line), typingDelay(r));
+                    setTimeout(() => say(tgt, line),
+                               typingDelay(r, Math.random, Number(process.env.TYPING_MAX_MS ?? 5200)));
                 });
             }
             return;

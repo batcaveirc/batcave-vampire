@@ -80,11 +80,18 @@ function needsName(log, who) {
  * typist, floored so a one-word reply is not suspiciously immediate and capped
  * so nobody is left waiting on a bot pretending to think.
  */
-function typingDelay(text, rnd = Math.random) {
+function typingDelay(text, rnd = Math.random, maxMs = 5200) {
+    // The ceiling is configurable, for two reasons. A room may want it snappier
+    // than five seconds, and a TEST cannot wait that long for every assertion:
+    // the fixed version made nobotchat.js fail about one run in three, because
+    // the jitter sometimes pushed a reply past its window. A flaky test is worse
+    // than a missing one, because it teaches people to ignore red.
+    const cap = Math.max(0, Number(maxMs) || 0);
+    if (!cap) return 0;
     const n = String(text || '').length;
     const base = 700 + n * 22;
-    const jitter = 0.75 + rnd() * 0.6;               // ±
-    return Math.round(Math.max(600, Math.min(5200, base * jitter)));
+    const jitter = 0.75 + rnd() * 0.6;
+    return Math.round(Math.max(Math.min(600, cap), Math.min(cap, base * jitter)));
 }
 
 /**

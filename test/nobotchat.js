@@ -16,7 +16,7 @@ srv.listen(0,'127.0.0.1', async() => {
  const bot=spawn('node',['-r',`${__dirname}/groqstub.js`,
    '../action-bot.js'],{
    env:{...process.env,IRC_SERVER:'127.0.0.1',IRC_PORT:String(PORT),IRC_TLS:'off',
-     IRC_NICK:'Dracula',IRC_CHANNEL:'#batcave',GROQ_API_KEY:'k',SENTIENT_ON:'off',
+     IRC_NICK:'Dracula',IRC_CHANNEL:'#batcave',GROQ_API_KEY:'k',TYPING_MAX_MS:'1',SENTIENT_ON:'off',
      PEER_SECRET:'s',PEER_BOTS:'Carmilla,Drusilla',BOT_NICKS:'Almond',RAID_GUARD:'off'},
    stdio:['ignore','pipe','pipe']});
  const wait=ms=>new Promise(r=>setTimeout(r,ms));

@@ -232,6 +232,11 @@ jobs:
           # their private windows. A guarded range or somebody already heard
           # misbehaving elsewhere still says so at once.
           HOLD_DIGEST_MIN: ${{ secrets.HOLD_DIGEST_MIN || '15' }}
+          # The longest a reply is held back to look like typing. An instant
+          # answer to everything is a tell no wording hides; five seconds is the
+          # ceiling, not the usual wait. Set to 0 to answer as fast as the queue
+          # allows.
+          TYPING_MAX_MS: ${{ secrets.TYPING_MAX_MS || '5200' }}
           # Carrier tails this room recognises, comma separated — the honest form
           # of "be easy on Indian, US and UK users, hold the unknown countries".
           # We cannot see anybody's country: the network cloaks the address, so no
