@@ -5005,7 +5005,16 @@ function handleCommand(chan, nick, message) {
             if (!admin) { reply('Access denied.'); break; } if (!args.length) break;
             say(chan, `\x0304[ANNOUNCE]\x03 \x02${args.join(' ')}\x02`);   // for the room, by definition
             break;
-        default: break;
+        // An unknown !! command answered NOTHING, which is the same thing a dead
+        // bot does. The owner typed !!roast, !!op and !!invite — none of them
+        // ours — got silence from all three, and reasonably concluded the bot was
+        // broken: "its not working at all ... this is my 5th attempt".
+        //
+        // Every command answers now, even the ones that do not exist.
+        default:
+            reply(`I have no \x02!!${cmd}\x02. Say \x02!!help\x02 for what I do have `
+                + '(and !!help fun, !!help mods).');
+            break;
     }
 }
 
