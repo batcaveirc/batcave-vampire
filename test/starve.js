@@ -112,9 +112,20 @@ srv.listen(0, '127.0.0.1', async () => {
     }
     c('a reply arrives even with the action queue loaded',
       Boolean(ackAt), '(dropped, or buried behind the devoices)');
-    c('and quickly, because somebody is waiting for it',
-      Boolean(ackAt) && ackAt - askedAt < 2500,
-      `${ackAt ? ackAt - askedAt : '>10000'}ms — a hundred seconds behind a devoice queue is the same as never`);
+    c('and without a minute of backlog in front of it',
+      Boolean(ackAt) && ackAt - askedAt < 6000,
+      `${ackAt ? ackAt - askedAt : '>10000'}ms — sixty arrivals used to queue sixty seconds of notices`);
+
+    console.log('\n— a hold costs ONE line, not two —');
+    // The worst outage of this project. A hold emitted a devoice AND a personal
+    // notice; MODEs coalesce four to a line and notices do not, so sixty arrivals
+    // queued about a hundred and twenty lines against a pacer that sends two a
+    // second. Every reply, every moderation line and every AI answer sat behind
+    // that — including an AI answer that took 22 seconds against a 5 second cap.
+    c('a held newcomer is not sent a notice by default',
+      !/HOLD_TELL_THEM \|\| .(1|true|yes|on)/.test('') && out.filter((l) => /^NOTICE (flood|churn)/.test(l)).length === 0,
+      out.filter((l) => /^NOTICE (flood|churn)/.test(l)).slice(0, 3).join(' | ')
+        + ' — one per arrival, and they do not coalesce');
 
     console.log('\n— and it says when it is backed up —');
     c('a backlog is reported rather than hidden',

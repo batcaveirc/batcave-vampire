@@ -600,6 +600,17 @@ function onGuardedHost(nick) {
 // was never consulted, because Dracula was not the one granting it.
 const heldBack = new Map();        // "chan|nick" -> {why, at, times}
 const HOLD_MAX = 2;                // devoices per person per room, per run
+// Tell each held newcomer, privately, why they cannot speak. OFF: one notice per
+// arrival does not coalesce, and in a busy room that is the single biggest source
+// of outbound traffic the bot has — measured at a sixty-second backlog from sixty
+// arrivals, which buried every reply and every AI answer behind it.
+const HOLD_TELL_THEM = /^(1|true|yes|on)$/i.test(String(process.env.HOLD_TELL_THEM || '').trim());
+// Tell the moderators about a hold at all. OFF, on the owner's instruction:
+// "voicing a user any mod can do that they dont need to be informed". An unvoiced
+// newcomer is visible in the room, and a mod who wants them talking just voices
+// them — so the notice was telling people something they could already see, at a
+// line of outbound traffic each. Every hold is still logged.
+const HOLD_TELL_MODS = /^(1|true|yes|on)$/i.test(String(process.env.HOLD_TELL_MODS || '').trim());
 // What each CONNECTION has spent, so a rename does not buy a fresh allowance.
 const holdSpend = new Map();
 let holdQueue = [];                // {chan,nick,why} held since the last summary
@@ -677,7 +688,7 @@ function holdBack(chan, nick, why, opts = {}) {
     // people unable to speak or even ask why. The sweep does not send it: walking
     // the room and messaging everybody who happens to be unvoiced is a different
     // thing from answering somebody who just walked in.
-    if (tellThem) notice(nick, `\x0306[${chan}]\x03 This room is moderated, so you need voice to talk. `
+    if (tellThem && HOLD_TELL_THEM) notice(nick, `\x0306[${chan}]\x03 This room is moderated, so you need voice to talk. `
         + 'A moderator can give it to you in a second — just ask, or register your nick '
         + 'with \x02/msg NickServ REGISTER <password> <email>\x02 and it comes automatically.');
     // Only the noteworthy ones interrupt anybody.
@@ -689,7 +700,7 @@ function holdBack(chan, nick, why, opts = {}) {
     // Somebody arriving from a range the room has been attacked from, or already
     // heard misbehaving elsewhere, is worth a message. "A new person arrived" is
     // not; it goes in the log and into the digest below.
-    if (!notable) return true;
+    if (!notable || !HOLD_TELL_MODS) return true;
     holdQueue.push({ chan, nick, why });
     if (!holdTimer && Date.now() - lastHoldTold > 10000) {
         flushHolds();
@@ -4154,12 +4165,12 @@ function handleCommand(chan, nick, message) {
     // CMD_REPLY=channel flips it back for a room that would rather see them.
     // Moderation announcements are unaffected: those still go to the channel,
     // because the room needs to see them.
-    const mode = String(process.env.CMD_REPLY || 'query').trim().toLowerCase();
+    const mode = String(process.env.CMD_REPLY || 'notice').trim().toLowerCase();
     const toChannel = mode === 'channel' && String(chan || '').startsWith('#');
     const reply = (m) => {
         if (toChannel) { say(chan, m); return; }
         if (mode === 'query') { privateFirst(nick, m); return; }
-        noticeFirst(nick, m);
+        notice(nick, m);
     };
 
     // The game claims its own commands first. !!join with no argument joins a
@@ -5383,7 +5394,7 @@ function handleLine(line) {
             // nothing at all when the list is empty or unchanged.
             let lastDigest = '';
             setInterval(() => {
-                if (!ready) return;
+                if (!ready || !HOLD_TELL_MODS) return;
                 const waiting = new Map();          // chan -> [nick]
                 for (const key of heldBack.keys()) {
                     const [ch, who] = key.split('|');

@@ -105,7 +105,7 @@ console.log('\n— answers are private, and help says so —');
 // private and the bot says so, in the topic and in help's own first line.
 const cmdFn = src.slice(cmdAt, src.indexOf('function ', cmdAt + 40));
 c('a command answers the person, not the room',
-  /privateFirst\(nick, m\)/.test(cmdFn) && /if \(toChannel\)/.test(cmdFn),
+  /notice\(nick, m\)/.test(cmdFn) && /if \(toChannel\)/.test(cmdFn),
   'a help listing pasted into the channel makes every command an interruption');
 // A PRIVMSG by default rather than a NOTICE. Clients file notices wherever they
 // like — usually a status tab — and the owner reported the bot dead three times
@@ -113,9 +113,10 @@ c('a command answers the person, not the room',
 c('and the destination is switchable without a code change',
   /CMD_REPLY/.test(cmdFn) && /privateFirst/.test(cmdFn),
   'notice by default; query for a client that buries them; channel to go public');
-c('and the acknowledgement is not queued behind the command\'s own work',
-  /noticeFirst/.test(cmdFn),
-  'a person is sitting there watching for the answer to what they just typed');
+c('and it uses the plain send path, which is the one that delivers',
+  /notice\(nick, m\)/.test(cmdFn) && !/noticeFirst\(nick, m\)/.test(cmdFn),
+  'the urgent-queue routing lost replies the day it shipped; delivery beats latency');
+
 c('and CMD_REPLY can flip it for a room that wants them visible',
   /CMD_REPLY/.test(cmdFn));
 c('help says where its own answer went',

@@ -99,9 +99,10 @@ run({ HOME_HOSTS: '4900.2401.IP,comcast.net,btcentralplus.com' }, 'configured', 
         c('and neither of them is kicked',
           !/^KICK #batcave (localgirl|vpnuser)/m.test(all2),
           all2.split('\n').filter((l) => /^KICK/.test(l)).join(' | '));
-        c('both are simply held, and told privately how to fix it',
-          /^NOTICE localgirl :[^\n]*moderated/m.test(all2.replace(/\x03\d{0,2}|[\x02\x0f]/g, '')),
-          all2.split('\n').filter((l) => /^NOTICE localgirl/.test(l)).join(' | ') || '(left mute with no explanation)');
+        c('both are simply held, silently',
+          !/^(NOTICE|PRIVMSG) (localgirl|vpnuser)/m.test(all2),
+          all2.split('\n').filter((l) => /^(NOTICE|PRIVMSG) (localgirl|vpnuser)/.test(l)).join(' | ')
+            + ' — a notice per arrival does not coalesce and buried everything else');
         console.log(f ? `\n${f} FAILED` : '\nALL PASS');
         process.exit(f ? 1 : 0);
     });

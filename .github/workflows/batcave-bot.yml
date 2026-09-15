@@ -232,6 +232,19 @@ jobs:
           # their private windows. A guarded range or somebody already heard
           # misbehaving elsewhere still says so at once.
           HOLD_DIGEST_MIN: ${{ secrets.HOLD_DIGEST_MIN || '15' }}
+          # Tell each held newcomer privately why they cannot speak. OFF, and
+          # that default is the fix for the worst outage of this project: one
+          # notice per arrival does not coalesce the way a MODE does, so sixty
+          # arrivals queued sixty seconds of traffic at the rate the server
+          # accepts — and every reply, every moderation line and every AI answer
+          # sat behind it. The moderator digest already says who is waiting.
+          HOLD_TELL_THEM: ${{ secrets.HOLD_TELL_THEM }}
+          # Tell the moderators about a hold at all. OFF, on the owner's
+          # instruction: "voicing a user any mod can do that they dont need to be
+          # informed". An unvoiced newcomer is visible in the room, so the notice
+          # reported something already on screen and cost a line of traffic each
+          # time. Every hold is still in the log.
+          HOLD_TELL_MODS: ${{ secrets.HOLD_TELL_MODS }}
           # The longest a reply is held back to look like typing. An instant
           # answer to everything is a tell no wording hides; five seconds is the
           # ceiling, not the usual wait. Set to 0 to answer as fast as the queue
@@ -253,7 +266,7 @@ jobs:
           #                     query window clients actually surface
           #   notice            a NOTICE, as before
           #   channel           in the room, visible to everybody
-          CMD_REPLY: ${{ secrets.CMD_REPLY || 'query' }}
+          CMD_REPLY: ${{ secrets.CMD_REPLY || 'notice' }}
           # Carrier tails this room recognises, comma separated — the honest form
           # of "be easy on Indian, US and UK users, hold the unknown countries".
           # We cannot see anybody's country: the network cloaks the address, so no

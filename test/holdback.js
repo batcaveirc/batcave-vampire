@@ -87,12 +87,16 @@ srv.listen(0, '127.0.0.1', async () => {
       out.some((l) => /^MODE #batcave -v Priya35$/m.test(l)),
       out.filter((l) => /MODE #batcave/.test(l)).join(' | ') || '(held on paper only)');
     // ...and a guarded range IS worth interrupting somebody about.
-    c('a moderator is told, because this one is noteworthy',
-      out.some((l) => /^NOTICE Vikram/.test(l) && /HOLD/.test(plain(l)) && /Priya35/.test(l)),
-      out.filter((l) => /^NOTICE/.test(l)).map(plain).join(' | ') || '(nobody told)');
-    c('and told how to let her talk',
-      out.some((l) => /\+v Priya35/.test(plain(l)) && /^NOTICE/.test(l)),
-      out.filter((l) => /^NOTICE Vikram/.test(l)).map(plain).join(' | '));
+    // CHANGED on the owner's instruction, 2026-09-15: "remove that messsage if it
+    // is too repetative as voicing a user any mod can do that they dont need to be
+    // informed." An unvoiced newcomer is visible in the room, so the notice
+    // reported something already on screen — and every notice is a line of
+    // outbound traffic that buried the bot's real output. Holds are logged, not
+    // announced. HOLD_TELL_MODS=on brings the messages back.
+    c('and NOBODY is messaged about it — not her, not the mods',
+      !out.some((l) => /^(NOTICE|PRIVMSG) (Priya35|Vikram|boss)/.test(l)),
+      out.filter((l) => /^(NOTICE|PRIVMSG) [^#]/.test(l)).map(plain).join(' | ')
+        + ' — a hold should cost one MODE and nothing else');
 
     console.log('\n— ChanBot voices her anyway, as it did live —');
     out.length = 0;
@@ -129,9 +133,10 @@ srv.listen(0, '127.0.0.1', async () => {
     c('his voice is taken back too',
       out.some((l) => /^MODE #batcave -v fahadkhan/.test(l)),
       out.filter((l) => /MODE #batcave/.test(l)).join(' | ') || '(voiced despite being watched)');
-    c('he is told privately why he cannot talk',
-      out.some((l) => /^NOTICE fahadkhan :/.test(l) && /moderated/.test(plain(l))),
-      out.filter((l) => /^NOTICE fahadkhan/.test(l)).map(plain).join(' | ') || '(left mute, unexplained)');
+    c('and he is not messaged about it either',
+      !out.some((l) => /^(NOTICE|PRIVMSG) fahadkhan/.test(l)),
+      out.filter((l) => /^(NOTICE|PRIVMSG) fahadkhan/.test(l)).map(plain).join(' | ')
+        + ' — one notice per arrival is what buried the bot');
     c('but the moderators are NOT interrupted for a routine newcomer',
       !out.some((l) => /^NOTICE (Vikram|boss)/.test(l) && /fahadkhan/.test(plain(l))),
       out.filter((l) => /^NOTICE (Vikram|boss)/.test(l)).map(plain).join(' | ')

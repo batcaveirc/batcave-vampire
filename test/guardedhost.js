@@ -95,9 +95,11 @@ server.listen(0, '127.0.0.1', () => {
         c('and nothing is said in the room about them',
           !/^PRIVMSG #batcave [^\n]*samosa/im.test(all),
           sent.filter((l) => /^PRIVMSG #batcave/.test(l)).join(' | '));
-        c('a moderator is told privately, with the reason and the fix',
-          /^NOTICE \S+ [^\n]*samosa[^\n]*\+v samosa/im.test(all.replace(/\x03\d{0,2}|[\x02\x0f]/g, '')),
-          sent.filter((l) => /^NOTICE/.test(l)).join(' | ') || '(nobody told)');
+        // Holds are no longer announced to anybody — see holdback.js. What must
+        // still be true is that they are held and the room is not told.
+        c('and nobody is messaged about it',
+          !/^(NOTICE|PRIVMSG) samosa/im.test(all),
+          sent.filter((l) => /^(NOTICE|PRIVMSG) samosa/.test(l)).join(' | '));
         c('never a ban',
           !/MODE #batcave \+b [^\n]*samosa/i.test(all) && !/\+b \*!\*@\*\.4900/i.test(all),
           'a ban stops them doing the very thing being asked of them');
