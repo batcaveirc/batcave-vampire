@@ -92,6 +92,30 @@ srv.listen(0, '127.0.0.1', async () => {
       out.filter((l) => /^(NOTICE|PRIVMSG)/.test(l)).join(' | ').slice(0, 200)
         || '(silence — starved behind the urgent queue, exactly as it was live)');
 
+    console.log('\n— a command beats a queue full of actions —');
+    // The gap my earlier fixtures could not reach: a busy room fills the URGENT
+    // queue with devoices, and command replies were routed onto the back of that
+    // same queue. At the rate the server accepts, position 200 is a hundred
+    // seconds away — and past 200 they were discarded with no log. Silence again,
+    // from the one thing a person sits and waits for.
+    for (let i = 0; i < 60; i += 1) {
+        sock.write(`:flood${i}!web@flood${i}.host.IP JOIN #batcave\r\n`);
+        sock.write(`:ChanBot!c@srv MODE #batcave +v flood${i}\r\n`);
+    }
+    out.length = 0;
+    const askedAt = Date.now();
+    sock.write(':Vikram!v@h PRIVMSG #batcave :!!status\r\n');
+    let ackAt = 0;
+    for (let i = 0; i < 100 && !ackAt; i += 1) {
+        if (out.some((l) => /^NOTICE Vikram :/.test(l))) { ackAt = Date.now(); break; }
+        await wait(100);
+    }
+    c('a reply arrives even with the action queue loaded',
+      Boolean(ackAt), '(dropped, or buried behind the devoices)');
+    c('and quickly, because somebody is waiting for it',
+      Boolean(ackAt) && ackAt - askedAt < 2500,
+      `${ackAt ? ackAt - askedAt : '>10000'}ms — a hundred seconds behind a devoice queue is the same as never`);
+
     console.log('\n— and it says when it is backed up —');
     c('a backlog is reported rather than hidden',
       /Outbound backlog|queue is FULL/.test(log) || devoices <= 6,

@@ -58,7 +58,10 @@ const callerFor = (cmd) => (FUN.has(cmd) ? `Tester${++testerN}` : 'Vikram');
   c('Dracula JOINs the FindIt room', out.some(l=>/^JOIN .*#batcave-games/.test(l)),
     out.filter(l=>/^JOIN/.test(l)).join(' | ')||'(never joined)');
 
-  out.length=0; say('#batcave','Vikram','!!help'); await wait(1500);
+  out.length=0;
+  say('#batcave','Vikram','!!help'); await wait(1200);
+  say('#batcave','Vikram','!!help fun'); await wait(1200);
+  say('#batcave','Vikram','!!help mods'); await wait(1500);
   const helpText = out.filter(l=>/^NOTICE Vikram/.test(l)).map(plain).join(' ');
   c('!!help answers the person PRIVATELY, not the room',
     out.some(l=>/^NOTICE Vikram :/.test(l)) && !out.some(l=>/^PRIVMSG #batcave :/.test(l)),

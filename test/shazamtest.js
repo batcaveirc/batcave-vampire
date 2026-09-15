@@ -43,7 +43,8 @@ c('only in our own channels', /isOurChannel\(tgt\)/.test(src.slice(src.indexOf('
 // minutes; the owner replaced that with removing the attacker, because the room
 // is meant to have no human mods at all. Help had to follow, so asserting on
 // "for 5m of ops" was asserting on a design that no longer exists.
-c('it is advertised in help', /reply\([^)]*shazam[\s\S]{0,160}remove/i.test(src),
+const helpCase = src.slice(src.indexOf("case 'help': {"), src.indexOf("case 'seen': {"));
+c('it is advertised in help', /shazam[\s\S]{0,160}remove/i.test(helpCase),
   'a power nobody is told about is a power nobody uses');
 
 console.log('— one list, not two —');

@@ -1044,6 +1044,7 @@ let urgentRun = 0;                 // consecutive urgent lines, for fairness
 let lastQueueGripe = 0;
 let lastDropGripe = 0;
 let lastTxAt = 0;                  // when we last wrote to the socket
+let lastUrgentGripe = 0;
 const BURST = 6;
 const REFILL_MS = 500;
 let tokens = BURST;
@@ -1181,7 +1182,38 @@ function sendFirst(data) {
     if (tokens > 0 && !outUrgent.length && !outQueue.length) {
         tokens -= 1; socket.write(data + '\r\n'); return;
     }
-    if (outUrgent.length < 200) outUrgent.push(data);
+    if (outUrgent.length < 200) { outUrgent.push(data); return; }
+    if (Date.now() - lastUrgentGripe > 60000) {
+        lastUrgentGripe = Date.now();
+        log('ERR', 'Urgent queue is FULL (200) — dropping actions. '
+            + 'Something is generating them faster than the server accepts.');
+    }
+}
+
+/**
+ * Lines somebody typed a command to get, ahead of everything including other
+ * urgent work.
+ *
+ * Command replies were routed onto the urgent queue so an acknowledgement would
+ * not sit behind the command's own side effects. That was right, and it left them
+ * behind everything ELSE on that queue: in a busy room the devoices fill it, so a
+ * reply queued at position 200 is a hundred seconds away at the rate the server
+ * accepts — and past 200 it was discarded with no log at all. Silence again, from
+ * the one part of the bot a person actively waits on.
+ *
+ * Inserted as a BLOCK at the front so a multi-line answer keeps its order; pushing
+ * each line separately would reverse them.
+ */
+function sendFront(lines) {
+    if (!socket || !socket.writable) return;
+    const batch = lines.filter(Boolean);
+    if (!batch.length) return;
+    if (tokens > 0 && !outUrgent.length && !outQueue.length) {
+        tokens -= 1;
+        socket.write(batch.shift() + '\r\n');
+        lastTxAt = Date.now();
+    }
+    if (batch.length) outUrgent.unshift(...batch);
 }
 // IRC drops anything past ~512 bytes for the whole line, so a long answer is
 // silently truncated mid-word — which is how !!help lost its last third. Split
@@ -1233,7 +1265,7 @@ function notice(nick, msg) { chunk(msg).forEach((c) => send(`NOTICE ${nick} :${c
  * explanation. An answer to a typed command is the most time-critical thing the
  * bot sends, because a person is sitting there watching for it.
  */
-function noticeFirst(nick, msg) { chunk(msg).forEach((c) => sendFirst(`NOTICE ${nick} :${c}`)); }
+function noticeFirst(nick, msg) { sendFront(chunk(msg).map((c) => `NOTICE ${nick} :${c}`)); }
 // Store an absolute timestamp and render it as "12m ago". A clock reading is
 // useless here: the runner is UTC and every user is in a different zone.
 function ago(ts) {
@@ -4114,47 +4146,52 @@ function handleCommand(chan, nick, message) {
         // asking what the bot does got thirty commands they cannot run, and
         // the four they can were buried in the middle. IRC truncates a long
         // line silently at ~512 bytes too, so the tail was being lost.
-        // Everything the bot answers, in one place.
+        // SHORT by default, with the rest on request.
         //
-        // The owner went looking for FindIt and it was not here at all: help had
-        // been written against the main switch, and there are THREE dispatch
-        // surfaces — this switch, fun.handle() and game.handle() in findit.js.
-        // Twenty commands were reachable and undiscoverable, including !!kick and
-        // !!ban. test/helpcoverage.js now fails if that drifts again.
+        // The owner: "think the !!help option is spamming too much information
+        // just give it main !! command so it dont spam too much." He is right, and
+        // it was not only noise — it was the reason commands looked broken.
+        //
+        // Help was ten lines. The pacer sends about two lines a second (five got
+        // the bot killed for flooding), so ONE !!help spent roughly five seconds
+        // of the bot's entire outbound budget, and everything typed in that window
+        // queued behind it. Measured: !!recruit on, !!info and !!ask all answered
+        // correctly and arrived one command late, which from the room is
+        // indistinguishable from a dead bot — and produces more typing, which
+        // makes it worse.
+        //
+        // Two lines now. test/helpcoverage.js still requires every command to be
+        // reachable from here, so the subtopics carry what the summary drops.
         case 'help': {
-            reply('I answer commands \x02here, privately\x02 — never in the room, so nobody '
-                + 'else sees what you asked. If a command seems to do nothing, it answered '
-                + 'in this window.');
-            reply('\x02Everyone\x02: !!seen <nick> · !!info [nick] · !!rules · !!status');
-            reply('\x02Fun\x02: !!8ball <q> · !!ship <a> <b> · !!hug|!!pat|!!slap|!!bite <nick> · '
-                + '!!fortune · !!vibe · !!rip · !!ask <q> · !!icebreaker · !!story · '
-                + '!!toast <nick> · !!hotseat <nick>');
-            reply('\x02Games\x02: !!findit starts a round in the game room — the round itself '
-                + 'tells you what to type as it goes.');
-            if (isTrusted(nick) || admin) {
-                reply('\x02Trusted regulars\x02: say \x02shazam\x02 and I remove whoever is '
-                    + 'attacking you — no ops needed, no name to type.');
-            }
-            if (!admin) {
-                reply('The standbys answer $$help and Luna1 answers $help. '
-                    + 'Ask an operator if you need something here.');
+            const topic = (args[0] || '').toLowerCase();
+            if (!topic) {
+                reply('\x02!!seen\x02 · \x02!!info\x02 · \x02!!rules\x02 · \x02!!status\x02 · '
+                    + '\x02!!findit\x02 (game room). I answer here privately, never in the room.');
+                reply('More: \x02!!help fun\x02 · \x02!!help mods\x02'
+                    + (isTrusted(nick) || admin
+                        ? ' — or say \x02shazam\x02 and I remove whoever is attacking you.' : '.'));
                 break;
             }
-            reply('\x02Mods — just say it\x02: \x02Dracula kick <nick>\x02 — and the same for '
-                + 'ban, unban, mute, unmute, voice, devoice, warn. Plain English, no !!, '
-                + 'and you can add a reason: \x02Dracula ban bob for spamming\x02.');
-            reply('\x02Mods — one person\x02: !!unquiet <nick> (clear a quiet) · '
-                + '!!unwarn <nick> (wipe their strikes) · !!protect add|remove <nick> · '
-                + '!!hardban <nick>');
-            reply('\x02Mods — standing\x02: !!trust add|del|seed <nick> · '
-                + '!!untrust add|del|seed <nick> · !!autoban add|remove|list <mask>');
-            reply('\x02Mods — the room\x02: !!moderate on|off · !!active on|off (AI; off = cool) · '
-                + '!!mod on|off (auto-moderation) · !!door on|off|sync (invite-only) · '
-                + '!!letin <nick> · !!autovoice on|off · !!history on|off · !!fun on|off · '
-                + '!!topic [#room] <text> · !!announce <msg> · !!mass kick|ban|voice|devoice');
-            reply('\x02Mods — the bot\x02: !!join|!!part #room · !!rooms · !!access · !!aicheck · '
-                + '!!recruit on|off|now · !!badword add|remove <w> · !!strict on|off · '
-                + '!!linkfilter on|off · !!raidguard on|off · !!sentient on|off');
+            if (topic === 'fun') {
+                reply('\x02Fun\x02: !!8ball <q> · !!ship <a> <b> · !!hug|!!pat|!!slap|!!bite <nick> · '
+                    + '!!fortune · !!vibe · !!rip · !!ask <q> · !!icebreaker · !!story · '
+                    + '!!toast <nick> · !!hotseat <nick>');
+                break;
+            }
+            if (topic === 'mods') {
+                if (!admin) { reply('That half is for operators.'); break; }
+                reply('\x02Just say it\x02: \x02Dracula kick <nick>\x02 — also ban, unban, mute, '
+                    + 'unmute, voice, devoice, warn. Plain English, no !!, reason optional.');
+                reply('\x02People\x02: !!unquiet · !!unwarn · !!protect add|remove · !!hardban · '
+                    + '!!trust add|del|seed · !!untrust add|del|seed · !!autoban add|remove|list');
+                reply('\x02Room\x02: !!moderate · !!active · !!mod · !!door · !!letin · !!autovoice · '
+                    + '!!history · !!fun · !!topic · !!announce · !!mass kick|ban|voice|devoice');
+                reply('\x02Bot\x02: !!join|!!part #room · !!rooms · !!access · !!aicheck · '
+                    + '!!recruit on|off|now · !!badword · !!strict · !!linkfilter · !!raidguard · '
+                    + '!!sentient');
+                break;
+            }
+            reply('Try \x02!!help\x02, \x02!!help fun\x02 or \x02!!help mods\x02.');
             break;
         }
         case 'seen': {

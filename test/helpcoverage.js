@@ -113,8 +113,16 @@ c('and the acknowledgement is not queued behind the command\'s own work',
 c('and CMD_REPLY can flip it for a room that wants them visible',
   /CMD_REPLY/.test(cmdFn));
 c('help says where its own answer went',
-  /answer commands .*here, privately/.test(helpBody),
+  /privately/.test(helpBody) && /never in the room/.test(helpBody),
   'silence with no explanation was reported as a broken bot, twice');
+// And it has to STAY short. Ten lines at the rate the server accepts is five
+// seconds of everything the bot could otherwise be saying.
+const defaultPage = helpBody.slice(0, helpBody.indexOf("if (topic === 'fun')"));
+c('the default page is short',
+  (defaultPage.match(/reply\(/g) || []).length <= 3,
+  `${(defaultPage.match(/reply\(/g) || []).length} lines — it was ten, and that was the problem`);
+c('with the rest behind subtopics',
+  /!!help fun/.test(helpBody) && /!!help mods/.test(helpBody));
 c('and the topic says it too, for anyone who never runs help',
   /private notice, not in the room/.test(src),
   'one permanent place to say it, rather than a line after every command');
