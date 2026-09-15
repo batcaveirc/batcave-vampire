@@ -4154,7 +4154,7 @@ function handleCommand(chan, nick, message) {
     // CMD_REPLY=channel flips it back for a room that would rather see them.
     // Moderation announcements are unaffected: those still go to the channel,
     // because the room needs to see them.
-    const mode = String(process.env.CMD_REPLY || 'notice').trim().toLowerCase();
+    const mode = String(process.env.CMD_REPLY || 'query').trim().toLowerCase();
     const toChannel = mode === 'channel' && String(chan || '').startsWith('#');
     const reply = (m) => {
         if (toChannel) { say(chan, m); return; }

@@ -88,7 +88,7 @@ srv.listen(0, '127.0.0.1', async () => {
     sock.write(':Vikram!v@h PRIVMSG #batcave :!!help\r\n');
     await wait(6000);
     c('!!help is answered while the churn continues',
-      out.some((l) => /^NOTICE Vikram :/.test(l)),
+      out.some((l) => /^(NOTICE|PRIVMSG) Vikram :/.test(l)),
       out.filter((l) => /^(NOTICE|PRIVMSG)/.test(l)).join(' | ').slice(0, 200)
         || '(silence — starved behind the urgent queue, exactly as it was live)');
 
@@ -107,7 +107,7 @@ srv.listen(0, '127.0.0.1', async () => {
     sock.write(':Vikram!v@h PRIVMSG #batcave :!!status\r\n');
     let ackAt = 0;
     for (let i = 0; i < 100 && !ackAt; i += 1) {
-        if (out.some((l) => /^NOTICE Vikram :/.test(l))) { ackAt = Date.now(); break; }
+        if (out.some((l) => /^(NOTICE|PRIVMSG) Vikram :/.test(l))) { ackAt = Date.now(); break; }
         await wait(100);
     }
     c('a reply arrives even with the action queue loaded',

@@ -4,7 +4,7 @@ let PORT = 0;   /* the OS assigns one on listen */
 const out=[]; let sock=null;
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 const plain=(l)=>l.replace(/\x03\d{0,2}(,\d{1,2})?|[\x02\x0f]/g,'');
-const notices=()=>out.filter(l=>/^NOTICE /.test(l)).map(plain);
+const notices=()=>out.filter(l=>/^(NOTICE|PRIVMSG) [^#]/.test(l)).map(plain);
 let f=0; const c=(n,ok,d='')=>{if(!ok)f++;console.log(`  [${ok?'PASS':'FAIL'}] ${n}${!ok&&d?' — '+d:''}`);};
 
 const srv=net.createServer((s)=>{ sock=s; s.on('error',()=>{});

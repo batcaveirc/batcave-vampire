@@ -105,7 +105,7 @@ console.log('\n— answers are private, and help says so —');
 // private and the bot says so, in the topic and in help's own first line.
 const cmdFn = src.slice(cmdAt, src.indexOf('function ', cmdAt + 40));
 c('a command answers the person, not the room',
-  /noticeFirst\(nick, m\)/.test(cmdFn) && /if \(toChannel\)/.test(cmdFn),
+  /privateFirst\(nick, m\)/.test(cmdFn) && /if \(toChannel\)/.test(cmdFn),
   'a help listing pasted into the channel makes every command an interruption');
 // A PRIVMSG by default rather than a NOTICE. Clients file notices wherever they
 // like — usually a status tab — and the owner reported the bot dead three times

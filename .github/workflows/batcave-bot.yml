@@ -244,15 +244,16 @@ jobs:
           HEARTBEAT_SEC: ${{ secrets.HEARTBEAT_SEC || '300' }}
           # Where a command's answer goes.
           #
-          #   notice  (default) a NOTICE to whoever asked. The owner's client
-          #                     shows these INLINE with the room, which is how he
-          #                     quoted a whole !!help listing back — so a missing
-          #                     [NOTICE] line means the reply never arrived, not
-          #                     that it went to a tab he was not watching
-          #   query             a private message instead, for a client that
-          #                     buries notices
+          #   query   (default) a private message to whoever asked. Chosen on
+          #                     EVIDENCE: the log shows every command answered
+          #                     ([CMD] ... -> [TX] NOTICE ...) with no server
+          #                     error of any kind, and the owner saw none of them.
+          #                     The bot sent, the server accepted, the notices did
+          #                     not land. A PRIVMSG is equally private and opens a
+          #                     query window clients actually surface
+          #   notice            a NOTICE, as before
           #   channel           in the room, visible to everybody
-          CMD_REPLY: ${{ secrets.CMD_REPLY || 'notice' }}
+          CMD_REPLY: ${{ secrets.CMD_REPLY || 'query' }}
           # Carrier tails this room recognises, comma separated — the honest form
           # of "be easy on Indian, US and UK users, hold the unknown countries".
           # We cannot see anybody's country: the network cloaks the address, so no
