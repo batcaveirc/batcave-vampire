@@ -1205,7 +1205,14 @@ function sendFirst(data) {
  * each line separately would reverse them.
  */
 function sendFront(lines) {
-    if (!socket || !socket.writable) return;
+    if (!socket || !socket.writable) {
+        log('ERR', `Cannot answer — socket not writable. Dropped: ${String(lines[0]).slice(0, 60)}`);
+        return;
+    }
+    // What we actually sent back. Three evenings were spent unable to tell "the
+    // bot never answered" from "the answer went somewhere you were not looking",
+    // and one log line settles that permanently.
+    if (lines.length) log('TX', `${lines.length} line(s): ${String(lines[0]).slice(0, 80)}`);
     const batch = lines.filter(Boolean);
     if (!batch.length) return;
     if (tokens > 0 && !outUrgent.length && !outQueue.length) {
@@ -1266,6 +1273,25 @@ function notice(nick, msg) { chunk(msg).forEach((c) => send(`NOTICE ${nick} :${c
  * bot sends, because a person is sitting there watching for it.
  */
 function noticeFirst(nick, msg) { sendFront(chunk(msg).map((c) => `NOTICE ${nick} :${c}`)); }
+/**
+ * The same answer as a private message rather than a notice.
+ *
+ * The evidence settled this. The heartbeat for the run covering the owner's
+ * "nothing working" shows every command SEEN — [CMD] Vikram !!help, !!recruit,
+ * !!aicheck and the rest — with queue 0+0, no errors and normal sending. An empty
+ * queue means a reply is written to the socket at once, so the bot was answering
+ * and he was not seeing it.
+ *
+ * Which fits the one time it did work: he ran !!help, went looking, and quoted the
+ * notices back. The times it "failed" he was watching the room. Clients file a
+ * NOTICE wherever they like, usually a server or status tab, so "nothing happened"
+ * was true of the window he was looking at and false of the bot.
+ *
+ * A PRIVMSG to their nick is exactly as private — nobody else sees it — and opens
+ * a query window in essentially every client. CMD_REPLY=notice restores the old
+ * behaviour, =channel makes answers public.
+ */
+function privateFirst(nick, msg) { sendFront(chunk(msg).map((c) => `PRIVMSG ${nick} :${c}`)); }
 // Store an absolute timestamp and render it as "12m ago". A clock reading is
 // useless here: the runner is UTC and every user is in a different zone.
 function ago(ts) {
@@ -4128,9 +4154,13 @@ function handleCommand(chan, nick, message) {
     // CMD_REPLY=channel flips it back for a room that would rather see them.
     // Moderation announcements are unaffected: those still go to the channel,
     // because the room needs to see them.
-    const toChannel = /^channel$/i.test(String(process.env.CMD_REPLY || '').trim())
-        && String(chan || '').startsWith('#');
-    const reply = (m) => (toChannel ? say(chan, m) : noticeFirst(nick, m));
+    const mode = String(process.env.CMD_REPLY || 'notice').trim().toLowerCase();
+    const toChannel = mode === 'channel' && String(chan || '').startsWith('#');
+    const reply = (m) => {
+        if (toChannel) { say(chan, m); return; }
+        if (mode === 'query') { privateFirst(nick, m); return; }
+        noticeFirst(nick, m);
+    };
 
     // The game claims its own commands first. !!join with no argument joins a
     // lobby; !!join #room stays the admin channel command underneath.

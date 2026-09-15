@@ -242,6 +242,17 @@ jobs:
           # ops. Twice the bot has been reported dead while the job looked healthy
           # and the log said nothing about any of that.
           HEARTBEAT_SEC: ${{ secrets.HEARTBEAT_SEC || '300' }}
+          # Where a command's answer goes.
+          #
+          #   notice  (default) a NOTICE to whoever asked. The owner's client
+          #                     shows these INLINE with the room, which is how he
+          #                     quoted a whole !!help listing back — so a missing
+          #                     [NOTICE] line means the reply never arrived, not
+          #                     that it went to a tab he was not watching
+          #   query             a private message instead, for a client that
+          #                     buries notices
+          #   channel           in the room, visible to everybody
+          CMD_REPLY: ${{ secrets.CMD_REPLY || 'notice' }}
           # Carrier tails this room recognises, comma separated — the honest form
           # of "be easy on Indian, US and UK users, hold the unknown countries".
           # We cannot see anybody's country: the network cloaks the address, so no

@@ -62,9 +62,10 @@ const callerFor = (cmd) => (FUN.has(cmd) ? `Tester${++testerN}` : 'Vikram');
   say('#batcave','Vikram','!!help'); await wait(1200);
   say('#batcave','Vikram','!!help fun'); await wait(1200);
   say('#batcave','Vikram','!!help mods'); await wait(1500);
-  const helpText = out.filter(l=>/^NOTICE Vikram/.test(l)).map(plain).join(' ');
+  const toMe = (l) => /^(NOTICE|PRIVMSG) Vikram :/.test(l);
+  const helpText = out.filter(toMe).map(plain).join(' ');
   c('!!help answers the person PRIVATELY, not the room',
-    out.some(l=>/^NOTICE Vikram :/.test(l)) && !out.some(l=>/^PRIVMSG #batcave :/.test(l)),
+    out.some(toMe) && !out.some(l=>/^PRIVMSG #batcave :/.test(l)),
     out.filter(l=>/^(PRIVMSG|NOTICE)/.test(l)).map(plain).join(' | ').slice(0,160));
   c('and it says so, so silence is never mistaken for a dead command',
     /privately/i.test(helpText), helpText.slice(0, 120) || '(nothing)');
@@ -91,7 +92,8 @@ const callerFor = (cmd) => (FUN.has(cmd) ? `Tester${++testerN}` : 'Vikram');
       // real room does not issue thirty commands in eighteen seconds, and
       // answers now jump ahead of sweeps so a person waits less than before.
       await wait(1200);
-      if (!out.some(l=>/^(NOTICE \S+|PRIVMSG #|MODE |TOPIC )/.test(l))) dead.push(cmd);
+      // PRIVMSG to a PERSON counts too: that is how answers arrive now.
+      if (!out.some(l=>/^(NOTICE \S+|PRIVMSG \S+|MODE |TOPIC )/.test(l))) dead.push(cmd);
     }
     c(`all ${advertised.length} answer in ${room}`, dead.length === 0,
       `SILENT: ${dead.map(d=>'!!'+d).join(' ')}`);
