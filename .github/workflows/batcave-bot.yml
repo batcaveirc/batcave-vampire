@@ -237,6 +237,11 @@ jobs:
           # ceiling, not the usual wait. Set to 0 to answer as fast as the queue
           # allows.
           TYPING_MAX_MS: ${{ secrets.TYPING_MAX_MS || '5200' }}
+          # How often the bot reports its own state: queue depth, when it last
+          # heard anything, when it last managed to SEND anything, where it holds
+          # ops. Twice the bot has been reported dead while the job looked healthy
+          # and the log said nothing about any of that.
+          HEARTBEAT_SEC: ${{ secrets.HEARTBEAT_SEC || '300' }}
           # Carrier tails this room recognises, comma separated — the honest form
           # of "be easy on Indian, US and UK users, hold the unknown countries".
           # We cannot see anybody's country: the network cloaks the address, so no

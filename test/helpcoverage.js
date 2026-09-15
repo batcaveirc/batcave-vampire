@@ -105,8 +105,11 @@ console.log('\n— answers are private, and help says so —');
 // private and the bot says so, in the topic and in help's own first line.
 const cmdFn = src.slice(cmdAt, src.indexOf('function ', cmdAt + 40));
 c('a command answers the person, not the room',
-  /const reply = \(m\) => \(toChannel \? say\(chan, m\) : notice\(nick, m\)\)/.test(cmdFn),
+  /const reply = \(m\) => \(toChannel \? say\(chan, m\) : notice/.test(cmdFn),
   'a help listing pasted into the channel makes every command an interruption');
+c('and the acknowledgement is not queued behind the command\'s own work',
+  /noticeFirst/.test(cmdFn),
+  'a person is sitting there watching for the answer to what they just typed');
 c('and CMD_REPLY can flip it for a room that wants them visible',
   /CMD_REPLY/.test(cmdFn));
 c('help says where its own answer went',

@@ -1043,6 +1043,7 @@ const outUrgent = [];
 let urgentRun = 0;                 // consecutive urgent lines, for fairness
 let lastQueueGripe = 0;
 let lastDropGripe = 0;
+let lastTxAt = 0;                  // when we last wrote to the socket
 const BURST = 6;
 const REFILL_MS = 500;
 let tokens = BURST;
@@ -1051,7 +1052,7 @@ setInterval(() => {
     while ((outUrgent.length || outQueue.length) && tokens > 0) {
         tokens -= 1;
         const line = takeNextLine();
-        if (socket && socket.writable) socket.write(line + '\r\n');
+        if (socket && socket.writable) { socket.write(line + '\r\n'); lastTxAt = Date.now(); }
     }
     // Nothing waits forever.
     //
@@ -1149,7 +1150,9 @@ function send(data) {
     if (!socket || !socket.writable) return;
     // Protocol keepalives must never sit in a queue.
     if (/^(PONG|PING|QUIT)/.test(data)) { socket.write(data + '\r\n'); return; }
-    if (tokens > 0 && !outQueue.length) { tokens -= 1; socket.write(data + '\r\n'); return; }
+    if (tokens > 0 && !outQueue.length) {
+        tokens -= 1; socket.write(data + '\r\n'); lastTxAt = Date.now(); return;
+    }
     if (outQueue.length < 400) { outQueue.push(data); return; }
     // Dropping silently is how a bot goes quiet for hours with nobody able to say
     // why. Once a minute is enough to find it in the log.
@@ -1218,6 +1221,19 @@ function isOurOwnWords(msg) {
 
 function say(chan, msg) { rememberSaid(msg); chunk(msg).forEach((c) => send(`PRIVMSG ${chan} :${c}`)); }
 function notice(nick, msg) { chunk(msg).forEach((c) => send(`NOTICE ${nick} :${c}`)); }
+/**
+ * A NOTICE somebody is waiting on, ahead of the work it describes.
+ *
+ * !!recruit on calls recruiter.start(), which queues a JOIN and a WHO for every
+ * recruiting channel — so the acknowledgement went in BEHIND all of that and
+ * arrived seconds later. Measured live: the owner typed "!!recruit on", saw
+ * nothing, and asked "can you read my commands dracula" twelve seconds later.
+ *
+ * It is the same mistake the KICK had, where the removal sat behind its own
+ * explanation. An answer to a typed command is the most time-critical thing the
+ * bot sends, because a person is sitting there watching for it.
+ */
+function noticeFirst(nick, msg) { chunk(msg).forEach((c) => sendFirst(`NOTICE ${nick} :${c}`)); }
 // Store an absolute timestamp and render it as "12m ago". A clock reading is
 // useless here: the runner is UTC and every user is in a different zone.
 function ago(ts) {
@@ -4082,7 +4098,7 @@ function handleCommand(chan, nick, message) {
     // because the room needs to see them.
     const toChannel = /^channel$/i.test(String(process.env.CMD_REPLY || '').trim())
         && String(chan || '').startsWith('#');
-    const reply = (m) => (toChannel ? say(chan, m) : notice(nick, m));
+    const reply = (m) => (toChannel ? say(chan, m) : noticeFirst(nick, m));
 
     // The game claims its own commands first. !!join with no argument joins a
     // lobby; !!join #room stays the admin channel command underneath.
@@ -6268,6 +6284,23 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 // minutes, so silence is real evidence the link is dead — probe once, then tear
 // it down so the normal reconnect path runs.
 const RX_SILENCE_PROBE_MS = 180000;   // 3m quiet → send our own PING
+
+// A heartbeat, so "the bot went quiet" is a question the log can answer.
+//
+// Twice now the bot has been reported as dead while the job looked healthy, and
+// both times the log held nothing at all about its own state: not the queue
+// depth, not when it last managed to send anything, not whether it still had ops.
+// Once was genuine starvation; once could not be diagnosed from here at all,
+// because a two-member test fixture cannot reproduce a room of fifty with
+// constant churn. This is the cheapest possible insurance against a third.
+setInterval(() => {
+    if (!ready) return;
+    const quietRx = Math.round((Date.now() - lastRx) / 1000);
+    const quietTx = lastTxAt ? Math.round((Date.now() - lastTxAt) / 1000) : -1;
+    log('BEAT', `queue ${outQueue.length}+${outUrgent.length}u · last heard ${quietRx}s ago · `
+        + `last sent ${quietTx < 0 ? 'never' : quietTx + 's ago'} · `
+        + `ops in ${[...opped].join(',') || 'nowhere'} · held ${heldBack.size}`);
+}, Math.max(60, Number(process.env.HEARTBEAT_SEC || 300)) * 1000).unref?.();
 const RX_SILENCE_DEAD_MS = 260000;    // still quiet after that → declare it dead
 
 connect();
