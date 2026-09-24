@@ -620,7 +620,7 @@ let lastHoldTold = 0;        // so the FIRST hold is reported at once, not after
 // Unknown AND uninvited arrivals get no voice in a moderated room. ON: the
 // owner's own layer, and the room it protects is moderated-only by design.
 // "off" restores the previous behaviour of voicing every arrival there.
-const HOLD_UNINVITED = !/^(0|off|no|false)$/i.test(String(process.env.HOLD_UNINVITED || '').trim());
+const HOLD_UNINVITED = /^(1|true|yes|on)$/i.test(String(process.env.HOLD_UNINVITED || '').trim());
 
 function holdKey(chan, nick) { return `${chanKey(chan)}|${String(nick).toLowerCase()}`; }
 

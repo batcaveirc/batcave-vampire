@@ -134,5 +134,25 @@ c('and the topic says it too, for anyone who never runs help',
   /private notice, not in the room/.test(src),
   'one permanent place to say it, rather than a line after every command');
 
+console.log('\n— newcomers are judged on what they DO —');
+// The owner, after watching the arrival hold work exactly as designed: "dracula
+// keeps taking voice of new ppl that join the room i think its not a good idea to
+// keep that feature." Withholding voice on ARRIVAL judges somebody for turning up;
+// the ladder judges them for what they say, a few seconds later, on evidence.
+c('the arrival hold is OFF unless switched on',
+  /const HOLD_UNINVITED = \/\^\(1\|true\|yes\|on\)/.test(src),
+  'it must default to off — an inverted default here costs every newcomer');
+c('and the feature still exists for a room under attack',
+  /HOLD_UNINVITED/.test(src) && /function holdBack/.test(src));
+// The protections that act on BEHAVIOUR are the ones that carry the room, and
+// none of them touch somebody who has done nothing.
+for (const [what, re_] of [
+    ['the word filter', /severeWords|badwords/],
+    ['the voice ladder', /moderatedQuotaFor/],
+    ['raid detection', /raidGuard|lockedByRaid/],
+    ['shazam for trusted regulars', /function shazam/],
+    ['the cross-room watch', /watch\.hear\(/],
+]) c(`${what} is still there`, re_.test(src));
+
 console.log(f ? `\n${f} FAILED` : '\nALL PASS');
 process.exit(f ? 1 : 0);

@@ -55,6 +55,11 @@ function run(env, label, then) {
                 GROQ_API_KEY: '', GEMINI_API_KEY: '', SENTIENT_ON: 'off', FUN_ON: 'off',
                 RECRUIT_ON: 'off', MOD_ENABLED: 'on', AUTO_VOICE: 'on',
                 GUARDED_HOSTS: '',
+                // The arrival hold is OFF by default now — withholding voice
+                // from newcomers cost the room more than it caught. The
+                // feature remains for a room under attack, so it is switched
+                // on HERE, where it is the thing being tested.
+                HOLD_UNINVITED: 'on',
                 ...env,
             },
             stdio: ['ignore', 'pipe', 'pipe'],

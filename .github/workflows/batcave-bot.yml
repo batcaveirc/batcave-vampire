@@ -213,17 +213,18 @@ jobs:
           # removes it again, and a +I becomes FLAGS <mask> +i ("may invite
           # themselves"). Set to "off" to stop mirroring.
           BAN_PERSIST: ${{ secrets.BAN_PERSIST }}
-          # ── Unknown and uninvited arrivals ───────────────────────────
+          # ── Unknown and uninvited arrivals: OFF ─────────────────────
           #
-          # The room is moderated-only by design, so voice IS the right to speak
-          # there. It used to be given to every arrival, which is how a guarded
-          # range arrival and a spammer already known from another room both came
-          # to be voiced. The owner's layer: "we can keep unknown uninvited users
-          # devoiced. as most users who are abusers are uninvited and they start
-          # abusing." Voice now needs one ordinary reason — registered, invited,
-          # vouched for by a moderator, or on a recognised carrier. Nobody is
-          # removed, nothing is said in the room, and one /mode +v releases it.
-          # Set to "off" to go back to voicing every arrival.
+          # Withholding voice on ARRIVAL judges somebody for turning up rather
+          # than for anything they did. The owner watched it work as designed and
+          # called it: "dracula keeps taking voice of new ppl that join the room i
+          # think its not a good idea to keep that feature". It costs every
+          # well-behaved newcomer's first impression to inconvenience the few who
+          # were going to misbehave — and the ladder catches those a few seconds
+          # later anyway, on evidence, the moment they say something.
+          #
+          # Set to "on" for a room under active attack, where that trade is worth
+          # making for a while.
           HOLD_UNINVITED: ${{ secrets.HOLD_UNINVITED }}
           # How often the moderators get ONE line naming everybody currently
           # waiting for a voice. Routine holds no longer interrupt anybody: in a
