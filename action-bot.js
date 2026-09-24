@@ -654,12 +654,40 @@ const HOLD_UNINVITED = /^(1|true|yes|on)$/i.test(String(process.env.HOLD_UNINVIT
 //
 // Off unless switched on, and it does nothing without a pool: the names a bot
 // wears in this room are the owner's to choose, not mine.
-const NICK_ROTATE = /^(1|true|yes|on)$/i.test(String(process.env.NICK_ROTATE || '').trim());
+// ON by default. It needs no configuration at all now: with no pool the bot
+// builds its own names from the one it already has, so there is nothing to pick
+// and nothing to register. NICK_ROTATE=0 turns it off.
+const NICK_ROTATE = !/^(0|false|no|off)$/i.test(String(process.env.NICK_ROTATE || 'on').trim());
+// Optional. Names to rotate through INSTEAD of numbered variants of our own.
 const NICK_POOL = listRaw(process.env.NICK_POOL);
+// Longest nick the network will take. InspIRCd's default is 30; going over it
+// gets the NICK rejected, which would look exactly like the name being taken.
+const NICK_MAXLEN = Math.max(9, parseInt(process.env.NICK_MAXLEN || '30', 10));
+
+/**
+ * What the server said it supports, from the 005 ISUPPORT numeric.
+ *
+ * The bot handled twenty numerics and not this one — the one where the server
+ * states its own limits, unprompted, on every connect. So every limit in here
+ * was a guess: a hardcoded 30 for the nick length, four modes per line with a
+ * comment admitting "MODES= is usually higher". Guessing low wastes room.
+ * Guessing high gets the line SILENTLY rejected or truncated, which is how
+ * !!help lost its tail for weeks.
+ *
+ * The owner's point, and he is right: "many other commands are there which you
+ * can use to refine these bots yourself." The server is already telling us.
+ */
+const isupport = new Map();
+
+function nickLimit() {
+    const said = parseInt(isupport.get('NICKLEN') || '0', 10);
+    return said > 0 ? Math.max(9, said) : NICK_MAXLEN;
+}
 const NICK_EVERY_MS = Math.max(15, parseInt(process.env.NICK_ROTATE_MIN || '90', 10)) * 60000;
 const NICK_MAX_PER_HOUR = Math.max(1, parseInt(process.env.NICK_MAX_PER_HOUR || '2', 10));
 let rotationsAt = [];        // when we last rotated, for the rolling cap
 let pendingRotation = '';    // a name we asked for and have not been given yet
+let rotationNumbered = false; // whether this attempt has already tried a number
 
 function holdKey(chan, nick) { return `${chanKey(chan)}|${String(nick).toLowerCase()}`; }
 
@@ -4727,7 +4755,8 @@ function handleCommand(chan, nick, message) {
             if (what === 'status') {
                 reply(`Wearing \x02${currentNick}\x02, want \x02${wantedNick}\x02. `
                     + `Rotation ${NICK_ROTATE ? 'on' : 'off'}, ${rotationsAt.length}/${NICK_MAX_PER_HOUR} `
-                    + `used this hour. Pool: ${NICK_POOL.join(', ') || '(empty)'}`);
+                    + `used this hour, one attempt every ${Math.round(NICK_EVERY_MS / 60000)} min. `
+                    + `Names: ${NICK_POOL.length ? NICK_POOL.join(', ') : `${config.nick} + a number`}`);
                 break;
             }
             if (what === 'back' || what === 'revert') {
@@ -4737,7 +4766,6 @@ function handleCommand(chan, nick, message) {
             }
             if (what === 'now') {
                 if (!NICK_ROTATE) { reply('Rotation is off — NICK_ROTATE=1 turns it on.'); break; }
-                if (!NICK_POOL.length) { reply('NICK_POOL is empty, so there is nothing to change to.'); break; }
                 if (!rotationAllowed()) {
                     reply(`Not yet — ${NICK_MAX_PER_HOUR} changes an hour is the limit, on purpose. `
                         + 'Fast renaming is what gets a bot killed for flooding.');
@@ -5279,6 +5307,43 @@ function revertNick(why) {
     if (currentNick.toLowerCase() !== config.nick.toLowerCase()) reclaimNick();
 }
 
+/**
+ * The next name to ask for.
+ *
+ * The owner's design, and a better one than the hand-kept pool I started with:
+ * "i want it to be done by the bot itself that it can change to a different id
+ * can add a number on back of it to avoid any conflicts."
+ *
+ * A number on the end does two jobs at once. It makes colliding with a live
+ * user almost impossible, and — the part that matters more — it makes it very
+ * unlikely the name is REGISTERED to somebody else, which is the thing that
+ * would have NickServ force-rename us to a Guest thirty seconds later. Dracula47
+ * needs no pool, no NickServ GROUP, and nobody checking anything by hand.
+ *
+ * It also stays obviously ours, which a random name from a list does not: the
+ * room reads "Dracula47" and knows exactly who that is.
+ *
+ * A pool is still honoured when one is set. Those names are tried bare first
+ * and only get a number if the server says the plain one is taken.
+ */
+function nextRotationName(withNumber, forceBase) {
+    const bases = NICK_POOL.length ? NICK_POOL : [config.nick];
+    // On a retry the base is not a fresh choice: the name we asked for came
+    // back taken, so the thing to number is THAT name. Picking a different one
+    // instead would be answering a question nobody asked.
+    const base = forceBase || bases[Math.floor(Math.random() * bases.length)];
+    const now = String(currentNick).toLowerCase();
+    // With no pool the base IS the name we already wear, so a bare attempt
+    // would be a no-op — number it every time.
+    if (!withNumber && NICK_POOL.length && base.toLowerCase() !== now) return base;
+    const stem = base.slice(0, Math.max(3, nickLimit() - 3));
+    for (let i = 0; i < 25; i += 1) {
+        const candidate = `${stem}${2 + Math.floor(Math.random() * 98)}`;
+        if (candidate.toLowerCase() !== now) return candidate;
+    }
+    return '';
+}
+
 function rotationAllowed() {
     const now = Date.now();
     rotationsAt = rotationsAt.filter((t) => now - t < 3600000);
@@ -5286,7 +5351,7 @@ function rotationAllowed() {
 }
 
 function rotateNick() {
-    if (!NICK_ROTATE || !NICK_POOL.length) return false;
+    if (!NICK_ROTATE) return false;
     if (!ready || !socket || !socket.writable) return false;
     // Not while the room is locked down. A raid is when a rename looks most
     // like evasion, and the moment the room most needs to know which name is
@@ -5294,10 +5359,10 @@ function rotateNick() {
     if (Date.now() < lockedUntil) return false;
     if (pendingRotation) return false;                  // one in flight at a time
     if (!rotationAllowed()) return false;
-    const options = NICK_POOL.filter((n) => n && n.toLowerCase() !== currentNick.toLowerCase());
-    if (!options.length) return false;
-    const next = options[Math.floor(Math.random() * options.length)];
+    const next = nextRotationName(false);
+    if (!next) return false;
     pendingRotation = next;
+    rotationNumbered = false;
     rotationsAt.push(Date.now());
     log('INFO', `Rotating ${currentNick} -> ${next}`);
     send(`NICK ${next}`);
@@ -5309,15 +5374,10 @@ function rotateNick() {
 let rotationStarted = false;
 function startNickRotation() {
     if (rotationStarted || !NICK_ROTATE) return;
-    if (!NICK_POOL.length) {
-        // Switched on with nothing to switch to. Silence here would look
-        // exactly like rotation working and nobody noticing.
-        log('WARN', 'NICK_ROTATE is on but NICK_POOL is empty — not rotating.');
-        return;
-    }
     rotationStarted = true;
     log('INFO', `Nick rotation on — at most ${NICK_MAX_PER_HOUR}/hour, trying every `
-        + `${Math.round(NICK_EVERY_MS / 60000)} min, from: ${NICK_POOL.join(', ')}`);
+        + `${Math.round(NICK_EVERY_MS / 60000)} min, from: `
+        + `${NICK_POOL.length ? NICK_POOL.join(', ') : `${config.nick} + a number`}`);
     setInterval(rotateNick, NICK_EVERY_MS);
 }
 
@@ -5430,11 +5490,26 @@ function handleLine(line) {
 
     if (command === '433') {                 // nick in use → take a temp nick so we can finish registering
         if (pendingRotation) {
-            // A rotation target that is taken costs us nothing: we still hold
-            // the name we have. Appending an underscore here would rename us
-            // for no reason, and burn one of the hour's rotations doing it.
-            log('INFO', `${pendingRotation} is taken — staying as ${currentNick}.`);
-            pendingRotation = '';
+            // Taken. Put a number on the end and try once more — that is the
+            // whole point of the numbering, and it costs nothing: we still hold
+            // the name we have while we ask.
+            //
+            // Exactly ONE retry. A loop here is a nick flood, which is the one
+            // thing this feature must never become. It is also not counted
+            // against the hourly cap, because it is the same rotation, not
+            // another one.
+            const retry = rotationNumbered
+                ? ''
+                : nextRotationName(true, String(pendingRotation).replace(/\d+$/, ''));
+            if (retry) {
+                rotationNumbered = true;
+                log('INFO', `${pendingRotation} is taken — trying ${retry}.`);
+                pendingRotation = retry;
+                send(`NICK ${retry}`);
+            } else {
+                log('INFO', `${pendingRotation} is taken — staying as ${currentNick}.`);
+                pendingRotation = '';
+            }
         } else {
             currentNick += '_';
             log('WARN', `Nick in use — trying ${currentNick}`);
@@ -5512,6 +5587,28 @@ function handleLine(line) {
     if (command === 'CAP') {
         const sub = (params[1] || '').toUpperCase();
         if (sub === 'ACK' || sub === 'NAK') { send('CAP END'); log('CAP', line.slice(0, 120)); }
+    }
+    if (command === '005') {
+        // params: <me> TOKEN TOKEN ... :are supported by this server
+        for (const tok of params.slice(1)) {
+            if (tok.startsWith(':')) break;          // the human-readable tail
+            const eq = tok.indexOf('=');
+            isupport.set((eq === -1 ? tok : tok.slice(0, eq)).toUpperCase(),
+                eq === -1 ? '' : tok.slice(eq + 1));
+        }
+        // Nick comparison here folds with toLowerCase(), which is ASCII. Under
+        // rfc1459 the server also treats []\ and {}| as the same character, so
+        // two nicks we read as different would be ONE nick to the server —
+        // which is a way past every check keyed on a name. Say so rather than
+        // quietly being wrong about it; nobody has confirmed what this network
+        // uses, and a guess is what this whole change is meant to stop.
+        const cm = (isupport.get('CASEMAPPING') || '').toLowerCase();
+        if (cm && cm !== 'ascii' && !isupport.get('_toldCasemap')) {
+            isupport.set('_toldCasemap', '1');
+            log('WARN', `Server CASEMAPPING is "${cm}", not ascii — nick comparison `
+                + 'here folds ASCII only, so []\\ and {}| are not treated as equal.');
+        }
+        return;
     }
     if (command === '001') {
         reconnectAttempts = 0;

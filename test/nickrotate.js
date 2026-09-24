@@ -62,10 +62,11 @@ const server = net.createServer((s) => {
                 const want = l.split(' ')[1];
                 nickLines.push(want);
                 if (nickLines.length === 1) {
-                    // First rotation: tell it the name is taken.
+                    // First ask: tell it the plain name is taken, so the
+                    // numbering path is the one under test.
                     send(`:srv 433 ${wearing} ${want} :Nickname is already in use`);
-                } else if (nickLines.length === 2) {
-                    // Second: let it through, the way a server would.
+                } else {
+                    // Everything after that goes through, the way a server would.
                     send(`:${wearing}!bot@Sat.Chit.Ananda NICK :${want}`);
                     wearing = want;
                     renamedAt = Date.now();
@@ -137,21 +138,28 @@ server.listen(0, '127.0.0.1', () => {
 
         say('!!nick now');
         await waitFor('first NICK', () => nickLines.length >= 1);
-        c('it asked the server for a name from the pool',
-          nickLines.length === 1 && POOL.includes(nickLines[0]),
-          `asked for: ${JSON.stringify(nickLines)}`);
-        // The server said that name was taken. It must still be Dracula — not
-        // Dracula_, which is what the REGISTRATION 433 path would have done.
-        await sleep(600);
-        c('a taken name does not rename it to Dracula_',
-          !nickLines.some((x) => /^Dracula_/.test(x)),
-          `post-registration NICKs: ${JSON.stringify(nickLines)}`);
+        c('it asks for a pool name plain, before numbering anything',
+          POOL.includes(nickLines[0]), `asked for: ${JSON.stringify(nickLines)}`);
 
-        say('!!nick now');
-        await waitFor('second NICK', () => nickLines.length >= 2);
+        // Told it was taken, it must put a NUMBER on the end — the owner's
+        // design — and must NOT fall into the registration path, which appends
+        // an underscore and would rename the bot for nothing.
+        await waitFor('numbered retry', () => nickLines.length >= 2);
+        c('a taken name comes back with a number on the end',
+          new RegExp(`^${nickLines[0]}\\d+$`).test(nickLines[1] || ''),
+          `asked for: ${JSON.stringify(nickLines)}`);
+        c('and never Dracula_', !nickLines.some((x) => /_$/.test(x)),
+          `post-registration NICKs: ${JSON.stringify(nickLines)}`);
         await waitFor('rename accepted', () => wearing !== 'Dracula');
-        c('a second attempt is allowed, and takes', nickLines.length === 2 && wearing !== 'Dracula',
-          `asked for: ${JSON.stringify(nickLines)}, wearing ${wearing}`);
+        c('the numbered name is the one it ends up wearing', wearing === nickLines[1],
+          `wearing ${wearing}, asked ${JSON.stringify(nickLines)}`);
+
+        // The retry is the SAME rotation, so it must not have spent two of the
+        // hour's two. If it had, this next one would be refused.
+        say('!!nick now');
+        await waitFor('second rotation', () => nickLines.length >= 3);
+        c('the retry did not count as a second rotation against the cap',
+          nickLines.length === 3, `NICKs: ${JSON.stringify(nickLines)}`);
 
         console.log('\n— the cap —');
         n = notices();
@@ -162,7 +170,7 @@ server.listen(0, '127.0.0.1', () => {
         // and calls it the answer to a question it never heard.
         await waitFor('refusal', () => /limit, on purpose/.test(saidSince(n)));
         c('the third is refused, because two an hour is the limit',
-          nickLines.length === 2 && /limit, on purpose/.test(saidSince(n)),
+          nickLines.length === 3 && /limit, on purpose/.test(saidSince(n)),
           `${nickLines.length} NICKs sent; said: ${saidSince(n).slice(-140)}`);
 
         n = notices();
@@ -183,7 +191,7 @@ server.listen(0, '127.0.0.1', () => {
           ghostsAfterRename === 0,
           `${ghostsAfterRename} reclaim attempt(s) against a name we chose`);
         c('and it did not quietly ask for the old name back',
-          !nickLines.slice(2).includes('Dracula'),
+          !nickLines.slice(3).includes('Dracula'),
           `post-registration NICKs: ${JSON.stringify(nickLines)}`);
 
         console.log('\n— trouble —');
@@ -191,7 +199,7 @@ server.listen(0, '127.0.0.1', () => {
         if (sock) sock.write(`:Lucifer!u@h KICK ${CHAN} ${wearing} :out\r\n`);
         const reverted = await waitFor('revert',
           () => /PRIVMSG NickServ :(GHOST|RELEASE) Dracula/.test(sent.join('\n'))
-             || nickLines.slice(2).includes('Dracula'), 15000);
+             || nickLines.slice(3).includes('Dracula'), 15000);
         c('being kicked puts the name the room knows back', reverted,
           'it stayed under the rotated name after being removed');
         const rejoined = await waitFor('rejoin',

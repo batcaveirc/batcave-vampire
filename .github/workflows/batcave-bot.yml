@@ -284,9 +284,13 @@ jobs:
           # ISHITA was kicked for containing s-h-i-t between an i and an a.
           NICK_ALLOW: ${{ secrets.NICK_ALLOW }}
           # ── Nick rotation ──────────────────────────────────────────────
-          # OFF unless switched on, and it does nothing without a pool. The
-          # names a bot wears in this room are the owner's to pick, so there is
-          # deliberately no default list here.
+          # ON by default and needs nothing set. With no NICK_POOL the bot builds
+          # its own names — Dracula47 — so there is nothing to choose and nothing
+          # to register with NickServ. The number is what makes that safe: a
+          # numbered variant is almost certainly not REGISTERED to anybody, so
+          # there is no enforcement to trip, and it still reads as obviously the
+          # bot. NICK_ROTATE=0 turns it off. NICK_POOL is an optional override.
+          # NICK_MAXLEN keeps a generated name inside the network's limit.
           #
           # The cap is the safety feature, not the interval: at most
           # NICK_MAX_PER_HOUR changes in any rolling hour, whatever the timer or
@@ -301,6 +305,7 @@ jobs:
           NICK_POOL: ${{ secrets.NICK_POOL || '' }}
           NICK_ROTATE_MIN: ${{ secrets.NICK_ROTATE_MIN || '90' }}
           NICK_MAX_PER_HOUR: ${{ secrets.NICK_MAX_PER_HOUR || '2' }}
+          NICK_MAXLEN: ${{ secrets.NICK_MAXLEN || '30' }}
           # Carrier tails this room recognises, comma separated — the honest form
           # of "be easy on Indian, US and UK users, hold the unknown countries".
           # We cannot see anybody's country: the network cloaks the address, so no
