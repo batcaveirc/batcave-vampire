@@ -73,8 +73,11 @@ server.listen(0, '127.0.0.1', () => {
             IRC_NICK: 'Dracula', IRC_CHANNEL: CHAN,
             OWNERS: 'boss', ADMINS: 'boss',
             NICKSERV_PASS: 'x', NICKSERV_ACCOUNT: 'Vlkram',
-            // Deliberately left at the default 30, so the only way to get this
-            // right is to have believed the server over the config.
+            // One name, far longer than the limit the server will state. With
+            // the config default of 30 it fits and goes out whole; only a bot
+            // that BELIEVED the server's NICKLEN=9 will shorten it.
+            NICK_POOL: 'Bartholomewthelonged',
+            // NICK_MAXLEN deliberately left at its default 30.
             OUR_HOSTS: 'Sat.Chit.Ananda',
             GROQ_API_KEY: '', SENTIENT_ON: 'off', HOLD_UNINVITED: '',
         },
@@ -102,11 +105,16 @@ server.listen(0, '127.0.0.1', () => {
         const got = nickLines[0] || '';
         c('the generated name fits the limit the server gave',
           got.length > 0 && got.length <= 9,
-          `"${got}" is ${got.length} chars against NICKLEN=9 — the config default is 30`);
-        c('and it got there by truncating, not by luck',
-          /^Dracul\d+$/.test(got),
-          `"${got}" — Dracula is 7 chars, so a 2-digit suffix must shorten the stem`);
-        c('it is still recognisably the bot', /^Dracul/.test(got), `"${got}"`);
+          `"${got}" is ${got.length} chars against NICKLEN=9 — the config default is 30, `
+          + 'so a bot trusting its own config would send the whole 20-character name');
+        // CHANGED ON PURPOSE. This used to expect Dracula + digits, from when a
+        // rotation was the bot's own name numbered. Rotation now picks a real
+        // different name, so the case that proves the limit is believed has to
+        // be a name too LONG for it — hence the single long NICK_POOL entry.
+        c('and it got there by shortening the name, not by picking a short one',
+          /^Bartho\d+$/.test(got),
+          `"${got}" — expected the 20-character name cut to fit and numbered`);
+        c('the number is what made room for it', /\d/.test(got), `"${got}"`);
 
         console.log('\n— and it says so when nick folding will be wrong —');
         // Nick comparison here is ASCII lowercase. rfc1459 also folds []\ with

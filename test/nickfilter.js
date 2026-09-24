@@ -57,5 +57,20 @@ c('and an explicit allow list exists for anything else',
   /NICK_ALLOW/.test(src),
   'the room knows its own regulars better than any rule does');
 
+// The bot now WEARS names from a built-in list. If one of those tripped its own
+// filter it would flag itself in front of the room — and, worse, the nick
+// screening runs on rename, so it would do it every rotation.
+const names = (src.match(/const DEFAULT_NAMES = \[([\s\S]*?)\];/) || [])[1] || '';
+const bank = [...names.matchAll(/'([A-Za-z]+)'/g)].map((m) => m[1]);
+c('the built-in rotation names were found', bank.length >= 10, `found ${bank.length}`);
+const selfFlagged = bank.filter((n) => badNick(n));
+c('and not one of them trips the bot\'s own nick filter',
+  !selfFlagged.length,
+  `would flag itself as: ${selfFlagged.join(', ')}`);
+// Two digits on the end must not make a clean name dirty either.
+const numbered = bank.filter((n) => badNick(`${n}42`));
+c('nor do they once a conflict number is appended', !numbered.length,
+  `flagged when numbered: ${numbered.join(', ')}`);
+
 console.log(f ? `\n${f} FAILED` : '\nALL PASS');
 process.exit(f ? 1 : 0);

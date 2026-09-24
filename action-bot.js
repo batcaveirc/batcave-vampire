@@ -658,8 +658,26 @@ const HOLD_UNINVITED = /^(1|true|yes|on)$/i.test(String(process.env.HOLD_UNINVIT
 // builds its own names from the one it already has, so there is nothing to pick
 // and nothing to register. NICK_ROTATE=0 turns it off.
 const NICK_ROTATE = !/^(0|false|no|off)$/i.test(String(process.env.NICK_ROTATE || 'on').trim());
-// Optional. Names to rotate through INSTEAD of numbered variants of our own.
+// Names to rotate through. The owner corrected me on this: "the nick changes
+// with luna and dracula are just changing numbers behind them they are not
+// changing their nicks to something different everytime?" — and he is right.
+// The original ask was two separate things and I collapsed them into one:
+// "change to a different id" is the NAME, and "add a number on back of it to
+// avoid any conflicts" is the FALLBACK when that name is taken. Dracula47 every
+// time is just the second half.
+//
+// So there is a built-in list, and the bot needs no configuration to use it.
+// Gothic rather than random, so the room still reads it as this bot and not as
+// a stranger who turned up. NICK_POOL replaces the list entirely if you would
+// rather choose. Deliberately excluded: the account name, the other bots' names,
+// and anything the nick filter would object to.
+const DEFAULT_NAMES = [
+    'Nosferatu', 'Orlok', 'Alucard', 'Strigoi', 'Moroi', 'Upir', 'Dhampir',
+    'Varney', 'Carfax', 'Lamia', 'Corvus', 'Noctis', 'Vesper', 'Umbra',
+    'Sanguine', 'Nachtwolf', 'Draugr', 'Coffin', 'Cryptic', 'Mortis',
+];
 const NICK_POOL = listRaw(process.env.NICK_POOL);
+const nameBank = () => (NICK_POOL.length ? NICK_POOL : DEFAULT_NAMES);
 // Longest nick the network will take. InspIRCd's default is 30; going over it
 // gets the NICK rejected, which would look exactly like the name being taken.
 const NICK_MAXLEN = Math.max(9, parseInt(process.env.NICK_MAXLEN || '30', 10));
@@ -688,6 +706,12 @@ const NICK_MAX_PER_HOUR = Math.max(1, parseInt(process.env.NICK_MAX_PER_HOUR || 
 let rotationsAt = [];        // when we last rotated, for the rolling cap
 let pendingRotation = '';    // a name we asked for and have not been given yet
 let rotationNumbered = false; // whether this attempt has already tried a number
+// Names that turned out to belong to somebody. A plain name like "Selene" can be
+// REGISTERED to a person who is simply offline: there is no 433, we take it, and
+// NickServ enforces thirty seconds later and renames us to Guest####. We recover
+// from that — but doing it again next hour, and every hour, is the room watching
+// the bot fail the same way forever. Learn it once instead.
+const unusableNames = new Set();
 
 function holdKey(chan, nick) { return `${chanKey(chan)}|${String(nick).toLowerCase()}`; }
 
@@ -4756,7 +4780,9 @@ function handleCommand(chan, nick, message) {
                 reply(`Wearing \x02${currentNick}\x02, want \x02${wantedNick}\x02. `
                     + `Rotation ${NICK_ROTATE ? 'on' : 'off'}, ${rotationsAt.length}/${NICK_MAX_PER_HOUR} `
                     + `used this hour, one attempt every ${Math.round(NICK_EVERY_MS / 60000)} min. `
-                    + `Names: ${NICK_POOL.length ? NICK_POOL.join(', ') : `${config.nick} + a number`}`);
+                    + `Names: ${nameBank().slice(0, 6).join(', ')}`
+                    + `${nameBank().length > 6 ? ` and ${nameBank().length - 6} more` : ''}`
+                    + `${NICK_POOL.length ? '' : ' (built in)'}`);
                 break;
             }
             if (what === 'back' || what === 'revert') {
@@ -5327,18 +5353,29 @@ function revertNick(why) {
  * and only get a number if the server says the plain one is taken.
  */
 function nextRotationName(withNumber, forceBase) {
-    const bases = NICK_POOL.length ? NICK_POOL : [config.nick];
-    // On a retry the base is not a fresh choice: the name we asked for came
-    // back taken, so the thing to number is THAT name. Picking a different one
-    // instead would be answering a question nobody asked.
-    const base = forceBase || bases[Math.floor(Math.random() * bases.length)];
     const now = String(currentNick).toLowerCase();
-    // With no pool the base IS the name we already wear, so a bare attempt
-    // would be a no-op — number it every time.
-    if (!withNumber && NICK_POOL.length && base.toLowerCase() !== now) return base;
-    const stem = base.slice(0, Math.max(3, nickLimit() - 3));
+    // On a retry the base is NOT a fresh choice: the name we asked for came back
+    // taken, so the thing to number is THAT name. Picking a different one
+    // instead would be answering a question nobody asked.
+    let base = forceBase;
+    if (!base) {
+        // A real different name, not the one we are wearing and not the bare
+        // stem of it either — rotating Orlok -> Orlok12 is the "just changing
+        // numbers" the owner objected to.
+        const stem = now.replace(/\d+$/, '');
+        const options = nameBank().filter((n) => n
+            && n.toLowerCase() !== now
+            && n.toLowerCase() !== stem
+            && !unusableNames.has(n.toLowerCase()));
+        if (!options.length) return '';
+        base = options[Math.floor(Math.random() * options.length)];
+    }
+    const fits = (n) => n.length <= nickLimit();
+    // Plain name first. The number is for CONFLICTS, not for naming.
+    if (!withNumber && fits(base) && base.toLowerCase() !== now) return base;
+    const trunk = base.slice(0, Math.max(3, nickLimit() - 3));
     for (let i = 0; i < 25; i += 1) {
-        const candidate = `${stem}${2 + Math.floor(Math.random() * 98)}`;
+        const candidate = `${trunk}${2 + Math.floor(Math.random() * 98)}`;
         if (candidate.toLowerCase() !== now) return candidate;
     }
     return '';
@@ -5377,7 +5414,7 @@ function startNickRotation() {
     rotationStarted = true;
     log('INFO', `Nick rotation on — at most ${NICK_MAX_PER_HOUR}/hour, trying every `
         + `${Math.round(NICK_EVERY_MS / 60000)} min, from: `
-        + `${NICK_POOL.length ? NICK_POOL.join(', ') : `${config.nick} + a number`}`);
+        + `${nameBank().join(', ')}`);
     setInterval(rotateNick, NICK_EVERY_MS);
 }
 
@@ -5498,6 +5535,8 @@ function handleLine(line) {
             // thing this feature must never become. It is also not counted
             // against the hourly cap, because it is the same rotation, not
             // another one.
+            // In use right now by somebody else. That does not prove it is
+            // theirs, so it is not struck off — it is numbered and tried again.
             const retry = rotationNumbered
                 ? ''
                 : nextRotationName(true, String(pendingRotation).replace(/\d+$/, ''));
@@ -5546,6 +5585,15 @@ function handleLine(line) {
             // Guest####. The channel bans Guest*, so the bot then sits there
             // unable to join anything and nothing notices. Recover immediately.
             if (/^Guest\d+$/i.test(currentNick)) {
+                // Enforcement means the name we had just taken belongs to a
+                // registered account. Strike it off, or we will pick it again.
+                const blamed = String(wantedNick).toLowerCase();
+                if (blamed && blamed !== config.nick.toLowerCase()
+                    && !unusableNames.has(blamed)) {
+                    unusableNames.add(blamed);
+                    log('WARN', `${wantedNick} is registered to somebody — dropping it `
+                        + `from the rotation (${unusableNames.size} dropped so far).`);
+                }
                 log('WARN', `Enforced rename to ${currentNick} — re-identifying and reclaiming.`);
                 revertNick('NickServ enforced a rename');
             }

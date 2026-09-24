@@ -104,33 +104,42 @@ server.listen(0, '127.0.0.1', () => {
         await waitFor(() => /Rotation (on|off)/.test(said().slice(n)));
         c('rotation is ON without anybody switching it on',
           /Rotation on/.test(said().slice(n)), said().slice(n).slice(-160));
-        c('and it says it will build names from its own',
-          /Dracula \+ a number/.test(said().slice(n)), said().slice(n).slice(-160));
+        c('and it names the list it will draw from',
+          /Names: [A-Za-z]+, [A-Za-z]+/.test(said().slice(n)) && /built in/.test(said().slice(n)),
+          said().slice(n).slice(-200));
 
-        console.log('\n— the name it makes up —');
+        console.log('\n— the name it picks —');
         say('!!nick now');
         await waitFor(() => nickLines.length >= 1);
         const first = nickLines[0] || '';
-        c('it asked for its own name with a number on the end',
-          /^Dracula\d+$/.test(first), `asked for: ${JSON.stringify(first)}`);
-        c('not a bare Dracula, which is the name it already had',
-          first !== 'Dracula', `asked for: ${JSON.stringify(first)}`);
-        c('and not the underscore the registration path would have used',
+
+        // CHANGED ON PURPOSE. This used to require /^Dracula\d+$/ — the bot
+        // wearing its own name with a number stuck on. The owner rejected that
+        // outright: "the nick changes with luna and dracula are just changing
+        // numbers behind them they are not changing their nicks to something
+        // different everytime?" The original ask was two things and I ran them
+        // together: "change to a different id" is the NAME, and "add a number on
+        // back of it to avoid any conflicts" is what happens when that name is
+        // TAKEN. So a plain rotation must now produce a genuinely different
+        // name, with no digits at all.
+        c('it asked for a different name, not its own with a number',
+          /^[A-Za-z]+$/.test(first) && !/^Dracula/i.test(first),
+          `asked for: ${JSON.stringify(first)}`);
+        c('and the name has no number on it — nothing was in conflict',
+          !/\d/.test(first), `asked for: ${JSON.stringify(first)} — numbering is for conflicts only`);
+        c('not the underscore the registration path would have used',
           !/_/.test(first), `asked for: ${JSON.stringify(first)}`);
-        // Two digits keeps it well inside any NICKLEN and keeps it readable in
-        // a crowded NAMES list.
-        const num = parseInt(first.replace(/^Dracula/, ''), 10);
-        c('the number is a sane one', num >= 2 && num <= 99, `got ${num}`);
         await waitFor(() => wearing === first);
         c('and that is what it ends up wearing', wearing === first);
 
-        console.log('\n— it does not ask for the same name twice —');
+        console.log('\n— and a different one next time —');
         say('!!nick now');
         await waitFor(() => nickLines.length >= 2);
-        c('the next one differs from the one it is wearing',
+        c('the next rotation is a different name again',
           nickLines[1] !== nickLines[0], `asked: ${JSON.stringify(nickLines)}`);
-        c('and is still recognisably the bot',
-          /^Dracula\d+$/.test(nickLines[1] || ''), `asked: ${JSON.stringify(nickLines)}`);
+        c('and not merely the same name with digits appended',
+          !new RegExp(`^${nickLines[0]}\\d+$`, 'i').test(nickLines[1] || ''),
+          `asked: ${JSON.stringify(nickLines)} — that is the behaviour being replaced`);
 
         if (fails) console.log('\n--- bot log tail ---\n' + log.slice(-800));
         console.log(fails ? `\n${fails} FAILED` : '\nALL PASS');
