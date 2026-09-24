@@ -20,6 +20,11 @@ const { severeAbuse } = require('./abuse');
 
 // --- Configuration (all from env / GitHub Secrets) ---
 const list = (s) => (s || '').split(',').map((x) => x.toLowerCase().trim()).filter(Boolean);
+// The same, with the case left alone. list() lowercases because almost every
+// list here is compared against a nick or a host, where case does not count.
+// A list of names the bot WEARS is the exception: put Nosferatu in the pool
+// and the room should see Nosferatu, not nosferatu.
+const listRaw = (s) => (s || '').split(',').map((x) => x.trim()).filter(Boolean);
 const onOff = (s) => /^(1|true|yes|on)$/i.test(s || '');
 const channels = (process.env.IRC_CHANNEL || '#batcave').split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -130,6 +135,14 @@ const isOurChannel = (c) => channelSet.has(chanKey(c)) || game.isGameChannel(c);
 // --- State (in-memory; resets each restart — fine for an ephemeral host) ---
 let socket = null;
 let currentNick = config.nick;
+// The name we MEAN to be wearing, which is not always the name we have.
+//
+// Everything used to compare currentNick against config.nick, so any
+// difference meant "we lost our nick, take it back". That is right when
+// NickServ bumps us to a Guest and wrong when we changed name on purpose — the
+// watchdog would have undone every rotation within sixty seconds, and dragged
+// a full GHOST/RELEASE/NICK/re-JOIN through the room each time.
+let wantedNick = config.nick;
 let connecting = false;
 let reconnectAttempts = 0;
 // Did we ever complete registration on ANY connection this process? Used to
@@ -622,6 +635,31 @@ let lastHoldTold = 0;        // so the FIRST hold is reported at once, not after
 // owner's own layer, and the room it protects is moderated-only by design.
 // "off" restores the previous behaviour of voicing every arrival there.
 const HOLD_UNINVITED = /^(1|true|yes|on)$/i.test(String(process.env.HOLD_UNINVITED || '').trim());
+
+// ── Nick rotation ────────────────────────────────────────────────────────────
+//
+// The owner asked for both bots to change names, and answered the obvious
+// objection himself: "they can be still remembered through
+// Dracula@Sat.Chit.Ananda and Luna1@Keeping.The.Night.Company why would that be
+// a problem?" He is right — a vhost belongs to the CONNECTION, so the fleet
+// recognises each other through wearsOurHost() no matter what they are called,
+// and the room reaches us through addressedToUs() by any name it knows.
+//
+// The risk was never the rename. It is the RATE, and the owner named it: "i
+// dont wanna be banned cause of fast nick changes". Networks read rapid nick
+// changes as flooding and kill for it, and this one Z-lines whole ranges on
+// sight. So this is slow by construction, capped in a rolling window so a bug
+// in the scheduler cannot become a flood, and abandoned at the first sign of
+// trouble rather than pushed through.
+//
+// Off unless switched on, and it does nothing without a pool: the names a bot
+// wears in this room are the owner's to choose, not mine.
+const NICK_ROTATE = /^(1|true|yes|on)$/i.test(String(process.env.NICK_ROTATE || '').trim());
+const NICK_POOL = listRaw(process.env.NICK_POOL);
+const NICK_EVERY_MS = Math.max(15, parseInt(process.env.NICK_ROTATE_MIN || '90', 10)) * 60000;
+const NICK_MAX_PER_HOUR = Math.max(1, parseInt(process.env.NICK_MAX_PER_HOUR || '2', 10));
+let rotationsAt = [];        // when we last rotated, for the rolling cap
+let pendingRotation = '';    // a name we asked for and have not been given yet
 
 function holdKey(chan, nick) { return `${chanKey(chan)}|${String(nick).toLowerCase()}`; }
 
@@ -4326,7 +4364,7 @@ function handleCommand(chan, nick, message) {
                     + '!!history · !!fun · !!topic · !!announce · !!mass kick|ban|voice|devoice');
                 reply('\x02Bot\x02: !!join|!!part #room · !!rooms · !!access · !!aicheck · '
                     + '!!recruit on|off|now · !!badword · !!strict · !!linkfilter · !!raidguard · '
-                    + '!!sentient');
+                    + '!!sentient · !!nick now|back|status');
                 break;
             }
             reply('Try \x02!!help\x02, \x02!!help fun\x02 or \x02!!help mods\x02.');
@@ -4676,6 +4714,41 @@ function handleCommand(chan, nick, message) {
         // Channel history is a channel MODE on InspIRCd (chanhistory), not a
         // ChanServ command: +H <lines>:<duration>, -H to clear. We are opped in
         // both rooms, so this needs no services at all.
+        // Rotation by hand. The timer is deliberately slow — at most a couple of
+        // changes an hour — so there has to be a way to say "now", and a way to
+        // put it back without waiting for something to go wrong first.
+        //
+        // There is no !!nick <name>: letting an operator pick any name at all
+        // turns the bot into a way to wear somebody else's, and the pool is
+        // where that decision belongs.
+        case 'nick': {
+            if (!admin) { reply('Access denied.'); break; }
+            const what = (args[0] || 'status').toLowerCase();
+            if (what === 'status') {
+                reply(`Wearing \x02${currentNick}\x02, want \x02${wantedNick}\x02. `
+                    + `Rotation ${NICK_ROTATE ? 'on' : 'off'}, ${rotationsAt.length}/${NICK_MAX_PER_HOUR} `
+                    + `used this hour. Pool: ${NICK_POOL.join(', ') || '(empty)'}`);
+                break;
+            }
+            if (what === 'back' || what === 'revert') {
+                revertNick('asked to by an operator');
+                reply(`Back to \x02${config.nick}\x02.`);
+                break;
+            }
+            if (what === 'now') {
+                if (!NICK_ROTATE) { reply('Rotation is off — NICK_ROTATE=1 turns it on.'); break; }
+                if (!NICK_POOL.length) { reply('NICK_POOL is empty, so there is nothing to change to.'); break; }
+                if (!rotationAllowed()) {
+                    reply(`Not yet — ${NICK_MAX_PER_HOUR} changes an hour is the limit, on purpose. `
+                        + 'Fast renaming is what gets a bot killed for flooding.');
+                    break;
+                }
+                reply(rotateNick() ? 'Changing.' : 'Not now — the room is locked down, or one is already in flight.');
+                break;
+            }
+            reply('Usage: !!nick now · !!nick back · !!nick status');
+            break;
+        }
         case 'history': {
             if (!admin) { reply( 'Access denied.'); break; }
             const sub = (args[0] || '').toLowerCase();
@@ -5130,6 +5203,7 @@ function handleCommand(chan, nick, message) {
 function connect() {
     if (connecting) return;
     connecting = true; hasJoined = false; ready = false; currentNick = config.nick;
+    wantedNick = config.nick; pendingRotation = '';   // a new connection starts as ourselves
     connectTime = Date.now();          // the replay guard's reference point
     connectStartedAt = Date.now();     // the stall watchdog's reference point
     log('INFO', `Connecting to ${config.host}:${config.port} (${config.tls ? 'TLS' : 'plaintext'}) as ${config.nick}...`);
@@ -5188,6 +5262,66 @@ function connect() {
     socket.on('close', () => { connecting = false; opped.clear(); game.onDisconnect(); log('INFO', 'Connection closed.'); scheduleReconnect(); });
 }
 /**
+ * Put the name back to the one the room knows, and stop rotating for now.
+ *
+ * Called for every kind of trouble — enforcement, a kick, a nick we did not
+ * choose — because in all of them the useful thing is the same: be findable
+ * under the name people expect while whatever it is gets sorted out.
+ */
+function revertNick(why) {
+    pendingRotation = '';
+    if (wantedNick.toLowerCase() !== config.nick.toLowerCase()) {
+        log('WARN', `Reverting to ${config.nick} — ${why}`);
+        wantedNick = config.nick;
+    }
+    // Unconditional, so the pre-rotation behaviour is exactly preserved for a
+    // bot that never rotates at all: if we are not wearing our name, get it.
+    if (currentNick.toLowerCase() !== config.nick.toLowerCase()) reclaimNick();
+}
+
+function rotationAllowed() {
+    const now = Date.now();
+    rotationsAt = rotationsAt.filter((t) => now - t < 3600000);
+    return rotationsAt.length < NICK_MAX_PER_HOUR;
+}
+
+function rotateNick() {
+    if (!NICK_ROTATE || !NICK_POOL.length) return false;
+    if (!ready || !socket || !socket.writable) return false;
+    // Not while the room is locked down. A raid is when a rename looks most
+    // like evasion, and the moment the room most needs to know which name is
+    // the bot.
+    if (Date.now() < lockedUntil) return false;
+    if (pendingRotation) return false;                  // one in flight at a time
+    if (!rotationAllowed()) return false;
+    const options = NICK_POOL.filter((n) => n && n.toLowerCase() !== currentNick.toLowerCase());
+    if (!options.length) return false;
+    const next = options[Math.floor(Math.random() * options.length)];
+    pendingRotation = next;
+    rotationsAt.push(Date.now());
+    log('INFO', `Rotating ${currentNick} -> ${next}`);
+    send(`NICK ${next}`);
+    // A request the server never answers must not block every later rotation.
+    setTimeout(() => { if (pendingRotation === next) pendingRotation = ''; }, 30000);
+    return true;
+}
+
+let rotationStarted = false;
+function startNickRotation() {
+    if (rotationStarted || !NICK_ROTATE) return;
+    if (!NICK_POOL.length) {
+        // Switched on with nothing to switch to. Silence here would look
+        // exactly like rotation working and nobody noticing.
+        log('WARN', 'NICK_ROTATE is on but NICK_POOL is empty — not rotating.');
+        return;
+    }
+    rotationStarted = true;
+    log('INFO', `Nick rotation on — at most ${NICK_MAX_PER_HOUR}/hour, trying every `
+        + `${Math.round(NICK_EVERY_MS / 60000)} min, from: ${NICK_POOL.join(', ')}`);
+    setInterval(rotateNick, NICK_EVERY_MS);
+}
+
+/**
  * Re-identify, take our nick back, and rejoin. Used both when NickServ renames
  * us mid-session and by the watchdog below.
  */
@@ -5215,9 +5349,11 @@ function startNickWatchdog() {
     nickWatchdogStarted = true;
     setInterval(() => {
         if (!ready || !socket || !socket.writable) return;
-        if (currentNick.toLowerCase() === config.nick.toLowerCase()) return;
-        log('WARN', `Nick is "${currentNick}", wanted "${config.nick}" — reclaiming.`);
-        reclaimNick();
+        // A name we CHOSE is not a problem to fix. Anything else means we lost
+        // one rather than changed it, and that is what this watchdog is for.
+        if (currentNick.toLowerCase() === wantedNick.toLowerCase()) return;
+        log('WARN', `Nick is "${currentNick}", wanted "${wantedNick}" — reclaiming.`);
+        revertNick('wearing a name we did not choose');
     }, 60000);
 }
 
@@ -5293,9 +5429,17 @@ function handleLine(line) {
     const msg = params.slice(1).join(' ').replace(/^:/, '');
 
     if (command === '433') {                 // nick in use → take a temp nick so we can finish registering
-        currentNick += '_';
-        log('WARN', `Nick in use — trying ${currentNick}`);
-        send(`NICK ${currentNick}`);
+        if (pendingRotation) {
+            // A rotation target that is taken costs us nothing: we still hold
+            // the name we have. Appending an underscore here would rename us
+            // for no reason, and burn one of the hour's rotations doing it.
+            log('INFO', `${pendingRotation} is taken — staying as ${currentNick}.`);
+            pendingRotation = '';
+        } else {
+            currentNick += '_';
+            log('WARN', `Nick in use — trying ${currentNick}`);
+            send(`NICK ${currentNick}`);
+        }
     }
     if (command === 'NICK' && nick) {
         const newNick = (params[0] || '').replace(/^:/, '');
@@ -5304,13 +5448,31 @@ function handleLine(line) {
         provenPeers.delete(nick.toLowerCase());
         provenPeers.delete((newNick || '').toLowerCase());
         if (nick.toLowerCase() === currentNick.toLowerCase()) {
+            const oldNick = currentNick;
             currentNick = newNick || currentNick;
+            // Our OWN host and account have to travel with us too. They were
+            // carried for everybody else and not for us, which no rename ever
+            // exposed because we never renamed on purpose before: after a
+            // rotation, hostOf would have no entry for the new name, so
+            // wearsOurHost() would stop recognising this bot as one of ours and
+            // entitle() would lose the account ChanServ keys all our flags on.
+            const ourHost = hostOf.get(oldNick.toLowerCase());
+            if (ourHost) { hostOf.set(currentNick.toLowerCase(), ourHost); rememberHost(currentNick, ourHost); }
+            const ourAcct = accountOf.get(oldNick.toLowerCase());
+            if (ourAcct !== undefined) accountOf.set(currentNick.toLowerCase(), ourAcct);
+            if (pendingRotation && currentNick.toLowerCase() === pendingRotation.toLowerCase()) {
+                // It took. This is the name we mean to be wearing now, so the
+                // watchdog must not read it as a nick we lost.
+                wantedNick = currentNick;
+                pendingRotation = '';
+                log('OK', `Now wearing ${currentNick}.`);
+            }
             // NickServ enforcement renames an unidentified protected nick to
             // Guest####. The channel bans Guest*, so the bot then sits there
             // unable to join anything and nothing notices. Recover immediately.
             if (/^Guest\d+$/i.test(currentNick)) {
                 log('WARN', `Enforced rename to ${currentNick} — re-identifying and reclaiming.`);
-                reclaimNick();
+                revertNick('NickServ enforced a rename');
             }
         } else if (newNick) {
             // Screen the NEW name.
@@ -5397,6 +5559,7 @@ function handleLine(line) {
                 game.coldStart(config.channels[0]);
             }
             startNickWatchdog();
+            startNickRotation();
             ready = true;
             log('OK', 'Identified, joined — moderation live.');
             // A dead key looks exactly like a quiet room: the AI layer simply
@@ -6301,6 +6464,9 @@ function handleLine(line) {
         if (itsUs) {
             opped.delete(chanKey(tgt));
             members.delete(chanKey(tgt));            // so the watchdog knows we are out
+            // Rejoining under a name nobody recognises, moments after being
+            // removed, is how a bot gets banned instead of let back in.
+            revertNick(`kicked from ${tgt}`);
             setTimeout(() => send(`JOIN ${tgt}`), 3000);
         } else if (ready && nick && nick.toLowerCase() !== currentNick.toLowerCase()
                    && !isOwner(nick)

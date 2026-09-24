@@ -283,6 +283,24 @@ jobs:
           # Nicks never treated as offensive, whatever substring they contain.
           # ISHITA was kicked for containing s-h-i-t between an i and an a.
           NICK_ALLOW: ${{ secrets.NICK_ALLOW }}
+          # ── Nick rotation ──────────────────────────────────────────────
+          # OFF unless switched on, and it does nothing without a pool. The
+          # names a bot wears in this room are the owner's to pick, so there is
+          # deliberately no default list here.
+          #
+          # The cap is the safety feature, not the interval: at most
+          # NICK_MAX_PER_HOUR changes in any rolling hour, whatever the timer or
+          # a bug in it asks for. Rapid renaming is read as flooding and killed
+          # for, on a network that Z-lines ranges on sight.
+          #
+          # Rotation is abandoned while the room is locked down, when a name
+          # comes back taken, when NickServ enforces a rename, and when the bot
+          # is kicked — in all of those the useful thing is to be findable under
+          # the name the room knows.
+          NICK_ROTATE: ${{ secrets.NICK_ROTATE || '' }}
+          NICK_POOL: ${{ secrets.NICK_POOL || '' }}
+          NICK_ROTATE_MIN: ${{ secrets.NICK_ROTATE_MIN || '90' }}
+          NICK_MAX_PER_HOUR: ${{ secrets.NICK_MAX_PER_HOUR || '2' }}
           # Carrier tails this room recognises, comma separated — the honest form
           # of "be easy on Indian, US and UK users, hold the unknown countries".
           # We cannot see anybody's country: the network cloaks the address, so no
