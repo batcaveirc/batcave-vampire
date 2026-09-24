@@ -158,6 +158,24 @@ class Watch {
         return this.seenIn(nick).length > 0;
     }
 
+    /**
+     * Was this connection heard MISBEHAVING elsewhere — not merely talking?
+     *
+     * isFlagged() is true for any sighting at all, and the commonest sighting by
+     * far is "mentioned the room", which is what somebody does when the recruiter
+     * has just invited them. Using it to withhold voice meant the bot invited
+     * people and then took their voice away for accepting: the owner watched
+     * Asma_26 join, say "hi", and be devoiced six seconds later.
+     *
+     * A mention is worth remembering — a pattern across several rooms is real —
+     * and it is not grounds for anything on its own.
+     */
+    heardMisbehaving(nick) {
+        const now = Date.now();
+        return (this.sightings.get(String(nick).toLowerCase()) || [])
+            .some((s) => now - s.at < MEMORY_MS && s.why && s.why !== 'mentioned the room');
+    }
+
     forget(nick) {
         this.sightings.delete(nick.toLowerCase());
     }

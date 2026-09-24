@@ -152,9 +152,25 @@ class TrustList {
         setTimeout(() => {
             if (!this.loading) return;
             this.loading = false;
-            this.log('WARN', `ChanServ did not answer FLAGS ${this.channel}. `
-                + 'Keeping the previous trust list; check the channel is registered '
-                + 'and that this bot holds +f on it.');
+            this.misses = (this.misses || 0) + 1;
+            const everLoaded = this.loaded;
+            this.log('WARN', `ChanServ did not answer FLAGS ${this.channel} `
+                + `(attempt ${this.misses}). `
+                + (everLoaded
+                    ? 'Keeping the list I already have.'
+                    : 'I have NO trust list yet, so trusted regulars are being treated as '
+                      + 'strangers — retrying shortly.'));
+            // Retry, rather than waiting for the hourly refresh. The first attempt
+            // fails on most starts (the join burst is still draining), and an hour
+            // of an empty whitelist means every regular is policed like a stranger.
+            if (this.misses <= 6) {
+                const wait = Math.min(300000, 20000 * (2 ** (this.misses - 1)));
+                setTimeout(() => { if (!this.loaded) this.refresh(); }, wait);
+            } else if (this.misses === 7) {
+                this.log('ERR', `Giving up on FLAGS ${this.channel} after six tries — `
+                    + 'check the channel is registered and that this bot holds +f on it. '
+                    + 'The hourly refresh will keep trying.');
+            }
         }, 15000);
     }
 
@@ -201,6 +217,7 @@ class TrustList {
         if (isEndOfList(line)) {
             this.loading = false;
             this.loaded = true;
+            this.misses = 0;
             this.lastRead = Date.now();
             this.names = this.pending;
             this.denied = this.pendingDeny;

@@ -36,8 +36,10 @@ srv.listen(0,'127.0.0.1', async() => {
        out.filter(l=>/KICK|MODE/.test(l)).join(' | ')||'(nothing)');
 
  await order('vikram','Dracula devoice troll42');
- check('a whitelisted regular can too', sent(/^MODE #batcave -v troll42$/),
-       out.filter(l=>/KICK|MODE/.test(l)).join(' | ')||'(nothing)');
+ check('but a whitelisted regular CANNOT — trusted is standing, not authority',
+       !sent(/^MODE #batcave -v troll42$/),
+       out.filter(l=>/KICK|MODE/.test(l)).join(' | ')
+         + ' — a trusted regular could mute, kick and ban until this was closed');
 
  await order('troll42','Dracula kick vikram');
  check('a STRANGER giving orders is ignored', !sent(/KICK #batcave vikram/),

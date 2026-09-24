@@ -29,7 +29,9 @@ if (screen.length < 500) { console.log('  [FAIL] could not slice screenNick'); p
 console.log('— the model reports —');
 c('an AI verdict notifies the operators', /\[NICK\]/.test(screen) && /notice\(o,/.test(screen));
 c('and says plainly that nobody was touched', /Nobody has been touched/.test(screen));
-c('and offers the human the command', /!!kick \$\{nick\}/.test(screen));
+c('and offers the human a command that actually exists',
+  /Dracula kick \$\{nick\}/.test(screen),
+  '"!!kick" has never been a command — kick is a spoken order');
 
 console.log('— the model does NOT act —');
 c('no kick on an AI verdict',

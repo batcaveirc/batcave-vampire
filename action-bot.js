@@ -124,6 +124,7 @@ let whitelist = new Set([...seedWhitelist].filter((n) => !untrust.has(n)));
 // drops every message in the room, which looks exactly like the bot "hanging".
 const chanKey = (c) => (c || '').toLowerCase();
 const channelSet = new Set(config.channels.map(chanKey));
+const homeChannels = new Set(config.channels.map(chanKey));
 const isOurChannel = (c) => channelSet.has(chanKey(c)) || game.isGameChannel(c);
 
 // --- State (in-memory; resets each restart — fine for an ephemeral host) ---
@@ -719,6 +720,13 @@ function holdBack(chan, nick, why, opts = {}) {
  * It used to kick. It now holds back, silently — see holdBack() above.
  */
 function guardArrival(chan, nick) {
+    // Governed by the same switch as the rest of the arrival handling, because it
+    // is the same thing wearing a different name: taking somebody's voice for
+    // turning up. GUARDED_HOSTS has been set as a secret since 13 September and
+    // that tail is Reliance Jio, so this was quietly devoicing a large share of
+    // ordinary arrivals — which is what the owner watched happen to Asma_26 six
+    // seconds after she said hello.
+    if (!HOLD_UNINVITED) return false;
     if (!onGuardedHost(nick)) return false;
     if (isTrusted(nick) || isAdmin(nick) || isOwner(nick) || isOneOfOurs(nick)) return false;
     if (isRegistered(nick)) return false;
@@ -1366,7 +1374,7 @@ function isExempt(nick, chan) {
     // call, 2026-08-22. They previously got a warning quota so that genuine
     // abuse from a trusted account was still caught; the trade now is that a
     // borrowed or compromised regular account cannot be stopped by the bot.
-    // Human moderators still can: !!quiet, !!kick, !!ban and spoken orders all
+    // Human moderators still can: spoken orders (Dracula kick/ban/mute) all
     // work on anyone, and the whitelist is a short, hand-curated list.
     if (isTrusted(nick)) return true;
     return false;
@@ -1587,7 +1595,7 @@ function deservesVoice(nick, chan) {
     // room watches the bot hand somebody voice and take it back one second
     // later — which is what it looked like live, and reads as the bot arguing
     // with itself rather than making a decision.
-    if (watch.isFlagged(nick)) return false;
+    if (watch.heardMisbehaving(nick)) return false;
     // Being held back outranks everything below, including the blanket yes for a
     // moderated room. That blanket came first, so a held-back arrival was voiced
     // by the next sweep anyway and the hold meant nothing.
@@ -1766,9 +1774,38 @@ function foldNick(sNick) {
  * IS the regular, whatever nick they are wearing.
  */
 /** One of ours — the standbys by name, the scenery by the realname it wears. */
+/**
+ * The HOSTS our own bots wear, which a nick change cannot alter.
+ *
+ * Both bots hold a vhost from HostServ — Dracula@Sat.Chit.Ananda and
+ * Luna1@Keeping.The.Night.Company — and a vhost belongs to the CONNECTION, not
+ * the nick. The owner pointed this out when asking for rotating names: "they can
+ * be still remembered through Dracula@Sat.Chit.Ananda and Luna1@Keeping.The.
+ * Night.Company why would that be a problem?"
+ *
+ * He is right, and it is worth having whether or not names ever rotate: every
+ * list of "our own bots" in this file has been a list of NICKS, and each one has
+ * drifted at least once — PEER_BOTS still said Drusilla weeks after Bankai
+ * replaced her, so the bot moderated its own game dealer in front of the room.
+ * A host cannot drift when somebody is renamed.
+ */
+const OUR_HOSTS = new Set(list(process.env.OUR_HOSTS).map((h) => String(h).toLowerCase()));
+
+function wearsOurHost(nick) {
+    if (!OUR_HOSTS.size) return false;
+    const uh = hostOf.get(String(nick || '').toLowerCase());
+    if (!uh) return false;
+    const host = uh.split('@').pop().toLowerCase();
+    for (const h of OUR_HOSTS) if (host === h || host.endsWith(`.${h}`)) return true;
+    return false;
+}
+
 function isOneOfOurs(nick) {
     const n = String(nick || '').toLowerCase();
     if (FLEET.has(n)) return true;
+    // By host as well as by name, so a rename cannot make one of ours look like a
+    // stranger to the rest of the fleet.
+    if (wearsOurHost(nick)) return true;
     const mark = (process.env.CHORUS_MARK || '').trim();
     return !!mark && (realnameOf.get(n) || '') === mark;
 }
@@ -1799,10 +1836,52 @@ function impersonatesARegular(nick) {
     return null;
 }
 
+/**
+ * Is this nick itself offensive?
+ *
+ * Substring matching kicked ISHITA out of #batcave — a perfectly ordinary name
+ * that happens to contain "shit" between an i and an a. That is the exact trap
+ * written down in this project's own debugging notes: match on TOKENS, not
+ * substrings, because short words hide inside innocent longer ones, and a false
+ * positive costs the room a person while a miss costs it nothing much.
+ *
+ * So a short word has to STAND OUT to count: at the start of the nick, at the
+ * end, or with something that is not a letter beside it.
+ *
+ *   ishita     shit is buried between letters   -> allowed
+ *   shithead   at the start                     -> caught
+ *   bigshit    at the end                       -> caught
+ *   big_shit   an underscore beside it          -> caught
+ *
+ * Long words are still matched anywhere, on the normalised form, because nobody
+ * has an innocent name with a six-letter slur inside it and leet-spelling a long
+ * slur is the evasion this was written for.
+ */
+function standsOut(hay, w) {
+    const letter = (c) => c >= 'a' && c <= 'z';
+    for (let i = hay.indexOf(w); i !== -1; i = hay.indexOf(w, i + 1)) {
+        const atStart = i === 0;
+        const atEnd = i + w.length === hay.length;
+        if (atStart || atEnd || !letter(hay[i - 1]) || !letter(hay[i + w.length])) return true;
+    }
+    return false;
+}
+
 function badNick(nick) {
+    const raw = String(nick).toLowerCase();
     const n = normalize(nick).replace(/\s+/g, '');
-    for (const w of severeWords) if (w && w.length >= 3 && n.includes(w)) return w;
-    for (const w of badwords) if (w && w.length >= 4 && n.includes(w)) return w;
+    // Names the room knows are fine, whatever they happen to contain.
+    if (list(process.env.NICK_ALLOW).some((a) => a && raw === String(a).toLowerCase())) return null;
+    for (const w of severeWords) {
+        if (!w) continue;
+        if (w.length >= 6 && n.includes(w)) return w;
+        if (w.length >= 3 && standsOut(n, w)) return w;
+    }
+    for (const w of badwords) {
+        if (!w) continue;
+        if (w.length >= 7 && n.includes(w)) return w;
+        if (w.length >= 4 && standsOut(n, w)) return w;
+    }
     return null;
 }
 
@@ -1822,7 +1901,7 @@ function handleOrder(chan, nick, msg) {
     if (!order) return false;
 
     const tier = tierOf(chan, nick);
-    if (tier !== 'trusted' && tier !== 'mod' && tier !== 'staff') {
+    if (tier !== 'mod' && tier !== 'staff') {
         // Say nothing. Announcing "you may not do that" teaches the room the
         // exact phrasing that works and invites people to go looking for a gap.
         return false;
@@ -1949,10 +2028,14 @@ function reportTrustRefusal(line) {
 function entitle(chan) {
     const key = chanKey(chan);
     if (entitled.has(key)) return;                  // once per channel per run
-    // Never in somebody else's room. Asking their services for founder-level
-    // access is how a tolerated guest becomes a banned one, and the owner was
-    // told to fix flags on #chatsansar, which is not his channel.
-    if (!isOurChannel(chan)) return;
+    // Never in somebody else's room, and never in one we were merely SENT to.
+    //
+    // Asking another channel's services for founder-level access is how a
+    // tolerated guest becomes a banned one. isOurChannel() is not the right test
+    // for that: !!join adds a room to config.channels, so a moderator typing
+    // "!!join #channel" — a literal placeholder, as happened — had the bot demand
+    // flags on a room nobody owns. Only the rooms this bot was deployed to run.
+    if (!homeChannels.has(chanKey(chan))) return;
     // ChanServ keys on the account and nothing else. Asking it to set flags on
     // our NICK would either fail or, worse, entitle whoever wears that nick
     // next — and our nick is the one thing about us anybody can take.
@@ -2371,7 +2454,7 @@ function warnUser(chan, nick, reason) {
         // Whitelisted regulars are TOLD, never silenced and never removed.
         // They are the people the room is for; taking a regular's voice mid-joke
         // costs more than the joke did, and the owner would rather handle those
-        // few by hand. A human moderator can still act — !!quiet, !!kick and a
+        // few by hand. A human moderator can still act — Dracula kick/mute and a
         // spoken order all still work on anyone.
         if (tier === 'trusted' || tier === 'mod' || tier === 'staff') {
             const n = (warns.get(k) || 0) + 1;
@@ -3662,7 +3745,7 @@ async function screenNick(chan, nick) {
             for (const o of config.owners) {
                 notice(o, `\x0307[NICK]\x03 The model thinks \x02${nick}\x02 in ${chan} is `
                     + 'offensive. Nobody has been touched. If you agree: '
-                    + `\x02!!kick ${nick}\x02, or add the word to the list.`);
+                    + `\x02Dracula kick ${nick}\x02, or add the word to the list.`);
             }
         }
         return;
@@ -3871,7 +3954,7 @@ function answerWhoIs(chan, asker, msg) {
     // Only when WE are the one being asked. Merely containing our name meant a
     // question put to Drusilla was answered by Dracula instead — and answered
     // wrongly, which is worse than not answering.
-    if (!addressedTo(msg, config.nick)) return false;
+    if (!addressedToUs(msg)) return false;
     if (!new RegExp(`(^|[^a-z0-9])${name}([^a-z0-9]|$)`).test(lower)) return false;
 
     const body = lower.replace(new RegExp(name, 'gi'), ' ').replace(/[?.!,]+$/, '').trim();
@@ -3946,6 +4029,20 @@ function answerCloning(chan, asker, victim) {
  * or the very end is being talked TO. Getting this wrong is how a bot ends up
  * interrupting two people discussing it.
  */
+/**
+ * Somebody talking to US — by whatever name they know us by.
+ *
+ * The room learns one name and keeps using it. If the bot is ever wearing a
+ * different nick, "hey dracula" still has to work, or a rename costs the bot
+ * every conversation it would have had.
+ */
+function addressedToUs(text) {
+    for (const name of new Set([currentNick, config.nick, ...list(process.env.ALSO_ANSWER_TO)])) {
+        if (name && addressedTo(text, name)) return true;
+    }
+    return false;
+}
+
 function addressedTo(text, me) {
     const n = String(me || '').replace(/[^a-z0-9]/gi, '');
     if (!n) return false;
@@ -6321,7 +6418,7 @@ function handleLine(line) {
             if (shazam(tgt, nick)) return;
         }
 
-        if (addressedTo(msg, config.nick)) {
+        if (addressedToUs(msg)) {
             const everyBot = [...PROTECTED_NICKS, ...(handshake.peers || [])];
             const speaker = firstNamed(msg, everyBot);
             if (!speaker || speaker === config.nick.toLowerCase()) {

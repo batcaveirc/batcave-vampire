@@ -268,6 +268,21 @@ jobs:
           #   notice            a NOTICE, as before
           #   channel           in the room, visible to everybody
           CMD_REPLY: ${{ secrets.CMD_REPLY || 'notice' }}
+          # The vhosts our own bots wear, comma separated. A vhost belongs to
+          # the CONNECTION, not the nick — Dracula@Sat.Chit.Ananda and
+          # Luna1@Keeping.The.Night.Company survive any rename — so this is the
+          # one way of saying "one of ours" that a nick change cannot break.
+          # Every other list here has been a list of NICKS and every one has
+          # drifted: PEER_BOTS still named Drusilla weeks after Bankai replaced
+          # her, so the bot moderated its own game dealer in front of the room.
+          OUR_HOSTS: ${{ secrets.OUR_HOSTS || 'Sat.Chit.Ananda,Keeping.The.Night.Company' }}
+          # Names the bot answers to besides the one it is wearing. The room
+          # learns one name and keeps using it, so "hey dracula" has to work even
+          # if it is currently called something else.
+          ALSO_ANSWER_TO: ${{ secrets.ALSO_ANSWER_TO || 'Dracula' }}
+          # Nicks never treated as offensive, whatever substring they contain.
+          # ISHITA was kicked for containing s-h-i-t between an i and an a.
+          NICK_ALLOW: ${{ secrets.NICK_ALLOW }}
           # Carrier tails this room recognises, comma separated — the honest form
           # of "be easy on Indian, US and UK users, hold the unknown countries".
           # We cannot see anybody's country: the network cloaks the address, so no

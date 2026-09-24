@@ -154,5 +154,33 @@ for (const [what, re_] of [
     ['the cross-room watch', /watch\.hear\(/],
 ]) c(`${what} is still there`, re_.test(src));
 
+console.log('\n— who may command the bot —');
+// The owner, watching a whitelisted regular mute and unmute somebody: "lucifer is
+// not a mod right now and he was able to do that". Spoken orders accepted tier
+// 'trusted', so anybody on the whitelist could mute, kick, ban, voice and warn.
+// Being a trusted REGULAR means the filter leaves you alone; it was never meant
+// to mean you run the room.
+const orderFn = src.slice(src.indexOf('function handleOrder('), src.indexOf('function handleCommand('));
+c('spoken orders require a MODERATOR, not merely a trusted regular',
+  /tier !== 'mod' && tier !== 'staff'/.test(orderFn),
+  'trusted is standing, not authority');
+c('and trusted is no longer accepted there',
+  !/tier !== 'trusted' && tier !== 'mod'/.test(orderFn));
+// shazam is the deliberate exception, and must stay: one narrow power — remove
+// whoever is attacking the person who said it — for somebody who should not have
+// to find a moderator first.
+c('but shazam is still there for trusted regulars',
+  /function shazam/.test(src) && /isTrusted/.test(src));
+
+console.log('\n— and where it may ask for access —');
+// !!join pushes a room into config.channels, so isOurChannel() became true for
+// anywhere a moderator sent the bot. "!!join #channel" — a placeholder typed
+// literally — had it demand founder flags on a room nobody owns.
+c('entitlement is limited to the rooms configured at STARTUP',
+  /homeChannels\.has\(chanKey\(chan\)\)/.test(src),
+  'isOurChannel() grows every time somebody runs !!join');
+c('and that set is frozen when the bot starts',
+  /const homeChannels = new Set\(config\.channels\.map\(chanKey\)\)/.test(src));
+
 console.log(f ? `\n${f} FAILED` : '\nALL PASS');
 process.exit(f ? 1 : 0);
