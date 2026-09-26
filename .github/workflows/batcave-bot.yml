@@ -303,8 +303,8 @@ jobs:
           # the name the room knows.
           NICK_ROTATE: ${{ secrets.NICK_ROTATE || '' }}
           NICK_POOL: ${{ secrets.NICK_POOL || '' }}
-          NICK_ROTATE_MIN: ${{ secrets.NICK_ROTATE_MIN || '90' }}
-          NICK_MAX_PER_HOUR: ${{ secrets.NICK_MAX_PER_HOUR || '2' }}
+          NICK_ROTATE_MIN: ${{ secrets.NICK_ROTATE_MIN || '240' }}
+          NICK_MAX_PER_HOUR: ${{ secrets.NICK_MAX_PER_HOUR || '1' }}
           NICK_MAXLEN: ${{ secrets.NICK_MAXLEN || '30' }}
           # Carrier tails this room recognises, comma separated — the honest form
           # of "be easy on Indian, US and UK users, hold the unknown countries".
