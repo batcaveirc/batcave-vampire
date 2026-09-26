@@ -275,7 +275,7 @@ jobs:
           # Every other list here has been a list of NICKS and every one has
           # drifted: PEER_BOTS still named Drusilla weeks after Bankai replaced
           # her, so the bot moderated its own game dealer in front of the room.
-          OUR_HOSTS: ${{ secrets.OUR_HOSTS || 'Sat.Chit.Ananda,Keeping.The.Night.Company,Got.My.Eyes.OnU' }}
+          OUR_HOSTS: ${{ secrets.OUR_HOSTS || 'Sat.Chit.Ananda,Keeping.The.Night.Company,Got.My.Eyes.OnU,Live.Free.Have.Fun' }}
           # Names the bot answers to besides the one it is wearing. The room
           # learns one name and keeps using it, so "hey dracula" has to work even
           # if it is currently called something else.
