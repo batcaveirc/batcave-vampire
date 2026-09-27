@@ -18,6 +18,7 @@ const root = path.join(__dirname, '..');
 const src = fs.readFileSync(path.join(root, 'action-bot.js'), 'utf8');
 const funSrc = fs.readFileSync(path.join(root, 'fun.js'), 'utf8');
 const gameSrc = fs.readFileSync(path.join(root, 'findit.js'), 'utf8');
+const gamesSrc = fs.readFileSync(path.join(root, 'games.js'), 'utf8');
 
 // ── every command the bot answers ───────────────────────────────────────────
 const orderAt = src.indexOf('function handleOrder(');
@@ -32,6 +33,8 @@ const funList = (funSrc.match(/const commands = \[([\s\S]*?)\];/) || [, ''])[1];
 const fromFun = new Set([...funList.matchAll(/'([a-z0-9]+)'/g)].map((m) => m[1]));
 const fromGame = new Set([...gameSrc.matchAll(/cmd === '([a-z0-9]+)'|case '([a-z0-9]+)':/g)]
     .map((m) => m[1] || m[2]));
+// The simple party games (games.js) dispatch on `cmd === '...'` just like findit.
+const fromGames = new Set([...gamesSrc.matchAll(/cmd [=!]== '([a-z0-9]+)'/g)].map((m) => m[1]));
 
 // ── what !!help advertises ──────────────────────────────────────────────────
 const helpBody = src.slice(src.indexOf("case 'help': {"), src.indexOf("case 'seen': {"));
@@ -43,6 +46,8 @@ const UNLISTED = new Map([
     ['help', 'it is the help itself'],
     ['whitelist', 'a deprecation notice that points at !!trust; advertising it twice is noise'],
     ['endgame', 'an operator ending a round; reachable but not worth a line'],
+    ['endguess', 'alias of endgame'],
+    ['guessnumber', 'alias of numguess, which is advertised'],
     // findit.js drives a round once it has started, and the round announces
     // these itself as it goes. Listing thirteen of them would bury everything.
     ['go', 'announced by the round in progress'],
@@ -57,8 +62,8 @@ const UNLISTED = new Map([
     ['start', 'announced by the round in progress'],
 ]);
 
-const all = new Set([...fromSwitch, ...fromFun, ...fromGame]);
-console.log(`— ${all.size} commands across ${[fromSwitch.size, fromFun.size, fromGame.size].join(' + ')} surfaces —`);
+const all = new Set([...fromSwitch, ...fromFun, ...fromGame, ...fromGames]);
+console.log(`— ${all.size} commands across ${[fromSwitch.size, fromFun.size, fromGame.size, fromGames.size].join(' + ')} surfaces —`);
 
 const missing = [...all].filter((cmd) => !advertised.has(cmd) && !UNLISTED.has(cmd)).sort();
 c('every command the bot answers is in !!help',

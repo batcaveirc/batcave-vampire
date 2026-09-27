@@ -2,6 +2,7 @@ const net = require('net');
 const tls = require('tls');
 const { FindIt } = require('./findit');
 const { Fun } = require('./fun');
+const { Games } = require('./games');
 const { Recruiter } = require('./recruit');
 const { parseOrder, PROTECTED_NICKS } = require('./orders');
 const { Retort, shieldLine } = require('./retort');
@@ -992,6 +993,7 @@ let raidGuard = onOff(process.env.RAID_GUARD || 'on');
 // The game. `bot` is the small surface findit.js needs.
 const bot = { send, say, notice, get nick() { return currentNick; } };
 const game = new FindIt(bot);
+const games = new Games(bot);
 // Off with RETORT=off; on by default, because a room that sees an abuser
 // answered reads very differently from one that only sees a mod log line.
 // Recognising the standby without services. He has no NickServ account by
@@ -4363,6 +4365,9 @@ function handleCommand(chan, nick, message) {
     // The game claims its own commands first. !!join with no argument joins a
     // lobby; !!join #room stays the admin channel command underneath.
     if (game.handle(nick, chan, cmd, args, hostOf.get(nick.toLowerCase()))) return;
+    // The simple party games (numguess, …) live in the games room; findit is a
+    // different, multi-room game and claims its commands first.
+    if (games.handle(nick, chan, cmd, args)) return;
     // Fun comes after the game (a compartment's !!fix is not a joke) and before
     // moderation commands, which it shares no names with.
     if (fun.handle(nick, chan, cmd, args)) return;
@@ -4394,7 +4399,7 @@ function handleCommand(chan, nick, message) {
             const topic = (args[0] || '').toLowerCase();
             if (!topic) {
                 reply('\x02!!seen\x02 · \x02!!info\x02 · \x02!!rules\x02 · \x02!!status\x02 · '
-                    + '\x02!!findit\x02 (game room). I answer here privately, never in the room.');
+                    + '\x02!!findit\x02 · \x02!!numguess\x02 (game room). I answer here privately, never in the room.');
                 reply('More: \x02!!help fun\x02 · \x02!!help mods\x02'
                     + (isTrusted(nick) || admin
                         ? ' — or say \x02shazam\x02 and I remove whoever is attacking you.' : '.'));
@@ -6677,6 +6682,9 @@ function handleLine(line) {
         if (ignored.has(nick.toLowerCase())) return;          // !!ignore
 
         if (msg.startsWith('!!')) { handleCommand(tgt, nick, msg); return; }
+        // A bare-number guess in the games room, consumed before the chat
+        // ladder so a guess is not screened as if it were conversation.
+        if (games.onMessage(nick, tgt, msg)) return;
         // A plain-English order from someone who already holds authority.
         // Before the filters, because a moderator saying "Dracula ban troll42
         // for racism" must not be screened as if THEY said something abusive.
