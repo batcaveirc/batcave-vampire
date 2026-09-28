@@ -41,8 +41,15 @@ const TARGET = {
     test(t) {
         const s = String(t || '');
         if (TARGET_WORDS.test(s)) return true;
-        // Strip "<digits> m/f" first, then look for a standalone marker.
-        return BARE_MARK.test(s.replace(/\b\d{1,3}\s?[mf]\b/gi, ' '));
+        // Strip an age/gender SELF-LABEL first, in both orders — "27f", "f 27",
+        // "24m", "m 24" — then look for a standalone marker. Only stripping
+        // "<digits> m/f" missed "f 27", so "hi im Parul f 27 Kolkata" had its
+        // "f" counted as a gender being SOUGHT on top of the age/gender label,
+        // double-counting one self-introduction into a kick. A person stating
+        // their own age and gender is not seeking anyone.
+        return BARE_MARK.test(s
+            .replace(/\b\d{1,3}\s?[mf]\b/gi, ' ')
+            .replace(/\b[mf]\s?\d{1,3}\b/gi, ' '));
     },
 };
 
@@ -51,7 +58,7 @@ const MEDIA = /\b(cam|cams|webcam|pic|pics|photo|photos|video|videos|vid|vids|sn
 // "dm me" is both the asking and the offer, which is why it counts twice and
 // why leaving it out of here let "House wife s and little girls dm me" score
 // only two and pass.
-const CONTACT = /\b(chat|chatting|call|calling|meet|meetup|meeting|host|hosting|session|service|services|fun|fun2|enjoy|company|dm|pm|inbox|hmu|whatsapp|telegram|snap|snapchat)\b/i;
+const CONTACT = /\b(chat|chatting|call|calling|voice|voicecall|meet|meetup|meeting|host|hosting|session|service|services|fun|fun2|enjoy|company|dm|pm|inbox|hmu|whatsapp|telegram|snap|snapchat)\b/i;
 
 // Unambiguous. Present alongside the rest, this is not a misreading.
 const EXPLICIT = /\b(cum|cumming|sex|sexy|sexting|porn|horny|nude|naked|boobs|titties|tits|dick|cock|pussy|bbc|blowjob|suck|fuck|fucking|jerk|jerking|masturbat\w*|golden\s*shower|cuckold|cuck|threesome|hookup|escort|paid|payment)\b/i;

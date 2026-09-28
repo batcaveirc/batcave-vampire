@@ -3153,11 +3153,19 @@ function scriptedModeration(chan, nick, message) {
     if (isExempt(nick, chan)) return false;
 
     if (sol.level === 'solicit') {
-        // Advertising, not conversation. Removed rather than warned: nobody
-        // posts a rate card by accident, and the ladder exists for people who
-        // might have been joking.
+        // DEVOICED, not kicked — the owner's standing preference, and the safe
+        // default: a devoice in a +m room silences the advert, is reversible if
+        // the detector is ever wrong (as it was for "hi im Parul f 27 Kolkata"),
+        // and makes no noise in the room. A mod can escalate to a kick by hand.
+        // No retort, no room announcement — those are the "annoying messages"
+        // the owner asked not to see, and taunting a possibly-misread newcomer
+        // is exactly what went wrong with Parul.
         log('MOD', `Solicitation from ${nick}: ${sol.why.join(', ')} — "${message.slice(0, 60)}"`);
-        kickUser(chan, nick, `advertising (${sol.why.slice(0, 2).join(', ')})`);
+        if (opped.has(chanKey(chan))) sendFirst(`MODE ${chan} -v ${nick}`);
+        for (const m of channelMods()) {
+            notice(m, `\x0304[MOD]\x03 devoiced \x02${nick}\x02 — advertising `
+                + `(${sol.why.slice(0, 2).join(', ')}). Voice them back if it is wrong.`);
+        }
         return true;
     }
 
@@ -5357,6 +5365,42 @@ function revertNick(why) {
  * A pool is still honoured when one is set. Those names are tried bare first
  * and only get a number if the server says the plain one is taken.
  */
+// A shuffled walk through the name bank: each rotation takes the NEXT name in a
+// shuffled order, and the order is only reshuffled once every name has been used.
+// So a name never repeats until the whole pool has been through — the owner's
+// "dont go back to the previous one till the rotation is over". (In memory, so a
+// process restart starts a fresh shuffle; there is no store on this bot to carry
+// it across, and each run still cycles without repeats within itself.)
+let rotationQueue = [];
+function nextInCycle() {
+    const now = String(currentNick).toLowerCase();
+    const stem = now.replace(/\d+$/, '');
+    // The QUEUE holds the whole usable pool (only struck-off names are left out),
+    // so every cycle covers all of them. A name is removed as it is used, so it
+    // cannot return until the queue empties and reshuffles — the
+    // no-repeat-until-the-cycle-is-over guarantee. Excluding the current name
+    // from the REFILL (the earlier bug) made each cycle miss one name.
+    const inPool = (n) => n && !unusableNames.has(n.toLowerCase());
+    if (!rotationQueue.length) {
+        rotationQueue = nameBank().filter(inPool);
+        for (let i = rotationQueue.length - 1; i > 0; i -= 1) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [rotationQueue[i], rotationQueue[j]] = [rotationQueue[j], rotationQueue[i]];
+        }
+        // A fresh shuffle might start with the name we are wearing; move it down
+        // so we never repeat back-to-back across the cycle seam.
+        if (rotationQueue.length > 1
+            && (rotationQueue[0].toLowerCase() === now || rotationQueue[0].toLowerCase() === stem)) {
+            rotationQueue.push(rotationQueue.shift());
+        }
+    }
+    while (rotationQueue.length) {
+        const n = rotationQueue.shift();
+        if (n.toLowerCase() !== now && n.toLowerCase() !== stem && inPool(n)) return n;
+    }
+    return '';
+}
+
 function nextRotationName(withNumber, forceBase) {
     const now = String(currentNick).toLowerCase();
     // On a retry the base is NOT a fresh choice: the name we asked for came back
@@ -5364,16 +5408,8 @@ function nextRotationName(withNumber, forceBase) {
     // instead would be answering a question nobody asked.
     let base = forceBase;
     if (!base) {
-        // A real different name, not the one we are wearing and not the bare
-        // stem of it either — rotating Orlok -> Orlok12 is the "just changing
-        // numbers" the owner objected to.
-        const stem = now.replace(/\d+$/, '');
-        const options = nameBank().filter((n) => n
-            && n.toLowerCase() !== now
-            && n.toLowerCase() !== stem
-            && !unusableNames.has(n.toLowerCase()));
-        if (!options.length) return '';
-        base = options[Math.floor(Math.random() * options.length)];
+        base = nextInCycle();
+        if (!base) return '';
     }
     const fits = (n) => n.length <= nickLimit();
     // Plain name first. The number is for CONFLICTS, not for naming.
@@ -5417,9 +5453,15 @@ let rotationStarted = false;
 function startNickRotation() {
     if (rotationStarted || !NICK_ROTATE) return;
     rotationStarted = true;
-    log('INFO', `Nick rotation on — at most ${NICK_MAX_PER_HOUR}/hour, trying every `
-        + `${Math.round(NICK_EVERY_MS / 60000)} min, from: `
-        + `${nameBank().join(', ')}`);
+    log('INFO', `Nick rotation on — at most ${NICK_MAX_PER_HOUR}/hour, first change `
+        + `~5 min after connect then every ${Math.round(NICK_EVERY_MS / 60000)} min, `
+        + `cycling: ${nameBank().join(', ')}`);
+    // The first change happens soon after connecting, not a full interval later.
+    // setInterval waits one whole interval before its first call, so with a 4h
+    // interval the bot sat on its base nick for 4h — and since the run often
+    // restarts before then, it looked like it never rotated at all. Change off
+    // the base early, then keep the ~4h cadence.
+    setTimeout(rotateNick, 5 * 60000);
     setInterval(rotateNick, NICK_EVERY_MS);
 }
 
