@@ -1,12 +1,21 @@
-// Wearing a regular's name to abuse people under it.
+// Wearing a regular's name.
 //
-// clonesARegular() only ever fired when the nick ALSO contained a slur —
-// "NangiPoojaBhabhi" — and returned null otherwise, which is most of them.
-// The plain form is the more damaging one: wear "Lisaa_", abuse the room for
-// ten minutes, and what people remember is LISAA doing it.
+// This check USED to kick on a name fold and host-BAN on return, and announce
+// to the room that the newcomer "is not <regular>". Then it did that to a real
+// person: "Shreya22" folds to a whitelisted "_shreya_", and Shreya is one of
+// the most common names there is. The bot kicked her, banned her whole IP when
+// she rejoined, and told the room she was a fake, while the owner tried in vain
+// to protect her — "silly bot". A shared common name is a coincidence, not an
+// attack, and removing a genuine newcomer for it is far worse than missing a
+// real impostor: the bot's own standing rule is that newcomers are judged on
+// what they DO.
 //
-// And screenNick ran on JOIN and nowhere else, so the entire check was one
-// rename away from useless.
+// So a name fold ALONE no longer removes or accuses anyone. It tells the
+// moderators — privately, once, and only when the regular is actually around to
+// be confused with — and leaves the person in place. If a real impostor then
+// abuses the room, ordinary moderation removes them for the ABUSE. A NAME PLUS
+// A SLUR ("NangiPoojaBhabhi") is a genuine targeted attack and clonesARegular
+// still bans that on sight; this test is only about the plain form.
 const net = require('net');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -33,7 +42,7 @@ const server = net.createServer((sock) => {
             if (l.startsWith('NICK')) { send(':srv 001 D :hi'); send(':srv 376 D :end'); }
             if (l.startsWith('JOIN')) {
                 send(`:D!u@h JOIN ${CHAN}`);
-                send(`:srv 353 D = ${CHAN} :@D lisaa`);
+                send(`:srv 353 D = ${CHAN} :@D @vikram lisaa`);
                 send(`:srv 366 D ${CHAN} :end`);
                 send(`:srv MODE ${CHAN} +o D`);
                 if (staged) continue;
@@ -77,22 +86,31 @@ server.listen(0, '127.0.0.1', () => {
     setTimeout(() => {
         const all = sent.join('\n');
         const acted = (who) => new RegExp(`(KICK ${CHAN} ${who}|MODE ${CHAN} \\+b [^\\n]*${who})`, 'i').test(all);
-        c('a leet lookalike is removed', acted('L1saa'),
-          sent.filter((l) => /KICK|\+b/.test(l)).join(' | ') || '(nothing done)');
-        c('a suffixed lookalike is removed', acted('Lisaa2'),
+        const toldMods = (who) => new RegExp(`NOTICE vikram :[^\\n]*${who}`, 'i').test(all);
+        // Nobody is removed for a name fold, and nobody is branded in the room.
+        c('a leet lookalike is NOT removed for the name alone', !acted('L1saa'),
+          sent.filter((l) => /KICK|\+b/.test(l)).join(' | ') || '(good: nothing removed)');
+        c('a suffixed lookalike is NOT removed for the name alone', !acted('Lisaa2'),
           sent.filter((l) => /KICK|\+b/.test(l)).join(' | '));
-        c('THE BYPASS: renaming onto her name is caught too', acted('Lisaa_'),
-          sent.filter((l) => /KICK|\+b/.test(l)).join(' | ')
-          + ' — screenNick ran on JOIN only, so this was one rename away from useless');
-        c('the room is told it was not her', /is not \x02lisaa\x02/i.test(all) || /is not .?lisaa/i.test(all),
-          'a removal nobody explains leaves the accusation standing');
-        c('an ordinary newcomer is left alone', !acted('rahul_k'),
+        c('THE BYPASS: renaming onto her name is NOT removed either', !acted('Lisaa_'),
+          sent.filter((l) => /KICK|\+b/.test(l)).join(' | '));
+        c('the room is NOT publicly told someone "is not" the regular',
+          !/PRIVMSG #batcave :[^\n]*is not[^\n]*lisaa/i.test(all),
+          'a public accusation on a mere name clash is exactly the shaming being removed');
+        // But the mods ARE told, privately, so a real impostor is a human's call.
+        c('the mods are told about the leet lookalike, privately',
+          toldMods('L1saa'), sent.filter((l) => /NOTICE/.test(l)).join(' | ') || '(mods never told)');
+        c('and about the rename bypass too', toldMods('Lisaa_'),
+          sent.filter((l) => /NOTICE vikram/.test(l)).join(' | '));
+        c('an ordinary newcomer is left alone and not flagged',
+          !acted('rahul_k') && !toldMods('rahul_k'),
           sent.filter((l) => /rahul/i.test(l)).join(' | '));
         c('our own scenery is never accused of it',
-          !acted('Lisaa11'),
+          !acted('Lisaa11') && !toldMods('Lisaa11'),
           sent.filter((l) => /Lisaa11/i.test(l)).join(' | ')
           + ' — its name pool can collide with a regular by coincidence');
-        c('and the REAL person on a second nick is left alone', !acted('Lisaa\\|away'),
+        c('and the REAL person on a second nick is left alone',
+          !acted('Lisaa\\|away') && !toldMods('Lisaa\\|away'),
           sent.filter((l) => /away/i.test(l)).join(' | ')
           + ' — logged in as her account, so it is her');
         try { bot.kill(); } catch (e) { /* gone */ }

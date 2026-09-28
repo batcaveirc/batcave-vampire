@@ -1930,6 +1930,24 @@ function impersonatesARegular(nick) {
 }
 
 /**
+ * Is the regular whose name got folded actually a live presence right now —
+ * someone another person could be confused WITH?
+ *
+ * Impersonation only means anything when the person being impersonated is
+ * around: here in this channel, or seen anywhere in the last stretch (they may
+ * have just stepped away). If they are nowhere to be found, a shared common
+ * name is a coincidence, not an attack, and not worth a word — which is the
+ * whole point, because "Shreya", "Priya", "Divya" belong to no one regular.
+ */
+function regularIsAround(who, chan) {
+    const w = String(who || '').toLowerCase();
+    const here = [...(members.get(chanKey(chan)) || new Set())].some((n) => n.toLowerCase() === w);
+    if (here) return true;
+    const t = seenUsers[w];
+    return !!t && (Date.now() - t) < 45 * 60000;
+}
+
+/**
  * Is this nick itself offensive?
  *
  * Substring matching kicked ISHITA out of #batcave — a perfectly ordinary name
@@ -3801,20 +3819,37 @@ async function screenNick(chan, nick) {
         return;
     }
     // Wearing a regular's name, without the slur that clonesARegular needs.
+    //
+    // This used to KICK, then host-BAN on return, and announce to the room that
+    // the person "is not <regular>". It removed genuine newcomers whose only
+    // crime was a common first name: "Shreya22" folds to a whitelisted
+    // "_shreya_", and Shreya is one of the most common names there is. The owner
+    // watched it kick and then BAN such a newcomer by host, tried !!trust and
+    // !!protect to save them, and the guard overrode every attempt — "silly
+    // bot". A false positive here costs the room a real person and brands them a
+    // liar in front of everyone; a miss costs a mod one judgement call. And it
+    // cut against the bot's own rule that newcomers are judged on what they DO.
+    //
+    // So a name fold ALONE no longer removes or accuses anyone. It tells the
+    // moderators — privately, and only when the regular is actually around to be
+    // confused with — and leaves the person in place. If a real impostor then
+    // abuses the room, ordinary behaviour-based moderation removes them for the
+    // ABUSE, under their own name. A NAME PLUS A SLUR is a genuine targeted
+    // attack and clonesARegular still bans it on sight, above.
     const worn = impersonatesARegular(nick);
     if (worn) {
-        const k2 = nick.toLowerCase();
-        const seen = (nickOffences.get(k2) || 0) + 1;
-        nickOffences.set(k2, seen);
-        // Kicked first, banned if they put it back on. A kick is recoverable
-        // and two people really can be called Priya; coming back wearing it
-        // again is an answer to the question.
-        if (seen > 1) banUser(chan, nick, `wearing ${worn.who}'s name (came back with it)`);
-        else kickUser(chan, nick, `that is ${worn.who}'s name — pick your own`);
-        say(chan, `\x0304[MOD]\x03 \x02${nick}\x02 is not \x02${worn.who}\x02. `
-            + `Anything said under that name was not ${worn.who}. 🦇`);
-        log('MOD', `Impersonation: ${nick} folds to ${worn.who}.`);
-        noteHostileArrival(chan, 'impersonation');
+        const around = regularIsAround(worn.who, chan);
+        log('MOD', `Name clash: ${nick} folds to regular ${worn.who}`
+            + `${around ? ' (who is around) — told the mods' : ' (not around — likely just a common name)'}, left in place.`);
+        if (around) {
+            for (const m of channelMods()) {
+                if (m.toLowerCase() === nick.toLowerCase()) continue;
+                notice(m, `\x0304[MOD]\x03 \x02${nick}\x02 shares regular \x02${worn.who}\x02's name `
+                    + `(identical once folded), and ${worn.who} is around. I left them in place — most `
+                    + `likely a name clash. If they are wearing ${worn.who}'s name to be taken for them, `
+                    + `kick or ban them.`);
+            }
+        }
         return;
     }
     const listHit = badNick(nick);
@@ -4760,6 +4795,11 @@ function handleCommand(chan, nick, message) {
                 const hadMask = protectMasks.delete(m);
                 reply(hadMask ? `Removed ${m} (${protectMasks.size} left).`
                     : `${who} was not in the mask list — nothing to remove.`);
+            } else if (args[0] && !['list', 'status'].includes(args[0].toLowerCase())) {
+                // A bare "!!protect <nick>" — they meant to add. The owner typed
+                // exactly this to save a falsely-flagged newcomer and got the
+                // KICK_PROTECT status instead, which reads as "it did nothing".
+                reply(`Did you mean \x02!!protect add ${args[0]}\x02? Use !!protect add|remove <nick|mask>.`);
             } else {
                 reply(KICK_PROTECT
                     ? `Kick-protection is ON: all ${whitelist.size} whitelisted users`
