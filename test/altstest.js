@@ -22,7 +22,11 @@ c('and from WHOWAS, which reaches past a disconnect', /command === '314'/.test(s
   'a name change to escape a warning is exactly when the person has just left');
 
 console.log('\n— !!info —');
-c('it reports the other names', /also seen on this connection/.test(src));
+// !!info was trimmed on the owner's request ("just the things I'm looking
+// for, not the full description"); the alts line now reads "same host
+// also:" rather than the old "also seen on this connection". Same feature,
+// shorter wording.
+c('it reports the other names', /same host also/.test(src));
 c('and asks the server for history', /send\(`WHOWAS \$\{who\} 5`\)/.test(src));
 
 console.log('\n— the recruiter stops inviting one person six times —');

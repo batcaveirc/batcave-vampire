@@ -188,6 +188,7 @@ const hostOf = new Map();          // nick(lower) -> user@host (for real bans)
  * targeted by four different names and each arrived with a clean record.
  */
 const nicksOnHost = new Map();     // host -> Set(nick)
+let findState = null;              // an in-flight !!find <host>, collecting WHO replies
 function rememberHost(nick, userHost) {
     if (!nick || !userHost) return;
     const host = String(userHost).split('@').pop();
@@ -4423,7 +4424,8 @@ function handleCommand(chan, nick, message) {
                 if (!admin) { reply('That half is for operators.'); break; }
                 reply('\x02Just say it\x02: \x02Dracula kick <nick>\x02 — also ban, unban, mute, '
                     + 'unmute, voice, devoice, warn. Plain English, no !!, reason optional.');
-                reply('\x02People\x02: !!unquiet · !!unwarn · !!protect add|remove · !!hardban · '
+                reply('\x02People\x02: !!info <nick> · !!find <host> (who else is on a host) · '
+                    + '!!unquiet · !!unwarn · !!protect add|remove · !!hardban · '
                     + '!!trust add|del|seed · !!untrust add|del|seed · !!autoban add|remove|list');
                 reply('\x02Room\x02: !!moderate · !!active · !!mod · !!door · !!letin · !!autovoice · '
                     + '!!history · !!fun · !!topic · !!announce · !!mass kick|ban|voice|devoice');
@@ -4475,31 +4477,27 @@ function handleCommand(chan, nick, message) {
             // Voice, and the REASON. "Why did this person not get auto-voice"
             // was unanswerable: four separate ways for the decision to come out
             // false and no record of which fired.
-            const v = voiceReason(who, chan);
-            reply( `${who} — role: ${role} (${tier} — ${why}), strikes: ${warns.get(k) || 0}/${quota}, `
-                + `account: ${accountOf.get(k) || 'none seen'}, `
-                + `host: ${hostOf.get(k) || 'unknown'}`
-                + `${ignored.has(k) ? ', ignored' : ''}, last active: ${seenUsers[k] ? ago(seenUsers[k]) : 'never'}.`);
-            reply( `${who} — auto-voice: ${v.ok ? 'YES' : 'NO'} (${v.why}).`);
-            // The other names on this connection. Cloaks are a hash of the
-            // real address, so this is the same person — and every ladder here
-            // counts per NICK, which is how one person was able to target
-            // somebody under four different names with a clean record each
-            // time.
+            // Trimmed to the facts, on the owner's request — no auto-voice
+            // reasoning, no caveats about how the index is built. One line of
+            // who-they-are, then the other names on their host (the thing this
+            // is usually asked for).
             const alts = altsOf(who);
-            const known = hostOf.get(k);
+            reply(`${who} — ${tier}${why === 'not trusted' ? ' (stranger)' : ` (${why})`}, `
+                + `strikes ${warns.get(k) || 0}/${quota}, account ${accountOf.get(k) || 'none'}, `
+                + `host ${hostOf.get(k) || 'unknown'}${ignored.has(k) ? ', ignored' : ''}, `
+                + `seen ${seenUsers[k] ? ago(seenUsers[k]) : 'never'}.`);
+            // The alts line — the thing this is usually asked for. An EMPTY
+            // answer still says WHY, or "no alts" reads as a broken command,
+            // which is exactly how it was reported once. Two cases: no host on
+            // file at all vs. a host with nobody else seen on it (bounded by the
+            // restart, not proof they are alone).
             if (alts.length) {
-                reply(`${who} — \x02also seen on this connection\x02: ${alts.slice(0, 12).join(', ')}`
-                    + `${alts.length > 12 ? ` +${alts.length - 12} more` : ''}. Same host, so the same person.`);
-            } else if (!known) {
-                // Say WHY there is nothing, or "no alts" reads as "the feature
-                // is broken" — which is exactly how it was reported.
-                reply(`${who} — no connection on file yet. I learn it from WHO or when they `
-                    + 'speak; ask again in a moment.');
+                reply(`${who} — same host also: ${alts.slice(0, 12).join(', ')}`
+                    + `${alts.length > 12 ? ` +${alts.length - 12} more` : ''}.`);
+            } else if (hostOf.get(k)) {
+                reply(`${who} — no other names on that host since I last restarted (not proof they have none).`);
             } else {
-                reply(`${who} — no other names on this connection \x02since I last restarted\x02 `
-                    + `(${uptimeShort()}). I only link names I have seen together, and I am wiped `
-                    + 'every few hours, so this is not proof they have none.');
+                reply(`${who} — no connection on file yet, so I can't link names.`);
             }
             // Two server-side lookups, because neither alone is enough.
             //
@@ -4516,6 +4514,50 @@ function handleCommand(chan, nick, message) {
             // cannot simply be queried.
             send(`WHOWAS ${who} 5`);
             send(`USERHOST ${who}`);
+            break;
+        }
+        // !!find <host> — every nick seen on a host/cloak. The reverse of !!info,
+        // for "who else is this person". Answers from the watch index (the nicks
+        // seen on that host in rooms the bot sits in) and also fires a WHO at the
+        // host in case the server allows it — but on this network WHO-by-mask is
+        // oper-only, so the index is usually the whole answer.
+        case 'find': {
+            // Operator-only: sweeping by host enumerates who-else-is-here without
+            // needing a nick, a broader lookup than !!info. Advertised under
+            // !!help mods, so gate it to match.
+            if (!admin) { reply('That lookup is for operators.'); break; }
+            const q = (args[0] || '').split('@').pop().toLowerCase().trim();
+            if (!q || !q.includes('.')) { reply('Usage: !!find <host>  e.g. !!find okpmlo.threembb.co.uk'); break; }
+            // Local index: exact host, or a host that ends with the query (so a
+            // base domain finds its subdomains too).
+            const local = new Set();
+            for (const [host, nicks] of nicksOnHost) {
+                if (host === q || host.endsWith(`.${q}`) || host.endsWith(q)) {
+                    for (const n of nicks) local.add(n);
+                }
+            }
+            if (local.size) {
+                const list = [...local].slice(0, 20);
+                reply(`${q} — seen here as: ${list.join(', ')}`
+                    + `${local.size > 20 ? ` +${local.size - 20} more` : ''}.`);
+            } else {
+                reply(`${q} — nobody on that host in what I have seen (I only know rooms I sit in).`);
+            }
+            // Best-effort network lookup: collect WHO replies for this host for a
+            // few seconds and report anyone the index did not already have. If the
+            // server refuses mask lookups (oper-only here), nothing comes back and
+            // the index above stands.
+            findState = { host: q, asker: nick, chan, before: new Set(local), found: new Set() };
+            send(`WHO ${q}`);
+            setTimeout(() => {
+                if (!findState || findState.host !== q) return;
+                const extra = [...findState.found].filter((n) => !findState.before.has(n));
+                if (extra.length) {
+                    notice(findState.asker, `\x0307[FIND]\x03 ${q} — also on the network right now: `
+                        + `${extra.slice(0, 20).join(', ')}.`);
+                }
+                findState = null;
+            }, 4000);
             break;
         }
         // The switch a moderator actually reaches for, rather than a redeploy.
@@ -6264,6 +6306,13 @@ function handleLine(line) {
         if (n) {
             accountOf.set(n.toLowerCase(), (acct && acct !== '0') ? acct : '');
             if (user && host) { hostOf.set(n.toLowerCase(), `${user}@${host}`); rememberHost(n, `${user}@${host}`); }
+            // Feed an in-flight !!find, in case the server answered a host WHO.
+            if (findState && host) {
+                const h = String(host).toLowerCase();
+                if (h === findState.host || h.endsWith(`.${findState.host}`) || h.endsWith(findState.host)) {
+                    findState.found.add(n.toLowerCase());
+                }
+            }
             // %cuhnar asks for the realname too, and it is the LAST field.
             // This is where the scenery gets recognised. The 352 handler had
             // that job and 352 never arrives, because every WHO we send is
@@ -6396,6 +6445,13 @@ function handleLine(line) {
         hostOf.set(params[5].toLowerCase(), `${params[2]}@${params[3]}`);
         rememberHost(params[5], `${params[2]}@${params[3]}`);
         carryIn(params[5], params.slice(7).join(' ').replace(/^:\d+\s*/, ''));
+        // Feed an in-flight !!find: this WHO reply's host may be the one asked for.
+        if (findState) {
+            const h = String(params[3]).toLowerCase();
+            if (h === findState.host || h.endsWith(`.${findState.host}`) || h.endsWith(findState.host)) {
+                findState.found.add(params[5].toLowerCase());
+            }
+        }
     }
     if (command === 'PART' && nick) {
         (members.get(chanKey(tgt)) || new Set()).delete(nick);
