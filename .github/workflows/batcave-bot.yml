@@ -81,6 +81,16 @@ jobs:
           # !!trust, survives restarts, and readable — which a secret is not.
           # Empty or unregistered and the two secrets above hold, unchanged.
           TRUST_CHANNEL: ${{ secrets.TRUST_CHANNEL }}
+          # Hop registered regulars up into the closed room. When a registered
+          # regular (whitelisted / trusted / !!protect) joins HOPUP_FROM, they get
+          # a SILENT invite to HOPUP_TO — clients auto-join a +R room they are
+          # invited to, so they end up sitting in both with no channel spam.
+          # Defaulted ON to the emoji room (the owner asked for exactly this);
+          # set HOPUP_TO empty to switch it off. HOPUP_ALL_REGISTERED=on widens
+          # it from the priority set to every registered user.
+          HOPUP_TO: ${{ secrets.HOPUP_TO || '#🅱🅰🆃🅲🅰🆅🅴' }}
+          HOPUP_FROM: ${{ secrets.HOPUP_FROM }}
+          HOPUP_ALL_REGISTERED: ${{ secrets.HOPUP_ALL_REGISTERED }}
           # The realname our own decorative bots carry, so they can be spotted
           # in the open room and invited into the locked one without ever
           # having to speak. Unset = the feature is off.

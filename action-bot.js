@@ -42,6 +42,27 @@ if (findItRoom && !channels.some((c) => c.toLowerCase() === findItRoom.toLowerCa
     channels.push(findItRoom);
 }
 
+// Hop registered regulars up into the closed room, silently.
+//
+// The owner wants registered regulars sitting in BOTH #batcave and the closed
+// room (the emoji VIP), automatically, with no channel spam. IRC cannot FORCE a
+// client to join — that is oper-only (SAJOIN) — but an INVITE to a room they are
+// already allowed into (it is +R / carries R:*) makes almost every client
+// auto-join. So this is the legitimate, no-oper version of the "room jump".
+//   HOPUP_TO   the closed room to pull people into (e.g. the emoji channel).
+//   HOPUP_FROM the room to watch; defaults to the home channel (#batcave).
+//   HOPUP_ALL_REGISTERED  on = invite EVERY registered user; off (default) =
+//              only the owner's priority set (whitelisted / trusted / kick-
+//              protected). Other registered users already get ChanServ's own
+//              on-join notice, so they are covered without a second nudge.
+const HOPUP_TO = (process.env.HOPUP_TO || '').trim();
+const HOPUP_FROM_RAW = (process.env.HOPUP_FROM || channels[0] || '#batcave').trim();
+const HOPUP_ALL_REG = /^(1|true|yes|on)$/i.test(process.env.HOPUP_ALL_REGISTERED || '');
+// The bot can only invite into a room it is in, so make sure it joins HOPUP_TO.
+if (HOPUP_TO && !channels.some((c) => c.toLowerCase() === HOPUP_TO.toLowerCase())) {
+    channels.push(HOPUP_TO);
+}
+
 // TLS matters here: without it the NickServ password is sent in cleartext over
 // the wire. IRC_TLS was previously accepted in config but never honoured.
 const useTls = onOff(process.env.IRC_TLS);
@@ -3106,6 +3127,67 @@ function isProtectedFromKick(nick) {
     return false;
 }
 
+// --- Hop registered regulars up into the closed room ----------------------
+// Silent by design: an INVITE reaches only the invited client (never a channel
+// line), and to a +R room they are already allowed into, most clients then
+// auto-join — so a registered regular ends up sitting in BOTH rooms with no
+// greeting and no spam. Nobody is forced (that is oper-only SAJOIN) and nobody
+// unregistered is touched. This is the legitimate stand-in for the "room jump".
+const hopInvited = new Map();          // nick(lower) -> last invite ms
+const HOPUP_COOLDOWN_MS = 60 * 60000;  // one nudge an hour at most; declining once is an answer.
+
+// The owner's PROTECT list, independent of the KICK_PROTECT master switch
+// (which isProtectedFromKick is gated on). "whitelist protected and trusted".
+function inProtectMasks(nick) {
+    const uh = hostOf.get(nick.toLowerCase());
+    if (!uh) return false;
+    for (const m of protectMasks) if (globToRe(m).test(`${nick}!${uh}`)) return true;
+    return false;
+}
+
+// Eligible = REGISTERED (identified to services) and, by default, one of the
+// owner's priority people. isTrusted() already covers the whitelist and trusted
+// masks; inProtectMasks() covers !!protect entries. HOPUP_ALL_REGISTERED widens
+// it to every registered user. Never our own fleet, never the bot itself.
+function hopEligible(nick) {
+    if (!HOPUP_TO) return false;
+    const k = nick.toLowerCase();
+    if (k === config.nick.toLowerCase() || isOneOfOurs(nick)) return false;
+    if (!(accountOf.get(k) || '').trim()) return false;         // must be registered
+    if (HOPUP_ALL_REG) return true;
+    return isTrusted(nick) || inProtectMasks(nick);
+}
+
+// Fired on a real JOIN to the source room, and again a few seconds later for
+// clients whose account arrives on the WHO sweep rather than via extended-join.
+// Returns true only when it actually sent an invite (so a sweep can count them).
+function maybeHopUp(nick, fromChan) {
+    if (!HOPUP_TO || chanKey(fromChan) !== chanKey(HOPUP_FROM_RAW)) return false;
+    const k = nick.toLowerCase();
+    const here = (c) => [...(members.get(chanKey(c)) || new Set())].some((m) => m.toLowerCase() === k);
+    if (!here(fromChan)) return false;           // left already
+    if (here(HOPUP_TO)) return false;            // already in both — nothing to do
+    if (!hopEligible(nick)) return false;
+    if (Date.now() - (hopInvited.get(k) || 0) < HOPUP_COOLDOWN_MS) return false;
+    hopInvited.set(k, Date.now());
+    send(`INVITE ${nick} ${HOPUP_TO}`);          // silent — reaches only their client
+    log('MOD', `Hop-up: invited ${nick} (account ${accountOf.get(k) || '?'}) into ${HOPUP_TO}.`);
+    return true;
+}
+
+// A one-off sweep of who is ALREADY in the source room, for the owner to pull
+// the current crowd up once. NOT run on startup on purpose: the bot restarts
+// every few hours, and re-inviting everyone each time is the nagging the room
+// asked us to stop. New arrivals are handled by the JOIN hook; this is manual.
+function hopUpSweep() {
+    if (!HOPUP_TO) return 0;
+    let n = 0;
+    for (const m of [...(members.get(chanKey(HOPUP_FROM_RAW)) || new Set())]) {
+        if (maybeHopUp(m, HOPUP_FROM_RAW)) n += 1;
+    }
+    return n;
+}
+
 // A KICK cannot be blocked — it is instantaneous and server-side, and this
 // network has no channel rank above @ that ChanServ could grant to make someone
 // immune (PREFIX=(Yov)!@+). So the only real defence is to undo it quickly:
@@ -4465,7 +4547,8 @@ function handleCommand(chan, nick, message) {
                 reply('\x02Room\x02: !!moderate · !!active · !!mod · !!door · !!letin · !!autovoice · '
                     + '!!history · !!fun · !!topic · !!announce · !!mass kick|ban|voice|devoice');
                 reply('\x02Bot\x02: !!join|!!part #room · !!rooms · !!access · !!aicheck · '
-                    + '!!recruit on|off|now · !!badword · !!strict · !!linkfilter · !!raidguard · '
+                    + '!!recruit on|off|now · !!hopup [now] (invite registered regulars to the closed room) · '
+                    + '!!badword · !!strict · !!linkfilter · !!raidguard · '
                     + '!!sentient · !!nick now|back|status');
                 break;
             }
@@ -5104,6 +5187,36 @@ function handleCommand(chan, nick, message) {
                 recruiter.explain().forEach((l) => reply(l));
             }
             break;
+        case 'hopup': {
+            if (!admin) { reply('Access denied.'); break; }
+            const from = chanKey(HOPUP_FROM_RAW);
+            if (!HOPUP_TO) {
+                reply('Hop-up is OFF. Set \x02HOPUP_TO\x02 to the closed room (the emoji channel) and '
+                    + `I will silently invite registered regulars into it when they join ${from}. `
+                    + 'Optional: \x02HOPUP_ALL_REGISTERED=on\x02 to cover every registered user, not just '
+                    + 'the whitelisted/trusted/protected ones.');
+                break;
+            }
+            if (args[0] === 'now') {
+                const n = hopUpSweep();
+                reply(n
+                    ? `Invited \x02${n}\x02 registered ${n === 1 ? 'regular' : 'regulars'} from ${from} up to ${HOPUP_TO}.`
+                    : `Nobody to invite — everyone eligible in ${from} is already in ${HOPUP_TO}, `
+                      + 'unregistered, or was invited within the hour.');
+                break;
+            }
+            const present = [...(members.get(chanKey(HOPUP_TO)) || new Set())]
+                .some((m) => m.toLowerCase() === config.nick.toLowerCase());
+            reply(`Hop-up \x02ON\x02: registered ${HOPUP_ALL_REG ? 'users' : 'regulars (whitelisted/trusted/protected)'} `
+                + `who join \x02${from}\x02 get a silent invite to \x02${HOPUP_TO}\x02 — most clients then `
+                + `auto-join, so they sit in both. ${hopInvited.size} invited this run.`);
+            if (!present) {
+                reply(`\x0304Warning:\x03 I am not in ${HOPUP_TO}, so I cannot invite into it. Add it to `
+                    + 'IRC_CHANNEL and make sure I have ops there.');
+            }
+            reply('\x02!!hopup now\x02 sweeps everyone already in the room once (no auto-nagging on restart).');
+            break;
+        }
         case 'fun':
             if (!admin) { reply( 'Access denied.'); break; }
             if (args[0] === 'on') { fun.enabled = true; reply( '🦇 Fun commands ON — !!bite, !!8ball, !!ship, !!fortune, !!rip, !!vibe, !!slap.'); }
@@ -6579,6 +6692,15 @@ function handleLine(line) {
         // rooms. A source room is only ever watched, never acted in.
         if (!isOurChannel(c)) return;
         game.onJoin(nick, c);
+
+        // Hop a registered regular up into the closed room, silently. Gated on
+        // `ready` so a reconnect's arrivals do not trigger a burst, and tried
+        // twice: once now (extended-join has already set the account above) and
+        // once after the WHO sweep for clients that do not send extended-join.
+        if (ready && HOPUP_TO && c === chanKey(HOPUP_FROM_RAW)) {
+            maybeHopUp(nick, c);
+            setTimeout(() => maybeHopUp(nick, c), 6000);
+        }
 
         // Voice on arrival. NOT gated on `ready`: that flag is a replay guard
         // for messages, and a JOIN is not a message — gating on it means a
