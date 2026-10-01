@@ -56,7 +56,11 @@ c('and a PERSON is still only rescued when KICK_PROTECT is on',
   'fleet protection must not quietly restore protection for people');
 
 console.log('— it says so when asked —');
-const cmd = src.slice(src.indexOf("case 'protect':"), src.indexOf("case 'protect':") + 1600);
+// Slice the WHOLE protect case (up to the next case label), not a fixed
+// 1600-char window: the case grew when !!protect learned to set a +e ban-
+// exception and to suggest "add", which pushed the OFF-status text past 1600.
+const pStart = src.indexOf("case 'protect':");
+const cmd = src.slice(pStart, src.indexOf("\n        case '", pStart + 20));
 c('!!protect reports that it is off', /Kick-protection is OFF/.test(cmd));
 c('and how to turn it back on', /KICK_PROTECT=on/.test(cmd));
 

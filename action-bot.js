@@ -308,6 +308,74 @@ function syncInviteExceptions(chan, reply) {
     return n;
 }
 
+// --- Ban exceptions (+e) for trusted regulars -----------------------------
+// The door (+I, above) decides who may ENTER a +i room. This decides who may
+// never be BANNED: a +e ban-exception overrides any +b, so a trusted regular
+// bypasses a broad ban-jump (+b R:*) instead of being evicted with everyone
+// else. Set silently as a server MODE, kept in step with the trust list, and —
+// unlike the hop-up invite — it PERSISTS server-side while ChanServ holds the
+// channel, so it still protects the VIPs when the bot is offline.
+//
+// Deliberately NOT R:* (that is the door's job): immunity is only for the named
+// trusted accounts and protect masks, so a ban-jump still removes a non-trusted
+// registered user. On this network an account is almost always the main nick,
+// so a whitelist entry nobody is currently carrying is exempted as R:<name>
+// directly — a +e for a name nobody holds simply matches nobody.
+const banExceptApplied = new Map();    // chanKey -> Set(mask) currently set +e
+
+function trustedExceptionMasks() {
+    const out = new Set();
+    for (const name of whitelist) {
+        if (name.includes('@') || name.includes('!')) { out.add(name); continue; }   // a mask
+        const online = [...accountOf.entries()].find(([, a]) => a && a.toLowerCase() === name);
+        out.add(`R:${online ? accountOf.get(online[0]) : name}`);
+    }
+    for (const m of trust.masks) out.add(m);
+    for (const m of protectMasks) out.add(m);
+    return out;
+}
+
+// The rooms that get the VIP protection: ours, minus the games room.
+function banExceptRooms() {
+    return config.channels.filter((c) => !findItRoom || chanKey(c) !== chanKey(findItRoom));
+}
+
+function syncBanExceptions(chan) {
+    const c = chanKey(chan);
+    if (!opped.has(c)) return;                 // +e needs ops; a later op-gain re-runs this
+    if (findItRoom && c === chanKey(findItRoom)) return;
+    const want = trustedExceptionMasks();
+    const have = banExceptApplied.get(c) || new Set();
+    const add = [...want].filter((m) => !have.has(m));
+    const del = [...have].filter((m) => !want.has(m));
+    // One mode per line, like syncInviteExceptions — the send pacer coalesces
+    // consecutive same-sign MODE lines (up to the server's MODES= limit, four
+    // where it is unknown), so a full sync still goes out as a handful of lines
+    // without us guessing the limit and getting the extra modes silently dropped.
+    for (const m of add) send(`MODE ${chan} +e ${m}`);
+    for (const m of del) send(`MODE ${chan} -e ${m}`);
+    banExceptApplied.set(c, new Set(want));
+    if (add.length || del.length) {
+        log('MOD', `Ban exceptions on ${c}: +${add.length} -${del.length} `
+            + `(now ${want.size} trusted immune to +b).`);
+    }
+}
+
+function syncBanExceptionsAll() { for (const c of banExceptRooms()) syncBanExceptions(c); }
+
+// +e maintenance is a background FAIL-SAFE, not urgent: a ban-jump is rare, and
+// the entries persist server-side once set, so they survive restarts without
+// re-sending. So it must never compete with live moderation/ChanServ output in
+// the send pacer — doing it inline at startup delayed the very trust round-trips
+// it runs beside. Debounced and deferred: many triggers coalesce into one sync,
+// well after the join/voice/identify burst has cleared.
+const BANEXCEPT_DELAY_MS = Number(process.env.BANEXCEPT_DELAY_MS) || 60000;
+let banExceptTimer = null;
+function scheduleBanExceptSync() {
+    if (banExceptTimer) return;            // one pending sync absorbs every trigger
+    banExceptTimer = setTimeout(() => { banExceptTimer = null; syncBanExceptionsAll(); }, BANEXCEPT_DELAY_MS);
+}
+
 // One invitation per person per room, per run. Not one every ten minutes:
 // somebody who did not take the first one is not waiting for a reminder, they
 // have decided, and asking again on a timer is nagging. The owner watched it
@@ -2257,6 +2325,9 @@ function maskKeyFor(nick) {
 function refreshTrust() {
     whitelist = effective(trust, seedWhitelist, untrust);
     relayTrust();
+    // Keep the VIP ban-exceptions (+e) in step with the trust list — silent,
+    // deferred so it never competes with live output, a no-op where not opped.
+    scheduleBanExceptSync();
 }
 
 /**
@@ -4871,12 +4942,15 @@ function handleCommand(chan, nick, message) {
             if (!admin) { reply('Access denied.'); break; }
             if (args[0] === 'add' && args[1]) {
                 protectMasks.add(toMask(args[1]));
-                reply( `Protected from other mods' kicks: ${toMask(args[1])} (${protectMasks.size} masks + the whitelist).`);
+                scheduleBanExceptSync();     // and make them immune to a ban-jump (+e), silently
+                reply(`Protected: ${toMask(args[1])} (${protectMasks.size} masks + the whitelist) — `
+                    + 'exempt from other mods’ kicks and set +e, so a broad ban-jump skips them.');
             } else if (args[0] === 'remove' && args[1]) {
                 const who = args[1];
                 const m = protectMasks.has(who) ? who : toMask(who);
                 const hadMask = protectMasks.delete(m);
-                reply(hadMask ? `Removed ${m} (${protectMasks.size} left).`
+                if (hadMask) scheduleBanExceptSync();   // drop their +e too
+                reply(hadMask ? `Removed ${m} (${protectMasks.size} left) — +e exception cleared.`
                     : `${who} was not in the mask list — nothing to remove.`);
             } else if (args[0] && !['list', 'status'].includes(args[0].toLowerCase())) {
                 // A bare "!!protect <nick>" — they meant to add. The owner typed
@@ -6539,6 +6613,9 @@ function handleLine(line) {
             }
         }
         members.set(ch, set);
+        // Now that we know our own status here, schedule the VIP ban-exceptions
+        // (deferred/debounced; a no-op until we are opped).
+        scheduleBanExceptSync();
     }
     // WHO reply -> learn every user's host, so a ban works even for someone
     // who has not spoken yet (otherwise we fall back to a weak nick mask).
@@ -6700,6 +6777,14 @@ function handleLine(line) {
         if (ready && HOPUP_TO && c === chanKey(HOPUP_FROM_RAW)) {
             maybeHopUp(nick, c);
             setTimeout(() => maybeHopUp(nick, c), 6000);
+        }
+
+        // A trusted/protected regular just arrived — their account is known now
+        // (extended-join, or the WHO sweep a few seconds later), so make sure
+        // their ban-exception (+e) is in place. Diff-tracked, so it only sends a
+        // mode if theirs was not already set. Silent.
+        if (ready && (isTrusted(nick) || inProtectMasks(nick))) {
+            scheduleBanExceptSync();
         }
 
         // Voice on arrival. NOT gated on `ready`: that flag is a replay guard
