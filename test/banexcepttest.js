@@ -67,6 +67,9 @@ server.listen(0, '127.0.0.1', () => {
         c('it is silent — nothing about exceptions is said in a channel',
           !/PRIVMSG #(batcave|vip) :[^\n]*(exception|immune|\+e|R:)/i.test(all),
           sent.filter((l) => /PRIVMSG #/.test(l)).slice(0, 3).join(' | '));
+        c('the background sync NEVER removes (+e is add-only — no flap)',
+          !/MODE \S+ -e /i.test(all),
+          sent.filter((l) => /MODE \S+ -e/i.test(l)).join(' | ') || '(good: no -e)');
         try { bot.kill(); } catch (e) { /* gone */ }
         server.close();
         console.log(fails ? `\n${fails} FAILED` : '\nALL PASS');

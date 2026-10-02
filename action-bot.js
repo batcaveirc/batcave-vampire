@@ -346,18 +346,23 @@ function syncBanExceptions(chan) {
     if (findItRoom && c === chanKey(findItRoom)) return;
     const want = trustedExceptionMasks();
     const have = banExceptApplied.get(c) || new Set();
-    const add = [...want].filter((m) => !have.has(m));
-    const del = [...have].filter((m) => !want.has(m));
+    // ADD-ONLY. Removing on a recomputed diff caused a flap: an account in the
+    // WHITELIST secret but WITHOUT +V on the trust channel (the founder, say)
+    // drops out of `want` whenever the bot's view flips between the secret and
+    // the channel on a reload — so it was -e'd then +e'd forever. Worse, a
+    // transient empty reload could briefly strip a real regular's immunity. So
+    // the background sync only ADDS; a +e is taken away only by an explicit
+    // !!untrust / !!protect remove (dropBanException), never by a diff.
+    //
     // One mode per line, like syncInviteExceptions — the send pacer coalesces
     // consecutive same-sign MODE lines (up to the server's MODES= limit, four
     // where it is unknown), so a full sync still goes out as a handful of lines
     // without us guessing the limit and getting the extra modes silently dropped.
-    for (const m of add) send(`MODE ${chan} +e ${m}`);
-    for (const m of del) send(`MODE ${chan} -e ${m}`);
-    banExceptApplied.set(c, new Set(want));
-    if (add.length || del.length) {
-        log('MOD', `Ban exceptions on ${c}: +${add.length} -${del.length} `
-            + `(now ${want.size} trusted immune to +b).`);
+    const add = [...want].filter((m) => !have.has(m));
+    for (const m of add) { send(`MODE ${chan} +e ${m}`); have.add(m); }
+    banExceptApplied.set(c, have);
+    if (add.length) {
+        log('MOD', `Ban exceptions on ${c}: +${add.length} (now ${have.size} held immune to +b).`);
     }
 }
 
@@ -374,6 +379,30 @@ let banExceptTimer = null;
 function scheduleBanExceptSync() {
     if (banExceptTimer) return;            // one pending sync absorbs every trigger
     banExceptTimer = setTimeout(() => { banExceptTimer = null; syncBanExceptionsAll(); }, BANEXCEPT_DELAY_MS);
+}
+
+// The ONLY path that removes a +e, so a reload can never strip anyone. Called
+// on an explicit !!untrust / !!protect remove. Sends -e for the account form
+// and, if it is a bare name, the resolved-account form too, in both rooms.
+function dropBanException(nameOrMask) {
+    const name = String(nameOrMask || '').trim();
+    if (!name) return;
+    const masks = new Set();
+    if (name.includes('@') || name.includes('!')) {
+        masks.add(name);
+    } else {
+        masks.add(`R:${name}`);
+        const online = [...accountOf.entries()].find(([, a]) => a && a.toLowerCase() === name.toLowerCase());
+        if (online) masks.add(`R:${accountOf.get(online[0])}`);
+    }
+    for (const c of banExceptRooms()) {
+        const ck = chanKey(c);
+        if (!opped.has(ck)) continue;
+        const have = banExceptApplied.get(ck) || new Set();
+        for (const m of masks) { send(`MODE ${c} -e ${m}`); have.delete(m); }
+        banExceptApplied.set(ck, have);
+    }
+    log('MOD', `Dropped ban exception for ${name}.`);
 }
 
 // One invitation per person per room, per run. Not one every ten minutes:
@@ -4949,7 +4978,7 @@ function handleCommand(chan, nick, message) {
                 const who = args[1];
                 const m = protectMasks.has(who) ? who : toMask(who);
                 const hadMask = protectMasks.delete(m);
-                if (hadMask) scheduleBanExceptSync();   // drop their +e too
+                if (hadMask) dropBanException(m);       // and take their +e away
                 reply(hadMask ? `Removed ${m} (${protectMasks.size} left) — +e exception cleared.`
                     : `${who} was not in the mask list — nothing to remove.`);
             } else if (args[0] && !['list', 'status'].includes(args[0].toLowerCase())) {
@@ -5445,6 +5474,7 @@ function handleCommand(chan, nick, message) {
             const who = (args[1] || '').toLowerCase();
             if (args[0] === 'add' && who) {
                 untrust.add(who);
+                dropBanException(who);       // and remove any +e immunity they held
                 // Written to the channel as a +b entry, so a repeat offender
                 // stays known across every restart and every bot — not just
                 // for this run, and not in a secret nobody can read back.
