@@ -122,14 +122,16 @@ console.log('\n— !!recruit all invites EVERY gender, but still never the unwel
   const r = new Recruiter({ send: (l) => sent.push(l), say() {}, nick: 'D' },
     { membersOf: (ch) => ch === '#home' ? [] : mixed, prefixOf: () => '', homeChannel: '#home' });
   r.channels = ['#src']; r.enabled = true;
-  const out = r.inviteAll();
+  const total = r.inviteAll();   // returns a COUNT; first batch goes out synchronously
   const invited = sent.filter((l) => /^INVITE /.test(l)).map((l) => l.split(' ')[1].toLowerCase());
   c('…but "all" invites the men too (rahul, amit)',
     invited.includes('rahul') && invited.includes('amit'), invited.join(', '));
   c('and still invites the women', invited.includes('priya') && invited.includes('neha'));
   c('and NEVER the solicitation nicks', !invited.some((n) => /muslimbull|daddy_will/.test(n)),
     invited.join(', '));
-  c('inviteAll reports what it sent', out.length === invited.length, `${out.length} vs ${invited.length}`);
+  c('inviteAll reports the total it will invite', total === invited.length, `${total} vs ${invited.length}`);
+  c('and it sends them in batches, not one dump (first batch only, synchronously)',
+    invited.length <= 10, `${invited.length} sent at once — should be <= one batch`);
 }
 
 console.log(fails?`\n${fails} FAILED`:'\nALL PASS');

@@ -5366,12 +5366,12 @@ function handleCommand(chan, nick, message) {
                     reply('Recruiting is OFF — !!recruit on first, or set RECRUIT_CHANNELS.');
                     break;
                 }
-                const sent = recruiter.inviteAll();
-                reply(sent.length
-                    ? `Inviting \x02everyone\x02 eligible — ${sent.length} across ${recruiter.channels.join(', ')}. `
-                      + 'Going out paced so the server does not flood-kill us.'
+                const count = recruiter.inviteAll();
+                reply(count
+                    ? `Inviting \x02everyone\x02 eligible — ${count} across ${recruiter.channels.join(', ')}, `
+                      + 'in small batches with breaks so the server never flood-kills us (a few minutes to work through).'
                     : 'Nobody eligible to invite right now (all asked recently, ops, or already home).');
-                if (!sent.length) recruiter.explain().forEach((l) => reply(l));
+                if (!count) recruiter.explain().forEach((l) => reply(l));
             } else {
                 reply(`Recruiting is ${recruiter.enabled ? 'ON' : 'OFF'}`
                     + `${recruiter.channels.length ? ` from ${recruiter.channels.join(', ')}` : ' (no channels set)'}`
@@ -5725,7 +5725,20 @@ function connect() {
         }
     });
     socket.on('error', (err) => { connecting = false; log('ERROR', err.message); });
-    socket.on('close', () => { connecting = false; opped.clear(); game.onDisconnect(); log('INFO', 'Connection closed.'); scheduleReconnect(); });
+    socket.on('close', () => {
+        connecting = false; opped.clear(); game.onDisconnect();
+        // Drop the outbound backlog on disconnect. It is stale room state —
+        // voices, modes and invites for who was present BEFORE the drop — and if
+        // left in place it re-floods the instant we reconnect, which is exactly
+        // the "RecvQ exceeded" crash loop (a big !!recruit all dump outran the
+        // server, got us killed, and the leftover queue killed us again on every
+        // reconnect). Losing a few stale queued lines is the right trade.
+        if (outQueue.length > 20) {
+            log('WARN', `Dropped ${outQueue.length} stale queued line(s) on disconnect — avoids a reconnect flood.`);
+        }
+        outQueue.length = 0; outUrgent.length = 0; tokens = BURST;
+        log('INFO', 'Connection closed.'); scheduleReconnect();
+    });
 }
 /**
  * Put the name back to the one the room knows, and stop rotating for now.

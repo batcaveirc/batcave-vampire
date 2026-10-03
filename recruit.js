@@ -45,6 +45,13 @@ const FIRST_GAP_MS = parseInt(process.env.RECRUIT_FIRST_MIN || '1', 10) * 60000;
 // protection is looking for, and this bot has been banned from a channel
 // before. Three a minute across several rooms is brisk without being a flood.
 const PER_ROUND = Math.max(1, parseInt(process.env.RECRUIT_PER_ROUND || '3', 10));
+// !!recruit all drips in small batches with real breaks between them, never a
+// single 200-line dump: a big burst outran the server's RecvQ and, because the
+// backlog survived the bot's socket reconnect, re-flooded on every reconnect —
+// a crash loop every few minutes. 10 every 30s keeps the queue near-empty.
+const ALL_BATCH  = Math.max(1, parseInt(process.env.RECRUIT_ALL_BATCH || '10', 10));
+const ALL_GAP_MS = Math.max(3000, parseInt(process.env.RECRUIT_ALL_GAP_MS || '30000', 10));
+const ALL_CAP    = Math.max(1, parseInt(process.env.RECRUIT_ALL_CAP || '500', 10));
 // How long before somebody may be invited again. Long enough that a second
 // invitation reads as a fresh welcome rather than nagging.
 const REASK_AFTER_MS = parseInt(process.env.RECRUIT_REASK_DAYS || '21', 10) * 86400000;
@@ -448,21 +455,46 @@ class Recruiter {
      * solicitation-flagged; it only drops the gender target. Capped and paced by
      * the send queue so it cannot become an instant flood.
      */
-    inviteAll(cap = 200) {
-        if (!this.enabled) return [];
-        const sent = [];
+    inviteAll(opts = {}) {
+        if (!this.enabled) return 0;
+        const batch = Math.max(1, opts.batch || ALL_BATCH);
+        const gapMs = Math.max(3000, opts.gapMs || ALL_GAP_MS);
+        const cap = Math.max(1, opts.cap || ALL_CAP);
+        // Snapshot everyone eligible right now (all genders), de-duped.
+        const pending = [];
+        const seen = new Set();
         for (const chan of this.channels) {
             for (const who of this.eligible(chan, { allTargets: true })) {
-                if (sent.length >= cap) break;
-                this.invited.set(who.toLowerCase(), Date.now());
-                this.bot.send(`INVITE ${who} ${this.deps.homeChannel}`);
-                this.recent.unshift({ target: who, chan, at: Date.now() });
-                sent.push({ target: who, chan });
+                const k = who.toLowerCase();
+                if (seen.has(k)) continue;
+                seen.add(k);
+                pending.push({ target: who, chan });
+                if (pending.length >= cap) break;
             }
-            if (sent.length >= cap) break;
+            if (pending.length >= cap) break;
         }
-        this.recent = this.recent.slice(0, 20);
-        return sent;
+        clearTimeout(this._allTimer);
+        let i = 0;
+        const drip = () => {
+            if (!this.enabled) return;                 // turned off mid-run
+            for (const { target, chan } of pending.slice(i, i + batch)) {
+                const k = target.toLowerCase();
+                if (this.askedRecently(k)) continue;   // re-check: may have been asked since the snapshot
+                this.invited.set(k, Date.now());
+                this.bot.send(`INVITE ${target} ${this.deps.homeChannel}`);
+                this.recent.unshift({ target, chan, at: Date.now() });
+            }
+            this.recent = this.recent.slice(0, 20);
+            i += batch;
+            if (i < pending.length) {
+                this._allTimer = setTimeout(drip, gapMs);
+                this._allTimer.unref?.();
+            } else if (this.log) {
+                this.log('OK', `recruit all: done — ${pending.length} invited in batches of ${batch}.`);
+            }
+        };
+        drip();                                        // first batch now, the rest on the timer
+        return pending.length;                         // how many WILL be invited over the run
     }
 
     /**
@@ -657,6 +689,7 @@ class Recruiter {
     stop() {
         Object.values(this.timers).forEach(clearTimeout);
         this.timers = {};
+        clearTimeout(this._allTimer);                  // stop any in-flight !!recruit all drip
         this.started = false;
     }
 }
