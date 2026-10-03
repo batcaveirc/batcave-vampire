@@ -175,6 +175,76 @@ function shipVerdict(pct) {
     return 'no. The stars said no twice.';
 }
 
+// More local tables — all Groq-free, same as the rest, so they work on a dead key.
+const DADJOKES = Object.freeze([
+    'I only drink at night. I am a man of great taste and poor scheduling.',
+    'Why did the vampire read the newspaper? He heard it had great circulation.',
+    'I told a bat my best joke. It hung around for it.',
+    'I would tell you a coffin joke but it needs more work. It is still in the draft.',
+    'Vampires do not surf. They are afraid of the current.',
+    'I went to the blood bank. Asked for an overdraft.',
+    'My favourite exercise is a cross-fit. Mostly the cross part.',
+    'I am reading a book on anti-gravity. Impossible to put down, unlike the people I meet.',
+]);
+const FACTS = Object.freeze([
+    'A group of bats is called a cauldron. The group chat agrees it is metal.',
+    'Octopuses have three hearts and still cannot find someone. Relatable.',
+    'Honey never spoils. Archaeologists ate 3000-year-old honey. Braver than me.',
+    'Bananas are berries. Strawberries are not. Nobody is in charge.',
+    'A day on Venus is longer than its year. Venus does not do deadlines.',
+    'Sharks existed before trees. Let that reorganise your week.',
+    'Wombat poop is cube-shaped. Evolution had a geometry phase.',
+    'Your stomach gets a new lining every few days because it would otherwise digest itself. Same.',
+]);
+const WYR = Object.freeze([
+    'fight one horse-sized bat or a hundred bat-sized horses?',
+    'be able to fly but only at walking speed, or run at 100mph but only backwards?',
+    'always say everything on your mind, or never speak again?',
+    'live forever but never sleep, or sleep forever but never dream?',
+    'have free chai for life or free wifi for life? Choose carefully.',
+    'know how you die or know when? No take-backs.',
+    'be the funniest person nobody remembers, or the most forgettable legend?',
+]);
+const TRUTHS = Object.freeze([
+    'what is the pettiest reason you have ever ended a conversation?',
+    'last thing you lied about in this room. We will wait.',
+    'the song you would never admit to replaying. Name it.',
+    'who here would you trust with your password, honestly?',
+    'what is the most dramatic thing you have done over a text message?',
+    'be honest: tabs or spaces, and are you ready for the consequences?',
+]);
+const DARES = Object.freeze([
+    'type your next three messages with no vowels.',
+    'compliment the last person who spoke, genuinely, no joke attached.',
+    'change your nick to something embarrassing for five minutes. The bats are watching.',
+    'explain your job to the room as if it were a crime.',
+    'say one nice thing about a software tool you hate.',
+    'send a message in only emoji until someone guesses it.',
+]);
+const PICKUPS = Object.freeze([
+    'Are you garlic? Because my heart skips a beat and I am mildly afraid.',
+    'Is it dark in here or did you just walk in and absorb all the light? Either way, hi.',
+    'I must be a coffin, because I cannot stop thinking about you lying in me. ...that came out wrong.',
+    'You had me at "has anyone seen the aux cable".',
+    'If being gorgeous were a crime you would be doing four hundred years, same as me.',
+    'Are you wifi? Because I am feeling a connection and also a little buffering.',
+]);
+const COMPLIMENTS = Object.freeze([
+    '{t} types like the room got better lighting.',
+    '{t} is the reason this channel is not just three bats and an echo.',
+    'if {t} were a commit it would pass review on the first try.',
+    '{t} has the energy of a plan that actually works.',
+    'honestly {t} could make a Monday behave.',
+    '{t} is good people. The vampire has standards and {t} clears them.',
+]);
+const VAMPVERDICT = Object.freeze([
+    'daywalker. Disappointing. Go stand in a shadow and think about it.',
+    'mostly mortal, suspicious cheekbones.',
+    'half-turned. The fangs are coming in. Floss.',
+    'dangerously nocturnal. We have questions about your sleep schedule.',
+    'certified creature of the night. The cape is in the mail.',
+]);
+
 class Fun {
     /**
      * @param {{say:Function, send:Function, nick:string}} bot
@@ -214,7 +284,8 @@ class Fun {
      */
     handle(nick, chan, cmd, args) {
         const commands = ['bite', '8ball', 'ship', 'slap', 'fortune', 'rip', 'vibe',
-            'hug', 'pat', 'icebreaker', 'ask', 'hotseat', 'story', 'toast'];
+            'hug', 'pat', 'icebreaker', 'ask', 'hotseat', 'story', 'toast',
+            'dadjoke', 'fact', 'wyr', 'truth', 'dare', 'pickup', 'compliment', 'howvampire'];
         if (!commands.includes(cmd)) return false;
         if (!this.enabled || this.isGameChannel(chan)) return true;   // swallow, stay quiet
         if (!this.cooldownOk(chan, nick)) {
@@ -288,6 +359,32 @@ class Fun {
             case 'toast':
                 this.bot.say(chan, `🥂 ${pick(TOASTS).split('{t}').join(target)}`);
                 return true;
+            case 'dadjoke':
+                this.bot.say(chan, `😐 ${pick(DADJOKES)}`);
+                return true;
+            case 'fact':
+                this.bot.say(chan, `\x0306🦇 Fact:\x03 ${pick(FACTS)}`);
+                return true;
+            case 'wyr':
+                this.bot.say(chan, `\x0306🤔 Would you rather\x03 ${pick(WYR)}`);
+                return true;
+            case 'truth':
+                this.bot.say(chan, `\x0306🎯 ${target}:\x03 ${pick(TRUTHS)}`);
+                return true;
+            case 'dare':
+                this.bot.say(chan, `\x0304😈 ${target}:\x03 I dare you — ${pick(DARES)}`);
+                return true;
+            case 'pickup':
+                this.bot.say(chan, `😏 ${pick(PICKUPS)}`);
+                return true;
+            case 'compliment':
+                this.bot.say(chan, `🌹 ${pick(COMPLIMENTS).split('{t}').join(target)}`);
+                return true;
+            case 'howvampire': {
+                const pct = hashPct(target, 'vampire');
+                this.bot.say(chan, `🦇 ${target} is ${pct}% vampire — ${pick(VAMPVERDICT)}`);
+                return true;
+            }
             default:
                 return false;
         }

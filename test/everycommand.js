@@ -45,7 +45,8 @@ const say=(room,who,txt)=>sock.write(`@time=${now()} :${who}!${HOST[who]||who.to
 // only prove ONE of them per run. A fresh nick per command tests whether each
 // actually works, which is the question being asked.
 const FUN = new Set(['bite','8ball','ship','slap','fortune','rip','vibe','hug','pat',
-  'icebreaker','ask','hotseat','story','toast']);
+  'icebreaker','ask','hotseat','story','toast',
+  'dadjoke','fact','wyr','truth','dare','pickup','compliment','howvampire']);
 let testerN = 0;
 const callerFor = (cmd) => (FUN.has(cmd) ? `Tester${++testerN}` : 'Vikram');
   await wait(6500);

@@ -81,6 +81,8 @@ const config = {
     groqKey: process.env.GROQ_API_KEY || '',
     // Free Groq tiers rate-limit fast; a second key keeps moderation alive.
     groqKey2: process.env.GROQ_API_KEY_2 || process.env.GROQ_API_KEY1 || '',
+    // YouTube Data API v3 key for !!yt. Unset = the command says it is off.
+    youtubeKey: process.env.YOUTUBE_API_KEY || '',
     // llama-3.1-8b-instant was decommissioned 2026-08-16. Models get retired,
     // so keep a fallback: a dead model would otherwise silently disable all AI
     // moderation with nothing in the channel to show for it.
@@ -210,6 +212,7 @@ const hostOf = new Map();          // nick(lower) -> user@host (for real bans)
  */
 const nicksOnHost = new Map();     // host -> Set(nick)
 let findState = null;              // an in-flight !!find <host>, collecting WHO replies
+const lastYt = new Map();          // chanKey -> last !!yt ms (light anti-spam)
 function rememberHost(nick, userHost) {
     if (!nick || !userHost) return;
     const host = String(userHost).split('@').pop();
@@ -3512,6 +3515,25 @@ function aiBudgetLeft() {
     const used = day === aiDayKey ? aiDayCount : 0;
     return `${Math.max(0, config.aiMaxPerDay - used)}/${config.aiMaxPerDay} left today`;
 }
+
+/** The numeric form, for deciding whether to spend a call or dodge. */
+function aiBudgetNum() {
+    const day = new Date().toISOString().slice(0, 10);
+    const used = day === aiDayKey ? aiDayCount : 0;
+    return Math.max(0, config.aiMaxPerDay - used);
+}
+
+// Said instead of a real reply when the daily budget is nearly gone — a witty
+// deflection beats both silence and "I am rate limited", and keeps the last of
+// the quota for moderation. The owner's "when tokens are near empty, dodge".
+const CHAT_DODGES = Object.freeze([
+    'ask me when the sun is down — running on fumes right now.',
+    'my wit is in low-power mode. try me after midnight, mortal.',
+    'the bats are napping. come back when the moon is up.',
+    'out of clever for today, conserving what is left for emergencies.',
+    'low on blood sugar and sarcasm both. rain check?',
+    'four hundred years old and I still need my rest. later.',
+]);
 // One place that talks to Groq, so both callers get key failover for free.
 // gpt-oss and qwen3 are REASONING models: they spend tokens on an internal
 // "reasoning" field first and leave `content` empty until that finishes. With a
@@ -4084,6 +4106,11 @@ async function screenNick(chan, nick) {
 // --- Witty AI reply (for mentions when sentient mode is off) ---
 async function getAIResponse(prompt, who, chan) {
     if (!config.groqKey) return null;
+    // Near the daily limit: dodge with a one-liner instead of spending a call,
+    // so the last of the budget stays for moderation.
+    if (aiBudgetNum() <= Math.max(5, Math.ceil(config.aiMaxPerDay * 0.02))) {
+        return CHAT_DODGES[Math.floor(Math.random() * CHAT_DODGES.length)];
+    }
     // The conversation so far. This is the change that mattered: the old version
     // sent one line with no history, so a follow-up question met something that
     // had already forgotten the first one. recentSaid was already collecting the
@@ -4092,8 +4119,11 @@ async function getAIResponse(prompt, who, chan) {
     const seen = transcript(said, { me: config.nick, limit: 8 });
     const messages = [
         { role: 'system', content:
-            'You are Dracula in an IRC chat room. You are a PERSON in a conversation, '
-            + 'not an assistant answering a ticket.\n'
+            `You are Dracula in an IRC chat room; your nick right now is ${currentNick}. `
+            + 'You are a PERSON in a conversation, not an assistant answering a ticket.\n'
+            + `The line you are given is "<speaker>: <message>". Reply TO the speaker. If `
+            + `the message opens with your own nick (${currentNick}), that person is `
+            + `addressing YOU — never address or thank yourself.\n`
             + 'HOW YOU TALK: like somebody typing quickly in a chat window. Usually '
             + 'one line, often under twelve words. No stage directions, no asterisks, '
             + 'no emoji unless the room is using them. Do not start with the person\'s '
@@ -4120,13 +4150,25 @@ async function getAIResponse(prompt, who, chan) {
     if (seen) {
         messages.push({ role: 'system', content: `Recent lines in the room:\n${seen}` });
     }
-    messages.push({ role: 'user', content: `${who}: ${prompt}` });
+    // Drop our OWN name if the line opens by addressing us ("DarkCloud: wlcm"),
+    // so the model answers the SPEAKER, not itself. Live bug: Lucifer typed
+    // "DarkCloud: wlcm" and Dracula replied "Shukriya, DarkCloud" — it thanked
+    // itself, because the user message was "Lucifer: DarkCloud: wlcm" and the
+    // model took the nearest name. Strip both the base nick and the rotated one.
+    const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const mine = [config.nick, currentNick].filter(Boolean).map(escRe).join('|');
+    const askText = (mine ? prompt.replace(new RegExp(`^\\s*(?:${mine})\\s*[:,]?\\s*`, 'i'), '') : prompt).trim()
+        || prompt;
+    messages.push({ role: 'user', content: `${who}: ${askText}` });
     try {
         const data = await groqChat({
-            model: config.groqModel, temperature: 0.95, max_tokens: 120, messages,
+            // 120 cut replies mid-thought; 256 lets a real answer finish. say()
+            // splits anything long across lines, so we no longer hard-slice and
+            // lose the tail — the owner's "never cut off" — we just cap runaway.
+            model: config.groqModel, temperature: 0.95, max_tokens: 256, messages,
         });
         const raw = (data?.choices?.[0]?.message?.content || '');
-        const out = deRobot(raw).slice(0, 380);
+        const out = deRobot(raw).trim().slice(0, 700);
         if (!out) return null;
         // Repetition is the loudest tell and the one no prompt fixes: the same
         // clever line twice is worse than a dull one once. Saying nothing is a
@@ -4634,7 +4676,9 @@ function handleCommand(chan, nick, message) {
             if (topic === 'fun') {
                 reply('\x02Fun\x02: !!8ball <q> · !!ship <a> <b> · !!hug|!!pat|!!slap|!!bite <nick> · '
                     + '!!fortune · !!vibe · !!rip · !!ask <q> · !!icebreaker · !!story · '
-                    + '!!toast <nick> · !!hotseat <nick>');
+                    + '!!toast <nick> · !!hotseat <nick> · !!dadjoke · !!fact · !!wyr · '
+                    + '!!truth · !!dare · !!pickup · !!compliment <nick> · !!howvampire <nick> · '
+                    + '!!yt <search>');
                 break;
             }
             if (topic === 'mods') {
@@ -5124,6 +5168,43 @@ function handleCommand(chan, nick, message) {
         // There was no way to know whether the AI layer actually worked until
         // abuse happened and it either acted or silently did not. This makes one
         // real call and reports which key and model answered — never the value.
+        // !!yt <search> — post the top YouTube hit. Anyone may use it; it is a
+        // share, so the result goes to the room, not a private notice. Needs
+        // YOUTUBE_API_KEY (a repo secret); without it the command says so.
+        case 'yt': {
+            const query = message.replace(/^\s*\S+\s*/, '').trim();   // everything after "!!yt"
+            if (!query) { reply('Usage: !!yt <search>  e.g. !!yt lofi beats'); break; }
+            if (!config.youtubeKey) {
+                reply('YouTube is not configured — set the YOUTUBE_API_KEY secret and I will find videos.');
+                break;
+            }
+            const now = Date.now();
+            if (now - (lastYt.get(chanKey(chan)) || 0) < 8000) { break; }   // light anti-spam
+            lastYt.set(chanKey(chan), now);
+            (async () => {
+                try {
+                    const url = 'https://www.googleapis.com/youtube/v3/search?part=snippet&type=video'
+                        + `&maxResults=1&q=${encodeURIComponent(query)}&key=${config.youtubeKey}`;
+                    const res = await fetch(url);
+                    if (!res.ok) {
+                        log('ERR', `YouTube API ${res.status}`);
+                        reply(res.status === 403 ? 'YouTube quota or key problem — try later.' : 'YouTube lookup failed.');
+                        return;
+                    }
+                    const data = await res.json();
+                    const item = data?.items?.[0];
+                    if (!item?.id?.videoId) { reply(`Nothing found for "${query.slice(0, 40)}".`); return; }
+                    const title = String(item.snippet?.title || 'video')
+                        .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+                        .replace(/&lt;/g, '<').replace(/&gt;/g, '>').slice(0, 120);
+                    say(chan, `▶ ${title} — https://youtu.be/${item.id.videoId}`);
+                } catch (e) {
+                    log('ERR', `YouTube: ${e.message}`);
+                    reply('YouTube lookup errored.');
+                }
+            })();
+            break;
+        }
         case 'aicheck': {
             if (!admin) { reply('Access denied.'); break; }
             if (!config.groqKey) { reply( 'No Groq key configured — word filter only.'); break; }
@@ -5135,10 +5216,14 @@ function handleCommand(chan, nick, message) {
                         model: config.groqModel, temperature: 0, max_tokens: 40,
                         messages: [{ role: 'user', content: 'reply with one word: ok' }],
                     });
-                    const reply = (data?.choices?.[0]?.message?.content || '').trim();
+                    // NB: do NOT name this `reply` — it shadows the reply()
+                    // function below and every !!aicheck then threw "reply is
+                    // not a function", reported to the room as an AI failure
+                    // when the backend had actually answered fine.
+                    const answer = (data?.choices?.[0]?.message?.content || '').trim();
                     const served = data?.model || '(unknown)';
-                    reply( reply
-                        ? `\x0303AI OK\x03 — "${reply.slice(0, 20)}" from \x02${served}\x02 in ${Date.now() - started}ms. `
+                    reply( answer
+                        ? `\x0303AI OK\x03 — "${answer.slice(0, 20)}" from \x02${served}\x02 in ${Date.now() - started}ms. `
                           + `Keys loaded: ${[config.groqKey, config.groqKey2].filter(Boolean).length}.`
                         : `\x0304AI replied empty\x03 from ${served} — the model answered but returned no content.`);
                 } catch (e) {
