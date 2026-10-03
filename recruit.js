@@ -418,7 +418,7 @@ class Recruiter {
         return Boolean(at && Date.now() - at < REASK_AFTER_MS);
     }
 
-    eligible(chan) {
+    eligible(chan, opts = {}) {
         const out = [];
         for (const nick of this.deps.membersOf(chan)) {
             const n = nick.toLowerCase();
@@ -431,11 +431,38 @@ class Recruiter {
             // Already home.
             if (this.deps.membersOf(this.deps.homeChannel).some(
                 (m) => m.toLowerCase() === n)) continue;
+            // The SAFETY filter (underage, solicitation) is NEVER skipped.
             if (this.unwelcome(nick)) continue;
-            if (!this.mine(nick)) continue;
+            // The TARGET filter (gender) IS skipped for a "recruit all" sweep —
+            // that is the only difference between a normal round and "all".
+            if (!opts.allTargets && !this.mine(nick)) continue;
             out.push(nick);
         }
         return out;
+    }
+
+    /**
+     * Invite EVERYONE eligible across the recruit rooms in one sweep — the
+     * "invite all" model, as opposed to the drip of inviteRound(). Still skips
+     * ops, bots, the already-home, the already-asked, and NEVER the underage or
+     * solicitation-flagged; it only drops the gender target. Capped and paced by
+     * the send queue so it cannot become an instant flood.
+     */
+    inviteAll(cap = 200) {
+        if (!this.enabled) return [];
+        const sent = [];
+        for (const chan of this.channels) {
+            for (const who of this.eligible(chan, { allTargets: true })) {
+                if (sent.length >= cap) break;
+                this.invited.set(who.toLowerCase(), Date.now());
+                this.bot.send(`INVITE ${who} ${this.deps.homeChannel}`);
+                this.recent.unshift({ target: who, chan, at: Date.now() });
+                sent.push({ target: who, chan });
+            }
+            if (sent.length >= cap) break;
+        }
+        this.recent = this.recent.slice(0, 20);
+        return sent;
     }
 
     /**

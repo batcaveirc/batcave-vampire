@@ -4691,7 +4691,7 @@ function handleCommand(chan, nick, message) {
                 reply('\x02Room\x02: !!moderate · !!active · !!mod · !!door · !!letin · !!autovoice · '
                     + '!!history · !!fun · !!topic · !!announce · !!mass kick|ban|voice|devoice');
                 reply('\x02Bot\x02: !!join|!!part #room · !!rooms · !!access · !!aicheck · '
-                    + '!!recruit on|off|now · !!hopup [now] (invite registered regulars to the closed room) · '
+                    + '!!recruit on|off|now|all · !!hopup [now] (invite registered regulars to the closed room) · '
                     + '!!badword · !!strict · !!linkfilter · !!raidguard · '
                     + '!!sentient · !!nick now|back|status');
                 break;
@@ -5357,12 +5357,27 @@ function handleCommand(chan, nick, message) {
                 // problems apart, and each needs a different fix.
                 reply(`Nobody eligible. ${recruiter.enabled ? '' : 'Recruiting is OFF. '}`);
                 recruiter.explain().forEach((l) => reply(l));
+            } else if (args[0] === 'all') {
+                // Invite EVERYONE eligible at once — all genders, not just the
+                // target — keeping every safety filter (no ops, bots, underage,
+                // or solicitation). Paced by the send queue. Bounded to the
+                // recruit rooms, not the whole network.
+                if (!recruiter.enabled) {
+                    reply('Recruiting is OFF — !!recruit on first, or set RECRUIT_CHANNELS.');
+                    break;
+                }
+                const sent = recruiter.inviteAll();
+                reply(sent.length
+                    ? `Inviting \x02everyone\x02 eligible — ${sent.length} across ${recruiter.channels.join(', ')}. `
+                      + 'Going out paced so the server does not flood-kill us.'
+                    : 'Nobody eligible to invite right now (all asked recently, ops, or already home).');
+                if (!sent.length) recruiter.explain().forEach((l) => reply(l));
             } else {
                 reply(`Recruiting is ${recruiter.enabled ? 'ON' : 'OFF'}`
                     + `${recruiter.channels.length ? ` from ${recruiter.channels.join(', ')}` : ' (no channels set)'}`
                     + `; ${recruiter.invited.size} invited so far, ${recruiter.perRound} per attempt, `
                     + `next attempt ${recruiter.dueIn()}. `
-                    + '!!recruit on|off|now [n]');
+                    + '!!recruit on|off|now [n]|all');
                 // An INVITE goes privately to whoever is invited, so the room
                 // sees nothing whether this is working perfectly or not at all.
                 // Show the last few by name, or say plainly that there are none.

@@ -112,5 +112,25 @@ console.log('\n— the other half is a real answer, not an empty pool —');
   c('and the halves do not overlap', !a.some((n) => b.includes(n)));
 }
 
+console.log('\n— !!recruit all invites EVERY gender, but still never the unwelcome —');
+{
+  delete require.cache[require.resolve(path)];
+  process.env.RECRUIT_TARGET = 'feminine';   // normal rounds are feminine-only…
+  const { Recruiter } = require(path);
+  const sent = [];
+  const mixed = ['priya', 'rahul', 'neha', 'amit', 'Muslimbull', 'Daddy_Will_Use_U'];
+  const r = new Recruiter({ send: (l) => sent.push(l), say() {}, nick: 'D' },
+    { membersOf: (ch) => ch === '#home' ? [] : mixed, prefixOf: () => '', homeChannel: '#home' });
+  r.channels = ['#src']; r.enabled = true;
+  const out = r.inviteAll();
+  const invited = sent.filter((l) => /^INVITE /.test(l)).map((l) => l.split(' ')[1].toLowerCase());
+  c('…but "all" invites the men too (rahul, amit)',
+    invited.includes('rahul') && invited.includes('amit'), invited.join(', '));
+  c('and still invites the women', invited.includes('priya') && invited.includes('neha'));
+  c('and NEVER the solicitation nicks', !invited.some((n) => /muslimbull|daddy_will/.test(n)),
+    invited.join(', '));
+  c('inviteAll reports what it sent', out.length === invited.length, `${out.length} vs ${invited.length}`);
+}
+
 console.log(fails?`\n${fails} FAILED`:'\nALL PASS');
 process.exit(fails?1:0);
