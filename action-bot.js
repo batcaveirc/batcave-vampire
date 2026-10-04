@@ -107,6 +107,10 @@ const config = {
     // A provider on a DIFFERENT meter, so a spent Groq day is not a dead day.
     geminiKey: process.env.GEMINI_API_KEY || '',
     geminiModel: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+    // Third tank: OpenRouter — one key for a shelf of free models, tried only
+    // after Groq and Gemini are both spent.
+    openrouterKey: process.env.OPENROUTER_API_KEY || '',
+    openrouterModel: process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free',
     linkFilter: onOff(process.env.LINK_FILTER),
     warnLimit: parseInt(process.env.WARN_LIMIT || '3', 10),            // whitelisted
     warnLimitRegistered: parseInt(process.env.WARN_LIMIT_REGISTERED || '1', 10),
@@ -131,6 +135,17 @@ const DEFAULT_BADWORDS = ['fuck', 'shit', 'bitch', 'bastard', 'asshole', 'dick',
     'fuc', 'fuk', 'fck', 'phuck', 'azz', 'btch'];
 const badwords = new Set([...DEFAULT_BADWORDS, ...list(process.env.BADWORDS)]);
 const severeWords = new Set(list(process.env.SEVERE_WORDS));
+// Image prompts (!!image) are screened before they are drawn, through the same
+// word lists the room is moderated by, plus an explicit-content pattern. A bot
+// that kicks people for slurs must not become a way to render them on request.
+// Matched on whole TOKENS, never substrings — the "ghost contains host" trap
+// the nick filter already learned.
+const IMAGE_BLOCK = /\b(nsfw|porn|nude|nudes|naked|sex|sexual|xxx|hentai|erotic|fetish|rape|gore|beheading|corpse|child|children|kid|kids|minor|minors|loli|shota|underage|teen|preteen|incest|bestiality)\b/i;
+function imagePromptUnsafe(text) {
+    const tokens = String(text).toLowerCase().match(/[a-z]+/g) || [];
+    for (const t of tokens) if (severeWords.has(t) || badwords.has(t)) return true;
+    return IMAGE_BLOCK.test(text);
+}
 // Trust, minus anyone explicitly withdrawn.
 //
 // UNTRUST exists because taking one name OFF the whitelist otherwise means
@@ -213,6 +228,7 @@ const hostOf = new Map();          // nick(lower) -> user@host (for real bans)
 const nicksOnHost = new Map();     // host -> Set(nick)
 let findState = null;              // an in-flight !!find <host>, collecting WHO replies
 const lastYt = new Map();          // chanKey -> last !!yt ms (light anti-spam)
+const lastImg = new Map();         // chanKey -> last !!image ms (light anti-spam)
 function rememberHost(nick, userHost) {
     if (!nick || !userHost) return;
     const host = String(userHost).split('@').pop();
@@ -1011,6 +1027,7 @@ let aiCalls = [];                  // recent Groq call timestamps (rate limit)
 // way the provider counts it.
 let aiDayCount = 0;
 let geminiNoted = false;   // log the switch once, not per message
+let orNoted = false;       // same, for the OpenRouter (third) tier
 let aiDayKey = '';
 let reconnectTimer = null;
 let lastRx = Date.now();           // last byte received — drives the health check
@@ -3615,8 +3632,43 @@ async function groqChat(body) {
             }
         } catch (e) { lastErr = e; }
     }
+    // Third tank: OpenRouter. One key, a shelf of free models — tried only after
+    // the first two are exhausted, so it costs nothing until it is needed.
+    if (config.openrouterKey) {
+        try {
+            const out = await openrouterChat(body);
+            if (out) {
+                if (!orNoted) { orNoted = true; log('AI', `Groq+Gemini unavailable (${lastErr && lastErr.message}) — serving from OpenRouter.`); }
+                return out;
+            }
+        } catch (e) { lastErr = e; }
+    }
     if (lastErr) throw lastErr;
     return null;
+}
+
+// OpenRouter speaks the OpenAI schema exactly, so unlike Gemini it needs no
+// translation — the same body goes out and the same {choices:[{message}]} comes
+// back. The two extra headers are how OpenRouter attributes traffic; optional,
+// and they carry no secret.
+async function openrouterChat(body) {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${config.openrouterKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://github.com/batcaveirc/batcave-vampire',
+            'X-Title': 'BatCave Vampire',
+        },
+        body: JSON.stringify({
+            model: config.openrouterModel,
+            temperature: body.temperature,
+            max_tokens: body.max_tokens,
+            messages: body.messages,
+        }),
+    });
+    if (!res.ok) throw new Error(`openrouter HTTP ${res.status}`);
+    return await res.json();
 }
 
 // Whitespace/punctuation-insensitive form, for checking the model quoted
@@ -4105,7 +4157,7 @@ async function screenNick(chan, nick) {
 
 // --- Witty AI reply (for mentions when sentient mode is off) ---
 async function getAIResponse(prompt, who, chan) {
-    if (!config.groqKey) return null;
+    if (!config.groqKey && !config.geminiKey && !config.openrouterKey) return null;
     // Near the daily limit: dodge with a one-liner instead of spending a call,
     // so the last of the budget stays for moderation.
     if (aiBudgetNum() <= Math.max(5, Math.ceil(config.aiMaxPerDay * 0.02))) {
@@ -4140,6 +4192,12 @@ async function getAIResponse(prompt, who, chan) {
             + 'ANSWER THE QUESTION FIRST, truthfully and specifically, in plain words; '
             + 'atmosphere afterwards and only if it fits. If you do not know, say so. '
             + 'Asked something real and answering with mood makes you useless.\n'
+            + 'DO NOT JUST AGREE. If someone guesses wrong or states something false, '
+            + 'say plainly that it is wrong — never confirm a wrong answer to be polite. '
+            + 'If YOU posed the riddle or question, YOU hold the real answer: a person '
+            + 'asking "is it X?" does not make X correct. Caving to the guess makes you '
+            + 'useless. (You told a riddle whose answer was "a map"; someone asked "is '
+            + 'it chocolate?" and you said yes. Never do that — the answer was a map.)\n'
             + 'People ask who the other bots are: Carmilla is from Sheridan Le '
             + "Fanu's 1872 novella, Drusilla is from Buffy the Vampire Slayer and "
             + 'Angel, Katerina (Katerina Petrova, also called Katherine Pierce) IS '
@@ -4678,7 +4736,7 @@ function handleCommand(chan, nick, message) {
                     + '!!fortune · !!vibe · !!rip · !!ask <q> · !!icebreaker · !!story · '
                     + '!!toast <nick> · !!hotseat <nick> · !!dadjoke · !!fact · !!wyr · '
                     + '!!truth · !!dare · !!pickup · !!compliment <nick> · !!howvampire <nick> · '
-                    + '!!yt <search>');
+                    + '!!yt <search> · !!image <prompt>');
                 break;
             }
             if (topic === 'mods') {
@@ -5205,9 +5263,28 @@ function handleCommand(chan, nick, message) {
             })();
             break;
         }
+        // !!image <prompt> — conjure a picture for the room. Keyless by design:
+        // Pollinations renders the image when the URL is OPENED, so the bot only
+        // has to POST a correctly-encoded URL. No fetch, no API key, nothing to
+        // rate-limit on our side or mock in tests — and IRC cannot host an image
+        // anyway, so a link is the right shape. Prompts are screened first.
+        case 'image': {
+            const prompt = message.replace(/^\s*\S+\s*/, '').trim();   // everything after "!!image"
+            if (!prompt) { reply('Usage: !!image <description>  e.g. !!image a gothic castle at dusk'); break; }
+            if (prompt.length > 300) { reply('Keep it under 300 characters.'); break; }
+            if (imagePromptUnsafe(prompt)) { reply('I will not conjure that.'); break; }
+            const now = Date.now();
+            if (now - (lastImg.get(chanKey(chan)) || 0) < Number(process.env.IMG_COOLDOWN_MS || 12000)) { break; }   // light anti-spam
+            lastImg.set(chanKey(chan), now);
+            const seed = Math.floor(Math.random() * 1e9);
+            const url = 'https://image.pollinations.ai/prompt/' + encodeURIComponent(prompt)
+                + `?width=1024&height=1024&nologo=true&seed=${seed}`;
+            say(chan, `\x0313🎨\x03 "${prompt.slice(0, 80)}" — ${url}`);
+            break;
+        }
         case 'aicheck': {
             if (!admin) { reply('Access denied.'); break; }
-            if (!config.groqKey) { reply( 'No Groq key configured — word filter only.'); break; }
+            if (!config.groqKey && !config.geminiKey && !config.openrouterKey) { reply( 'No AI key configured — word filter only.'); break; }
             reply( 'Testing the AI backend…');
             (async () => {
                 const started = Date.now();
@@ -5224,7 +5301,8 @@ function handleCommand(chan, nick, message) {
                     const served = data?.model || '(unknown)';
                     reply( answer
                         ? `\x0303AI OK\x03 — "${answer.slice(0, 20)}" from \x02${served}\x02 in ${Date.now() - started}ms. `
-                          + `Keys loaded: ${[config.groqKey, config.groqKey2].filter(Boolean).length}.`
+                          + `Groq keys: ${[config.groqKey, config.groqKey2].filter(Boolean).length}. `
+                          + `Fallbacks: ${[config.geminiKey && 'Gemini', config.openrouterKey && 'OpenRouter'].filter(Boolean).join(' + ') || 'none'}.`
                         : `\x0304AI replied empty\x03 from ${served} — the model answered but returned no content.`);
                 } catch (e) {
                     const m = String(e.message || e);

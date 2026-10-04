@@ -15,7 +15,8 @@ let f=0; const c=(n,ok,d='')=>{if(!ok)f++;console.log(`  [${ok?'PASS':'FAIL'}] $
 const ARG = { seen:'LiBu', info:'LiBu', unwarn:'LiBu', badword:'list', whitelist:'list',
   autoban:'list', protect:'list', announce:'hello', mass:'voice', hardban:'',
   join:'', part:'', strict:'', linkfilter:'', raidguard:'', history:'', sentient:'',
-  moderate:'', autovoice:'', fun:'', recruit:'', hotseat:'LiBu', toast:'LiBu' };
+  moderate:'', autovoice:'', fun:'', recruit:'', hotseat:'LiBu', toast:'LiBu',
+  image:'a gothic castle at dusk' };
 const SKIP = new Set(['join','part','mass','hardban','announce','history','endgame',
   // Starts a real round, which then breaks every game assertion below in this
   // same file with "a game is already running". Driven properly further down.
