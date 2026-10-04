@@ -106,16 +106,15 @@ const config = {
     aiMaxPerMin: parseInt(process.env.AI_MAX_PER_MIN || '12', 10),
     // A provider on a DIFFERENT meter, so a spent Groq day is not a dead day.
     geminiKey: process.env.GEMINI_API_KEY || '',
-    geminiModel: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
-    // Third tank: OpenRouter — one key for a shelf of free models, tried only
-    // after Groq and Gemini are both spent.
+    // gemini-2.0-flash was shut down 2026-06-01 (→ HTTP 404). The rolling
+    // "…-latest" alias tracks whatever the current flash model is, so a future
+    // version shutdown does not silently 404 us again.
+    geminiModel: process.env.GEMINI_MODEL || 'gemini-flash-latest',
+    // Second fallback: OpenRouter — one key for a shelf of free models, dormant
+    // until a key is set. (GitHub Models was wired here too, but GitHub RETIRED
+    // the entire Models service on 2026-07-30, so it is no longer an option.)
     openrouterKey: process.env.OPENROUTER_API_KEY || '',
     openrouterModel: process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free',
-    // Fourth tank: GitHub Models — the one that needs NO new key, since the bot
-    // already runs on Actions. Auth is the workflow's own GITHUB_TOKEN (scoped
-    // `models: read`). Free but a low daily cap, so it sits last in the chain.
-    githubToken: process.env.GITHUB_MODELS_TOKEN || '',
-    githubModel: process.env.GITHUB_MODEL || 'openai/gpt-4o-mini',
     linkFilter: onOff(process.env.LINK_FILTER),
     warnLimit: parseInt(process.env.WARN_LIMIT || '3', 10),            // whitelisted
     warnLimitRegistered: parseInt(process.env.WARN_LIMIT_REGISTERED || '1', 10),
@@ -1021,7 +1020,6 @@ let aiCalls = [];                  // recent Groq call timestamps (rate limit)
 let aiDayCount = 0;
 let geminiNoted = false;   // log the switch once, not per message
 let orNoted = false;       // same, for the OpenRouter (third) tier
-let ghNoted = false;       // same, for the GitHub Models (fourth) tier
 let aiDayKey = '';
 let reconnectTimer = null;
 let lastRx = Date.now();           // last byte received — drives the health check
@@ -3637,17 +3635,6 @@ async function groqChat(body) {
             }
         } catch (e) { lastErr = e; }
     }
-    // Fourth tank: GitHub Models. No separate key — the Actions GITHUB_TOKEN,
-    // scoped `models: read`. Free but a low daily cap, so it is the last resort.
-    if (config.githubToken) {
-        try {
-            const out = await githubChat(body);
-            if (out) {
-                if (!ghNoted) { ghNoted = true; log('AI', `Groq+Gemini+OpenRouter unavailable (${lastErr && lastErr.message}) — serving from GitHub Models.`); }
-                return out;
-            }
-        } catch (e) { lastErr = e; }
-    }
     if (lastErr) throw lastErr;
     return null;
 }
@@ -3673,24 +3660,6 @@ async function openrouterChat(body) {
         }),
     });
     if (!res.ok) throw new Error(`openrouter HTTP ${res.status}`);
-    return await res.json();
-}
-
-// GitHub Models is OpenAI-shaped too. Auth is the workflow's GITHUB_TOKEN (no
-// separate key to manage), and model ids are "publisher/name", e.g.
-// openai/gpt-4o-mini. Needs `permissions: models: read` on the workflow.
-async function githubChat(body) {
-    const res = await fetch('https://models.github.ai/inference/chat/completions', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${config.githubToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            model: config.githubModel,
-            temperature: body.temperature,
-            max_tokens: body.max_tokens,
-            messages: body.messages,
-        }),
-    });
-    if (!res.ok) throw new Error(`github-models HTTP ${res.status}`);
     return await res.json();
 }
 
@@ -4180,7 +4149,7 @@ async function screenNick(chan, nick) {
 
 // --- Witty AI reply (for mentions when sentient mode is off) ---
 async function getAIResponse(prompt, who, chan) {
-    if (!config.groqKey && !config.geminiKey && !config.openrouterKey && !config.githubToken) return null;
+    if (!config.groqKey && !config.geminiKey && !config.openrouterKey) return null;
     // Near the daily limit: dodge with a one-liner instead of spending a call,
     // so the last of the budget stays for moderation.
     if (aiBudgetNum() <= Math.max(5, Math.ceil(config.aiMaxPerDay * 0.02))) {
@@ -5291,7 +5260,7 @@ function handleCommand(chan, nick, message) {
             // real status — internal plumbing a regular op has no business seeing,
             // and the owner asked that only they run it.
             if (!isOwner(nick)) { reply('Access denied — owner only.'); break; }
-            if (!config.groqKey && !config.geminiKey && !config.openrouterKey && !config.githubToken) { reply( 'No AI key configured — word filter only.'); break; }
+            if (!config.groqKey && !config.geminiKey && !config.openrouterKey) { reply( 'No AI key configured — word filter only.'); break; }
             reply( 'Probing each AI provider directly…');
             (async () => {
                 const probe = [{ role: 'user', content: 'reply with one word: ok' }];
@@ -5302,11 +5271,17 @@ function handleCommand(chan, nick, message) {
                 // fallback is quiet. Replies privately (NOTICE), never to the room.
                 if (config.groqKey) {
                     const t = Date.now();
+                    // gpt-oss et al. are reasoning models: starved of tokens they
+                    // return EMPTY (finish_reason length), which is not a fault —
+                    // so give the probe the same room groqChat gives a real call.
+                    const big = needsRoomToThink(config.groqModel);
                     try {
                         const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                             method: 'POST',
                             headers: { Authorization: `Bearer ${config.groqKey}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ model: config.groqModel, temperature: 0, max_tokens: 8, messages: probe }),
+                            body: JSON.stringify({ model: config.groqModel, temperature: 0,
+                                max_tokens: big ? REASONING_MIN_TOKENS : 16, messages: probe,
+                                ...(big ? { reasoning_effort: REASONING_EFFORT } : {}) }),
                         });
                         const j = res.ok ? await res.json() : null;
                         const a = (j?.choices?.[0]?.message?.content || '').trim();
@@ -5316,27 +5291,33 @@ function handleCommand(chan, nick, message) {
                 if (config.geminiKey) {
                     const t = Date.now();
                     try {
-                        const d = await geminiChat({ temperature: 0, max_tokens: 8, messages: probe }, config.geminiKey, config.geminiModel);
+                        const d = await geminiChat({ temperature: 0, max_tokens: 64, messages: probe }, config.geminiKey, config.geminiModel);
                         const a = (d?.choices?.[0]?.message?.content || '').trim();
                         out.push(`Gemini(${config.geminiModel}) ${a ? `OK ${Date.now() - t}ms` : 'empty'}`);
-                    } catch (e) { out.push(`Gemini ${String(e.message || e).slice(0, 45)}`); }
+                    } catch (e) {
+                        out.push(`Gemini(${config.geminiModel}) ${String(e.message || e).slice(0, 30)}`);
+                        // A dead model name 404s. Ask the API what this key CAN use,
+                        // so the fix is a known model id instead of another guess.
+                        try {
+                            const lr = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(config.geminiKey)}`);
+                            if (lr.ok) {
+                                const flash = (((await lr.json()).models) || [])
+                                    .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+                                    .map((m) => String(m.name || '').replace(/^models\//, ''))
+                                    .filter((n) => /flash|latest/.test(n)).slice(0, 6);
+                                if (flash.length) out.push(`(available: ${flash.join(', ')})`);
+                            }
+                        } catch (_) { /* diagnostic only */ }
+                    }
                 } else out.push('Gemini(no key)');
                 if (config.openrouterKey) {
                     const t = Date.now();
                     try {
-                        const d = await openrouterChat({ temperature: 0, max_tokens: 8, messages: probe });
+                        const d = await openrouterChat({ temperature: 0, max_tokens: 16, messages: probe });
                         const a = (d?.choices?.[0]?.message?.content || '').trim();
                         out.push(`OpenRouter ${a ? `OK ${Date.now() - t}ms` : 'empty'}`);
                     } catch (e) { out.push(`OpenRouter ${String(e.message || e).slice(0, 45)}`); }
                 } else out.push('OpenRouter(no key)');
-                if (config.githubToken) {
-                    const t = Date.now();
-                    try {
-                        const d = await githubChat({ temperature: 0, max_tokens: 8, messages: probe });
-                        const a = (d?.choices?.[0]?.message?.content || '').trim();
-                        out.push(`GitHub(${config.githubModel}) ${a ? `OK ${Date.now() - t}ms` : 'empty'}`);
-                    } catch (e) { out.push(`GitHub ${String(e.message || e).slice(0, 45)}`); }
-                } else out.push('GitHub(no token)');
                 reply(`AI providers — ${out.join(' · ')}`);
             })();
             break;

@@ -19,13 +19,6 @@ on:
     - cron: '*/30 * * * *'
   workflow_dispatch: {}
 
-# The bot talks to GitHub Models using this workflow's own GITHUB_TOKEN, which
-# needs models:read. A permissions block is restrictive, so contents:read is
-# listed too (actions/checkout needs it).
-permissions:
-  contents: read
-  models: read
-
 # One instance at a time. cancel-in-progress:false means the 5-minute cron
 # does NOT kill a running bot — the new run waits and only takes over once the
 # current one hits its timeout (below). That gives continuous coverage with a
@@ -170,13 +163,11 @@ jobs:
           # Other people's bots in the room — never a target, never invited.
           BOT_NICKS: ${{ secrets.BOT_NICKS || 'Almond' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL || 'gemini-2.0-flash' }}
-          # Third/fourth tanks, dormant until set. OpenRouter needs a key;
-          # GitHub Models needs none — it uses this workflow's GITHUB_TOKEN.
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL || 'gemini-flash-latest' }}
+          # Second fallback: OpenRouter, dormant until a key is set. (GitHub
+          # Models was wired here too, but GitHub retired that service 2026-07-30.)
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free' }}
-          GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_MODEL: ${{ secrets.GITHUB_MODEL || 'openai/gpt-4o-mini' }}
           AI_MAX_PER_DAY: ${{ secrets.AI_MAX_PER_DAY || '600' }}
           AI_MAX_PER_MIN: ${{ secrets.AI_MAX_PER_MIN || '12' }}
           SENTIENT_ON: ${{ secrets.SENTIENT_ON || 'on' }}
