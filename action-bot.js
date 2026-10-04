@@ -135,17 +135,6 @@ const DEFAULT_BADWORDS = ['fuck', 'shit', 'bitch', 'bastard', 'asshole', 'dick',
     'fuc', 'fuk', 'fck', 'phuck', 'azz', 'btch'];
 const badwords = new Set([...DEFAULT_BADWORDS, ...list(process.env.BADWORDS)]);
 const severeWords = new Set(list(process.env.SEVERE_WORDS));
-// Image prompts (!!image) are screened before they are drawn, through the same
-// word lists the room is moderated by, plus an explicit-content pattern. A bot
-// that kicks people for slurs must not become a way to render them on request.
-// Matched on whole TOKENS, never substrings — the "ghost contains host" trap
-// the nick filter already learned.
-const IMAGE_BLOCK = /\b(nsfw|porn|nude|nudes|naked|sex|sexual|xxx|hentai|erotic|fetish|rape|gore|beheading|corpse|child|children|kid|kids|minor|minors|loli|shota|underage|teen|preteen|incest|bestiality)\b/i;
-function imagePromptUnsafe(text) {
-    const tokens = String(text).toLowerCase().match(/[a-z]+/g) || [];
-    for (const t of tokens) if (severeWords.has(t) || badwords.has(t)) return true;
-    return IMAGE_BLOCK.test(text);
-}
 // Trust, minus anyone explicitly withdrawn.
 //
 // UNTRUST exists because taking one name OFF the whitelist otherwise means
@@ -228,7 +217,6 @@ const hostOf = new Map();          // nick(lower) -> user@host (for real bans)
 const nicksOnHost = new Map();     // host -> Set(nick)
 let findState = null;              // an in-flight !!find <host>, collecting WHO replies
 const lastYt = new Map();          // chanKey -> last !!yt ms (light anti-spam)
-const lastImg = new Map();         // chanKey -> last !!image ms (light anti-spam)
 function rememberHost(nick, userHost) {
     if (!nick || !userHost) return;
     const host = String(userHost).split('@').pop();
@@ -4736,7 +4724,7 @@ function handleCommand(chan, nick, message) {
                     + '!!fortune · !!vibe · !!rip · !!ask <q> · !!icebreaker · !!story · '
                     + '!!toast <nick> · !!hotseat <nick> · !!dadjoke · !!fact · !!wyr · '
                     + '!!truth · !!dare · !!pickup · !!compliment <nick> · !!howvampire <nick> · '
-                    + '!!yt <search> · !!image <prompt>');
+                    + '!!yt <search>');
                 break;
             }
             if (topic === 'mods') {
@@ -5261,25 +5249,6 @@ function handleCommand(chan, nick, message) {
                     reply('YouTube lookup errored.');
                 }
             })();
-            break;
-        }
-        // !!image <prompt> — conjure a picture for the room. Keyless by design:
-        // Pollinations renders the image when the URL is OPENED, so the bot only
-        // has to POST a correctly-encoded URL. No fetch, no API key, nothing to
-        // rate-limit on our side or mock in tests — and IRC cannot host an image
-        // anyway, so a link is the right shape. Prompts are screened first.
-        case 'image': {
-            const prompt = message.replace(/^\s*\S+\s*/, '').trim();   // everything after "!!image"
-            if (!prompt) { reply('Usage: !!image <description>  e.g. !!image a gothic castle at dusk'); break; }
-            if (prompt.length > 300) { reply('Keep it under 300 characters.'); break; }
-            if (imagePromptUnsafe(prompt)) { reply('I will not conjure that.'); break; }
-            const now = Date.now();
-            if (now - (lastImg.get(chanKey(chan)) || 0) < Number(process.env.IMG_COOLDOWN_MS || 12000)) { break; }   // light anti-spam
-            lastImg.set(chanKey(chan), now);
-            const seed = Math.floor(Math.random() * 1e9);
-            const url = 'https://image.pollinations.ai/prompt/' + encodeURIComponent(prompt)
-                + `?width=1024&height=1024&nologo=true&seed=${seed}`;
-            say(chan, `\x0313🎨\x03 "${prompt.slice(0, 80)}" — ${url}`);
             break;
         }
         case 'aicheck': {
