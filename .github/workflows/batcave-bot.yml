@@ -91,7 +91,9 @@ jobs:
           # ChanServ access list is the whitelist. Editable from the room with
           # !!trust, survives restarts, and readable — which a secret is not.
           # Empty or unregistered and the two secrets above hold, unchanged.
-          TRUST_CHANNEL: ${{ secrets.TRUST_CHANNEL }}
+          # Phase 2 reuses this same channel for inter-bot teamwork; default
+          # is #batcave-trust so a fresh deploy has it wired without a secret.
+          TRUST_CHANNEL: ${{ secrets.TRUST_CHANNEL || '#batcave-trust' }}
           # Hop registered regulars up into the closed room. When a registered
           # regular (whitelisted / trusted / !!protect) joins HOPUP_FROM, they get
           # a SILENT invite to HOPUP_TO — clients auto-join a +R room they are
@@ -180,9 +182,8 @@ jobs:
           # backstop keeps working). GITHUB_TOKEN cannot trigger new runs.
           # GITHUB_REPOSITORY is already set automatically by Actions.
           GH_PAT: ${{ secrets.GH_PAT }}
-          # Phase 2+3 teamwork. Channel the bots talk machine-to-machine in,
-          # plus the heartbeat interval. Default is fine for most rooms.
-          TRUST_CHANNEL: ${{ secrets.TRUST_CHANNEL || '#batcave-trust' }}
+          # Phase 2+3 teamwork cadence. TRUST_CHANNEL is already set above
+          # (same channel this bot already used for the ChanServ FLAGS list).
           TRUST_HB_MS: ${{ secrets.TRUST_HB_MS || '180000' }}
           AI_MAX_PER_DAY: ${{ secrets.AI_MAX_PER_DAY || '600' }}
           AI_MAX_PER_MIN: ${{ secrets.AI_MAX_PER_MIN || '12' }}
