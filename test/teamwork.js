@@ -74,6 +74,41 @@ c('prompt forbids inventing dialogue (the vampire-quote hallucination)',
   /NEVER invent dialogue/.test(src));
 c('context block repeats the no-paraphrase guard next to the data',
   /INTERNAL grounding/.test(src) && src.includes('are grounding you quietly'));
+// Proactive engagement — Dracula sometimes starts conversations. The guards
+// around it are what keep this from feeling like a scripted bot. Any one of
+// these regressing turns the room noisy or breaks the "human regular" feel.
+c('proactive module is wired (PROACTIVE_ON env + helpers exist)',
+  /PROACTIVE_ON/.test(src) && /function fireProactive/.test(src)
+  && /function maybeProactiveJoinCallback/.test(src)
+  && /function maybeProactiveIdleBreak/.test(src)
+  && /function generateProactiveLine/.test(src));
+c('proactive is rate-limited globally (PROACTIVE_MIN_GAP_MS)',
+  /PROACTIVE_MIN_GAP_MS/.test(src)
+  && /Date\.now\(\) - lastProactiveAt < PROACTIVE_MIN_GAP_MS/.test(src));
+c('join callback is called from the JOIN handler',
+  /maybeProactiveJoinCallback\(nick, c\)/.test(src));
+c('idle-break timer is scheduled every 10 min and .unref()\'d',
+  /setInterval\(maybeProactiveIdleBreak, 10 \* 60 \* 1000\)\.unref/.test(src));
+c('join callback is gated to the home channel',
+  /chanKey\(config\.channels\[0\]/.test(src));
+c('join callback skips other bots + ourselves',
+  /isOneOfOurs\(nick\)/.test(src) && /currentNick\.toLowerCase\(\)/.test(src));
+c('per-nick 1h cooldown on callback (so we do not keep ping-ponging on the same person)',
+  /60 \* 60 \* 1000/.test(src) && /proactiveReferenced/.test(src));
+c('proactive prompt forbids mentioning bots/commands/features (anti-meta rule)',
+  /NEVER mention commands, features, bots/.test(src));
+c('proactive prompt forbids verbatim quoting of memory',
+  /NEVER quote someone's past lines verbatim/.test(src));
+c('proactive prompt forbids fabrication',
+  /NEVER fabricate a quote or event/.test(src));
+c('generated line is scrubbed for self-reference (last-line defence)',
+  /proactive line dropped: self-referential\/meta/.test(src));
+c('proactive respects AI budget (reserves ≥30 remaining for moderation)',
+  /aiBudgetNum\(\) <= 30/.test(src));
+c('proactive reserves budget BEFORE the AI call (no double-fire on slow calls)',
+  src.indexOf('lastProactiveAt = Date.now();') < src.indexOf('await generateProactiveLine'));
+c('proactive delays the say() by 2-6s so it reads like typing',
+  /2000 \+ Math\.floor\(Math\.random\(\) \* 4000\)/.test(src));
 c('self-restart dispatcher is wired to shutdown()',
   /await dispatchSuccessor\(sig\)/.test(src));
 c('self-restart dispatcher is wired to the blocked-IP exit path',

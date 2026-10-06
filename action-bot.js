@@ -3025,6 +3025,169 @@ function trustBroadcastOk() {
     return true;
 }
 
+// ── Proactive engagement: Dracula sometimes starts a conversation ─────────
+// Not often — rate-limited to 1 per PROACTIVE_MIN_GAP (default 15 min). Only
+// in home channel. Only when the room has people. All triggers go through
+// one shared budget so a busy evening doesn't produce five unsolicited lines.
+// Luna stays REACTIVE on purpose: two bots doing proactive at once reads as
+// chaos. Dracula initiates; Luna responds when addressed.
+const PROACTIVE_ON = /^(1|true|yes|on)$/i.test(process.env.PROACTIVE_ON || 'on');
+const PROACTIVE_MIN_GAP_MS = Math.max(60000,
+    Number(process.env.PROACTIVE_MIN_GAP_MS) || 15 * 60 * 1000);
+const PROACTIVE_IDLE_MS = Math.max(60000,
+    Number(process.env.PROACTIVE_IDLE_THRESHOLD_MS) || 25 * 60 * 1000);
+const PROACTIVE_IDLE_MIN_PRESENT = Math.max(1,
+    Number(process.env.PROACTIVE_IDLE_MIN_PRESENT) || 5);
+const PROACTIVE_JOIN_CHANCE = Math.max(0, Math.min(1,
+    Number(process.env.PROACTIVE_JOIN_CHANCE) || 0.30));
+const PROACTIVE_IDLE_CHANCE = Math.max(0, Math.min(1,
+    Number(process.env.PROACTIVE_IDLE_CHANCE) || 0.15));
+const PROACTIVE_TZ = process.env.PROACTIVE_TIMEZONE || 'Asia/Kolkata';
+let lastProactiveAt = 0;
+const proactiveReferenced = new Map();  // nick(lower) -> last-callback ms (1h cooldown per nick)
+
+function proactiveBudgetOk() {
+    if (!PROACTIVE_ON) return false;
+    if (Date.now() - lastProactiveAt < PROACTIVE_MIN_GAP_MS) return false;
+    if (!config.groqKey && !config.geminiKey && !config.openrouterKey) return false;
+    // Leave headroom for moderation + reactive chat.
+    if (typeof aiBudgetNum === 'function' && aiBudgetNum() <= 30) return false;
+    return true;
+}
+
+function timeOfDayIST() {
+    try {
+        const h = Number(new Date().toLocaleString('en-US', { timeZone: PROACTIVE_TZ, hour: 'numeric', hour12: false }));
+        if (h >= 5 && h < 11) return 'early morning';
+        if (h >= 11 && h < 15) return 'midday';
+        if (h >= 15 && h < 18) return 'afternoon';
+        if (h >= 18 && h < 22) return 'evening';
+        if (h >= 22 || h < 2) return 'late night';
+        return 'the small hours';   // 2-5am
+    } catch (e) { return 'now'; }
+}
+
+// Compose the dedicated proactive system prompt. We DON'T reuse the chat
+// prompt because that one is built around "<speaker>: <message>" input shape;
+// proactive is unprompted, no speaker.
+function proactiveSystemPrompt() {
+    return `You are ${currentNick}, a chatroom regular in #batcave — a late-night IRC room `
+        + `with the vampire persona of Dracula. You are about to say ONE line UNPROMPTED. `
+        + `It must sound natural, like a human regular who just thought of something — `
+        + `not a presenter, not a game-show host, not a bot, not an assistant.\n`
+        + `Vikram (IRC: "Vampire") is the room's owner and your creator; be warm with him `
+        + `when he's involved, not when he isn't.\n`
+        + `It is currently ${timeOfDayIST()} in IST — factor that into your tone (sleepy at `
+        + `late night, bright at morning).\n`
+        + `HARD RULES (any one of these broken = the line is wrong):\n`
+        + `- ONE line, under 20 words.\n`
+        + `- NEVER mention commands, features, bots, this platform, "I can help you with", `
+        + `  "would you like to", or anything meta. You are a person in the room, nothing else.\n`
+        + `- NEVER quote someone's past lines verbatim. REFERENCE them, naturally.\n`
+        + `- NEVER fabricate a quote or event. If you don't have specific memory of them, speak `
+        + `  generally — ask the room something, or make an observation.\n`
+        + `- NEVER greet someone by just their name ("hi X!"). Say WHY you're thinking of them, `
+        + `  or ask something specific.\n`
+        + `- NEVER announce you are a bot. NEVER explain yourself. Just say the line.\n`
+        + `- NO stage directions, NO asterisks, NO emoji unless the room is using them.\n`
+        + `- Match the room's register: English/Hinglish mix is fine, hyper-formal is not.`;
+}
+
+// Call groqChat directly with the proactive system prompt. Reuses the full
+// AI chain (Groq → Gemini → OpenRouter) and the pacer. Returns a short line
+// or null; failure is silent on purpose — a quiet moment is better than an
+// error announcement.
+async function generateProactiveLine(ctx) {
+    try {
+        const data = await groqChat({
+            model: config.groqModel, temperature: 0.95, max_tokens: 128,
+            messages: [{ role: 'system', content: proactiveSystemPrompt() },
+                       { role: 'user', content: ctx }],
+        });
+        const raw = (data?.choices?.[0]?.message?.content || '').trim();
+        if (!raw) return null;
+        // deRobot strips "As an AI...", "Sure!", etc. Already exists in file.
+        const out = (typeof deRobot === 'function' ? deRobot(raw) : raw).trim();
+        // Last-line defence against prompt leaks: refuse if the output
+        // mentions bots, commands, features, or quotes an obvious marker.
+        if (/\b(bot|command|AI|feature|!!|\$\$|assistant|language model)\b/i.test(out)) {
+            log('INFO', 'proactive line dropped: self-referential/meta');
+            return null;
+        }
+        // Keep it to one line and under 300 chars so the pacer isn't shocked.
+        return out.split('\n')[0].trim().slice(0, 300);
+    } catch (e) {
+        return null;    // provider down → stay quiet
+    }
+}
+
+// The single budgeted entry point for proactive. Reserves the budget BEFORE
+// the AI call so a slow call can't double-fire. Delays the actual say() by
+// 2-6s so it reads like typing, not a bot-fast response. All triggers go
+// through here.
+function fireProactive(ctxPrompt, source) {
+    if (!proactiveBudgetOk()) return;
+    const home = (config.channels[0] || '').toLowerCase();
+    if (!home) return;
+    const members_here = (members.get(chanKey(home)) || new Set()).size;
+    if (members_here < 2) return;    // nobody listening
+    lastProactiveAt = Date.now();    // reserve budget UP FRONT
+    (async () => {
+        const line = await generateProactiveLine(ctxPrompt);
+        if (!line) return;           // if it bombs, we still burned the budget — intentional
+        const delay = 2000 + Math.floor(Math.random() * 4000);
+        setTimeout(() => {
+            try { say(home, line); log('INFO', `proactive[${source}]: ${line.slice(0, 80)}`); }
+            catch (e) { /* best-effort */ }
+        }, delay);
+    })();
+}
+
+// Trigger A: a batcave regular rejoins after being gone. If we have memory
+// about them AND we haven't called them back recently, maybe reference ONE
+// thing from memory. Rate: at most 1h per nick, 30% roll per eligible JOIN.
+function maybeProactiveJoinCallback(nick, chan) {
+    if (!PROACTIVE_ON) return;
+    if (!chan || chanKey(chan) !== chanKey(config.channels[0] || '#batcave')) return;
+    if (!nick || isOneOfOurs(nick) || nick.toLowerCase() === currentNick.toLowerCase()) return;
+    const n = nick.toLowerCase();
+    if (Date.now() - (proactiveReferenced.get(n) || 0) < 60 * 60 * 1000) return;
+    if (Math.random() > PROACTIVE_JOIN_CHANCE) return;
+    const mem = memoryForPrompt(nick);
+    if (!mem) return;                // no memory → nothing to reference
+    proactiveReferenced.set(n, Date.now());
+    const ctx = `${nick} just walked into the room after being away. Here is what you remember `
+        + `about them (older lines they've said; INTERNAL grounding — do not list these, `
+        + `reference ONE thing naturally):\n${mem}\n\nSay ONE casual line that references ONE `
+        + `specific thing from that memory, the way a friend who notices someone is back would. `
+        + `Not a greeting. A noticing.`;
+    fireProactive(ctx, 'join-callback');
+}
+
+// Trigger B: the room has been quiet for a long time with people present.
+// Low-probability roll per sweep. Composes a "spark the room" prompt. The
+// time-of-day phrase is already baked into proactiveSystemPrompt().
+function maybeProactiveIdleBreak() {
+    if (!PROACTIVE_ON) return;
+    const home = (config.channels[0] || '').toLowerCase();
+    if (!home) return;
+    const key = chanKey(home);
+    const log2 = recentSaid.get(key) || [];
+    const lastLine = log2.length ? log2[log2.length - 1].at : 0;
+    if (!lastLine) return;           // nothing seen yet; too early
+    const idleMs = Date.now() - lastLine;
+    if (idleMs < PROACTIVE_IDLE_MS) return;
+    const members_here = (members.get(key) || new Set()).size;
+    if (members_here < PROACTIVE_IDLE_MIN_PRESENT) return;
+    if (Math.random() > PROACTIVE_IDLE_CHANCE) return;
+    const mins = Math.round(idleMs / 60000);
+    const ctx = `The room has gone quiet — no one's said anything in ${mins} minutes, and there `
+        + `are ${members_here} people here. Drop ONE line to spark conversation: a thought, a `
+        + `question, an observation about the silence, or a tease. Something a regular would `
+        + `break the quiet with. Not a question to anyone specifically — the room.`;
+    fireProactive(ctx, 'idle-break');
+}
+
 /**
  * Hourly: drop entries past TTL, drop users with no entries left, prune the
  * dedupe map. Keeps RAM bounded on a long-running process. No owner command
@@ -6587,6 +6750,10 @@ function handleLine(line) {
             // minutes. Cheap: the prefix check makes it a no-op for anyone who
             // already has voice.
             setInterval(() => config.channels.forEach((c) => voiceSweep(chanKey(c))), 30000);
+            // Proactive idle-break sweep. Every 10 min, if the room has been
+            // silent long enough and there are people, maybe drop a line.
+            // Gates + probability + global budget are all inside the function.
+            setInterval(maybeProactiveIdleBreak, 10 * 60 * 1000).unref?.();
             // Who is waiting for a voice, once in a while rather than once each.
             //
             // Routine holds no longer interrupt anybody — in a room ChanBot
@@ -7274,6 +7441,10 @@ function handleLine(line) {
         // rooms. A source room is only ever watched, never acted in.
         if (!isOurChannel(c)) return;
         game.onJoin(nick, c);
+        // Proactive engagement — "oh look who's back". Rate-limited, chance-
+        // gated, memory-aware; stays quiet if we have nothing to say about
+        // this person. Only in home channel (gated inside the function).
+        try { maybeProactiveJoinCallback(nick, c); } catch (e) { /* never block join flow */ }
 
         // Hop a registered regular up into the closed room, silently. Gated on
         // `ready` so a reconnect's arrivals do not trigger a burst, and tried

@@ -185,6 +185,17 @@ jobs:
           # Phase 2+3 teamwork cadence. TRUST_CHANNEL is already set above
           # (same channel this bot already used for the ChanServ FLAGS list).
           TRUST_HB_MS: ${{ secrets.TRUST_HB_MS || '180000' }}
+          # Proactive engagement — Dracula drops an unsolicited line now and
+          # then. Shared rate limit, gated by budget, chance-rolled per trigger.
+          # PROACTIVE_ON=off disables the whole thing. Defaults are tuned for
+          # "noticeable but not spammy".
+          PROACTIVE_ON: ${{ secrets.PROACTIVE_ON || 'on' }}
+          PROACTIVE_MIN_GAP_MS: ${{ secrets.PROACTIVE_MIN_GAP_MS || '900000' }}
+          PROACTIVE_IDLE_THRESHOLD_MS: ${{ secrets.PROACTIVE_IDLE_THRESHOLD_MS || '1500000' }}
+          PROACTIVE_IDLE_MIN_PRESENT: ${{ secrets.PROACTIVE_IDLE_MIN_PRESENT || '5' }}
+          PROACTIVE_JOIN_CHANCE: ${{ secrets.PROACTIVE_JOIN_CHANCE || '0.30' }}
+          PROACTIVE_IDLE_CHANCE: ${{ secrets.PROACTIVE_IDLE_CHANCE || '0.15' }}
+          PROACTIVE_TIMEZONE: ${{ secrets.PROACTIVE_TIMEZONE || 'Asia/Kolkata' }}
           AI_MAX_PER_DAY: ${{ secrets.AI_MAX_PER_DAY || '600' }}
           AI_MAX_PER_MIN: ${{ secrets.AI_MAX_PER_MIN || '12' }}
           SENTIENT_ON: ${{ secrets.SENTIENT_ON || 'on' }}
