@@ -2988,12 +2988,41 @@ function rememberLine(nick, text, meta) {
     while (arr.length > MEMORY_MAX_PER_USER) arr.shift();
     userMemory.set(n, arr);
 
-    // Share with the partner so both bots have the same view even if one was
-    // briefly disconnected while the other saw the line. Local only — a remote
-    // call is already somebody else's broadcast.
-    if (source !== 'remote') {
+    // Share with the partner — but ONLY for the home channel. In busy recruit
+    // rooms, broadcasting every notable line to #batcave-trust amplifies 10
+    // rooms' chat traffic onto one channel, which blows the send pacer and
+    // the SERVER flood-kills us with "RecvQ exceeded" (the live incident on
+    // 2026-10-06 right after the initial ::saw ship). Home-channel sync is
+    // where it matters anyway: that is the one room BOTH bots are in and talk
+    // to the user from. Recruit-room memory stays local, which is fine — this
+    // bot captures it itself and recalls it when the user later walks into
+    // #batcave. Also rate-limited as a safety net.
+    if (source !== 'remote' && isHomeChannelRoom(room) && trustBroadcastOk()) {
         trustSend('saw', { n, m: txt.slice(0, 200), r: room || '#batcave', t: t || now });
     }
+}
+
+// Home-channel membership check. config.channels is the comma-split list from
+// IRC_CHANNEL; element 0 is the home room. The emoji room is also home and
+// also safe to sync.
+function isHomeChannelRoom(room) {
+    const r = String(room || '').toLowerCase();
+    if (!r) return true;                           // default is home
+    return (config.channels || []).some((c) => String(c).toLowerCase() === r);
+}
+
+// Token-bucket rate-limit for trust broadcasts (NOT for heartbeat — that is
+// 1 line per 3 min and cannot flood). 20 ::saw per 60s is comfortably more
+// than organic #batcave chatter and comfortably less than what killed Carfax.
+const TRUST_BROADCAST_HISTORY = [];
+function trustBroadcastOk() {
+    const now = Date.now();
+    while (TRUST_BROADCAST_HISTORY.length && now - TRUST_BROADCAST_HISTORY[0] > 60000) {
+        TRUST_BROADCAST_HISTORY.shift();
+    }
+    if (TRUST_BROADCAST_HISTORY.length >= 20) return false;
+    TRUST_BROADCAST_HISTORY.push(now);
+    return true;
 }
 
 /**

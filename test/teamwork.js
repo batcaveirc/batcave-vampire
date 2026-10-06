@@ -94,6 +94,7 @@ const script = `
     const PARTNER_SILENT_MS = 60000;
     const userMemory = new Map();
     const sawRecently = new Map();           // dedupe for rememberLine
+    const TRUST_BROADCAST_HISTORY = [];      // rate-limit for ::saw
     let currentNick = 'DarkCloud';
     let partnerLastSeen = 0;
     const isOneOfOurs = (n) => /^(darkcloud|nosferatu|andromeda)$/i.test(n);
@@ -101,13 +102,20 @@ const script = `
     const send = (line) => sent.push(line);
     const log = () => {};                     // pruneMemory logs; stub it
     const TRUST_CHANNEL = '#batcave-trust';
+    // In production, config.channels is the IRC_CHANNEL list — home + emoji.
+    // In the sandbox we hard-code the pair so isHomeChannelRoom works.
+    const config = { channels: ['#batcave', '#\u{1F171}\u{1F170}\u{1F164}\u{1F163}\u{1F170}\u{1F185}\u{1F164}'] };
     ${slice('rememberLine')}
+    ${slice('isHomeChannelRoom')}
+    ${slice('trustBroadcastOk')}
     ${slice('memoryForPrompt')}
     ${slice('trustSend')}
     ${slice('handleTrustLine')}
     ${slice('pruneMemory')}
     ({ rememberLine, memoryForPrompt, trustSend, handleTrustLine, pruneMemory,
-       state: { userMemory, sawRecently, sent, getPartnerLastSeen: () => partnerLastSeen } });
+       isHomeChannelRoom, trustBroadcastOk,
+       state: { userMemory, sawRecently, sent, getPartnerLastSeen: () => partnerLastSeen,
+                getBroadcastHistory: () => TRUST_BROADCAST_HISTORY } });
 `;
 const api = vm.runInNewContext(script, { process, Map, Set, Date, JSON, console });
 
@@ -215,10 +223,17 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
     console.log('\n— cross-room: room tag stored, prompt hides room —');
     api.state.userMemory.clear();
+    api.state.sent.length = 0;
     api.rememberLine('rinki', 'I think I will skip dinner tonight actually', { room: '#chatindian' });
     g = api.state.userMemory.get('rinki') || [];
     c('cross-room line stored', g.length === 1);
     c('room tag preserved', g[0] && g[0].room === '#chatindian');
+    // ★ THE RECV-Q FIX: a recruit-room line must NOT broadcast ::saw, or busy
+    // rooms blow the send pacer and the server flood-kills us. Caught live on
+    // 2026-10-06 (Carfax dropped with "RecvQ exceeded").
+    const sawFromCross = api.state.sent.filter((l) => l.includes('::saw '));
+    c('cross-room capture does NOT broadcast ::saw (recv-queue safety)',
+      sawFromCross.length === 0, api.state.sent.join('\n'));
     // Prompt only draws from OLDER lines, so add two more then check.
     api.rememberLine('rinki', 'yesterday was long, might sleep in', { room: '#chatindian' });
     api.rememberLine('rinki', 'ok heading out for a bit, bbl', { room: '#batcave' });
@@ -227,6 +242,25 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     c('recall does NOT reveal the room — model gets content only',
       !prompt.includes('#chatindian') && !prompt.includes('#batcave'), prompt);
 
-    console.log(fails ? `\n${fails} FAILED` : '\nALL PASS');
+    console.log('\n— home-channel capture DOES broadcast ::saw —');
+    api.state.userMemory.clear();
+    api.state.sent.length = 0;
+    api.rememberLine('priya', 'the dinner was delicious tonight', { room: '#batcave' });
+    const sawFromHome = api.state.sent.filter((l) => l.includes('::saw '));
+    c('home-channel ::saw IS broadcast', sawFromHome.length === 1,
+      api.state.sent.join('\n'));
+
+    console.log('\n— rate-limit: >20 ::saw in 60s drops the excess —');
+    api.state.userMemory.clear();
+    api.state.sent.length = 0;
+    api.state.sawRecently.clear();                       // let fresh lines through dedupe
+    api.state.getBroadcastHistory().length = 0;          // start the token bucket from empty
+    for (let i = 0; i < 30; i++) {
+        api.rememberLine('speaker' + i, 'line number ' + i + ' with enough chars', { room: '#batcave' });
+    }
+    const sawBroadcasts = api.state.sent.filter((l) => l.includes('::saw ')).length;
+    c('at most 20 ::saw broadcasts in a burst', sawBroadcasts === 20, 'broadcast ' + sawBroadcasts);
+
+    console.log(fails ? ('\n' + fails + ' FAILED') : '\nALL PASS');
     process.exit(fails ? 1 : 0);
 })();
