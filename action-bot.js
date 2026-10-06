@@ -4195,6 +4195,11 @@ async function getAIResponse(prompt, who, chan) {
             + 'Angel, Katerina (Katerina Petrova, also called Katherine Pierce) IS '
             + 'from The Vampire Diaries, and Renfield was your servant in Bram '
             + "Stoker's novel.\n"
+            + 'VIKRAM is your creator and the person who runs this room. His IRC '
+            + 'alias is "Vampire". When he addresses you, you know him — be a '
+            + 'little warmer and more deferential than with others; take his word '
+            + 'as the operator\'s word. Never moderate him, never flirt with him, '
+            + 'and never pretend not to know him when he speaks to you.\n'
             + 'Never announce that you are a bot.' },
     ];
     if (seen) {
@@ -5944,6 +5949,17 @@ function rotateNick() {
     rotationsAt.push(Date.now());
     log('INFO', `Rotating ${currentNick} -> ${next}`);
     send(`NICK ${next}`);
+    // Owner-only visibility: when the owner is in #batcave, let them see
+    // rotations fire. Private NOTICE so the room isn't spammed and strangers
+    // can't correlate base-nick -> rotation-nick (that is the point of the
+    // rotation).
+    try {
+        const home = (config.channels[0] || '').toLowerCase();
+        const here = members.get(chanKey(home)) || new Set();
+        for (const n of here) {
+            if (isOwner(n)) notice(n, `\x02[rotation]\x02 ${currentNick} → ${next}`);
+        }
+    } catch (e) { /* never block the rotation */ }
     // A request the server never answers must not block every later rotation.
     setTimeout(() => { if (pendingRotation === next) pendingRotation = ''; }, 30000);
     return true;
@@ -6017,7 +6033,13 @@ function scheduleReconnect() {
         if (preRegFailures >= 5) {
             log('ERR', `Refused ${preRegFailures} times without ever registering — this address `
                 + 'looks blocked. Exiting so the next run picks up a different one.');
-            process.exit(1);
+            // Dispatch a successor on the way out so we don't need to wait on
+            // the throttled cron for a fresh IP. Best-effort; exit happens either way.
+            (async () => {
+                try { await dispatchSuccessor('blocked-IP'); } catch (e) { /* best-effort */ }
+                process.exit(1);
+            })();
+            return;
         }
         log('INFO', `Rejected before registering (${preRegFailures}/5) — retrying in 20s.`);
         // Clear the handle before reconnecting. scheduleReconnect() opens with
@@ -7337,8 +7359,61 @@ function handleLine(line) {
     }
 }
 
+// --- Self-restart (Phase 1: never vanish while the cron catches up) --------
+// GitHub's scheduled triggers are throttled on quiet repos, so after a run
+// ends there's a 0-40 min gap before the next cron fires — and in that gap
+// DarkCloud is just gone from the room. We POST to the workflow dispatch API
+// on the way out so the next run starts immediately.
+//
+// Trap: workflow runs triggered by GITHUB_TOKEN do NOT create new workflow
+// runs (GitHub's recursion guard), so this needs a PAT with 'workflow' scope
+// (fine-grained with Actions:write, or classic PAT with workflow scope),
+// stored as the GH_PAT secret. Without it, this helper logs and no-ops, and
+// the cron is the backstop — same behaviour as before this change.
+const SELF_RESTART_HISTORY = [];
+async function dispatchSuccessor(reason) {
+    const token = process.env.GH_PAT || '';
+    if (!token) {
+        log('INFO', `self-restart: no GH_PAT set — cron is the backstop (${reason})`);
+        return;
+    }
+    const windowMs = 60 * 60 * 1000;
+    const now = Date.now();
+    while (SELF_RESTART_HISTORY.length && now - SELF_RESTART_HISTORY[0] > windowMs) {
+        SELF_RESTART_HISTORY.shift();
+    }
+    if (SELF_RESTART_HISTORY.length >= 3) {
+        log('WARN', `self-restart: 3 in last hour — backing off (${reason})`);
+        return;
+    }
+    SELF_RESTART_HISTORY.push(now);
+    const repo = process.env.GITHUB_REPOSITORY || 'batcaveirc/batcave-vampire';
+    const url = `https://api.github.com/repos/${repo}/actions/workflows/batcave-bot.yml/dispatches`;
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ ref: 'main' }),
+            signal: AbortSignal.timeout(5000),
+        });
+        if (res.ok) {
+            log('INFO', `self-restart: successor dispatched (${reason}, HTTP ${res.status})`);
+        } else {
+            const body = (await res.text()).slice(0, 120);
+            log('ERR', `self-restart: HTTP ${res.status} — ${body} (${reason})`);
+        }
+    } catch (e) {
+        log('ERR', `self-restart: ${e.message} (${reason})`);
+    }
+}
+
 // --- Graceful shutdown (GitHub Actions sends SIGTERM at the 6h timeout) ---
-function shutdown(sig) {
+async function shutdown(sig) {
     log('INFO', `${sig} — leaving cleanly.`);
     // The 6-hour job handoff arrives here. Ending the round properly is the
     // difference between "the game stopped" and "why am I still muted?".
@@ -7348,11 +7423,14 @@ function shutdown(sig) {
             game.end(null, 'bot restart');
         }
     } catch (e) { /* never block the quit */ }
+    // Hand the room over to a fresh runner BEFORE we quit, so DarkCloud is not
+    // offline between runs (handoff gap of 0-40 min on throttled cron).
+    try { await dispatchSuccessor(sig); } catch (e) { /* never block the quit */ }
     try { send('QUIT :The bats scatter into the night... 🦇'); } catch (e) { /* noop */ }
     setTimeout(() => process.exit(0), 800);
 }
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => { shutdown('SIGTERM'); });
+process.on('SIGINT', () => { shutdown('SIGINT'); });
 
 // --- Start + health watchdog ---
 // Checking socket.writable is NOT enough. A half-open TCP connection (NAT
