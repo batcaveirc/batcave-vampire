@@ -285,6 +285,21 @@ class Recruiter {
         this.channels = (process.env.RECRUIT_CHANNELS || '')
             .split(',').map((c) => c.trim()).filter(Boolean)
             .map((c) => (c.startsWith('#') ? c : `#${c}`));
+        // Phase 4: an extra room from RECRUIT_RANDOM_POOL, picked by week so
+        // it rotates weekly rather than thrashing on every ~6h run. Deduped
+        // against the fixed list so a pool overlap costs nothing. The pool is
+        // a safelist YOU choose — never /list — so we only ever extend reach
+        // into rooms you've vetted.
+        const pool = (process.env.RECRUIT_RANDOM_POOL || '')
+            .split(',').map((c) => c.trim()).filter(Boolean)
+            .map((c) => (c.startsWith('#') ? c : `#${c}`))
+            .filter((c) => !this.channels.some((x) => x.toLowerCase() === c.toLowerCase()));
+        if (pool.length) {
+            const weekNum = Math.floor(Date.now() / (7 * 24 * 60 * 60 * 1000));
+            const pick = pool[weekNum % pool.length];
+            this.channels.push(pick);
+            this.weeklyRandom = pick;      // for diagnostics / explain()
+        }
         this.enabled = this.channels.length > 0
             && /^(1|true|yes|on)$/i.test(process.env.RECRUIT_ON || 'on');
         this.hints = DEFAULT_HINTS.concat(

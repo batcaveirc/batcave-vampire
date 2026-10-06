@@ -2935,25 +2935,84 @@ const TRUST_HB_MS = Math.max(60000, Number(process.env.TRUST_HB_MS) || 180000);
 const PARTNER_SILENT_MS = Math.max(TRUST_HB_MS * 2, 6 * 60 * 1000);
 const MEMORY_MAX_PER_USER = Math.max(3, Number(process.env.MEMORY_MAX_PER_USER) || 10);
 const MEMORY_TTL_MS = Math.max(3600 * 1000, Number(process.env.MEMORY_TTL_MS) || 7 * 24 * 60 * 60 * 1000);
-const MEMORY_MIN_LEN = Math.max(5, Number(process.env.MEMORY_MIN_LEN) || 15);
-const userMemory = new Map();          // nick(lower) -> [{t, text}]
+const MEMORY_MIN_LEN = Math.max(1, Number(process.env.MEMORY_MIN_LEN) || 15);
+const userMemory = new Map();          // nick(lower) -> [{t, text, room}]
+// Dedupe for ::saw: both bots see the SAME line in-room, both broadcast ::saw,
+// each receives their own echo + the partner's echo — without this the memory
+// stores every line four times and the hb/saw cadence doubles.
+const sawRecently = new Map();         // key `${n}|${textSlice}` -> ms
 let partnerLastSeen = 0;
 let trustHbTimer = null;
+let memoryGcTimer = null;
 
-function rememberLine(nick, text) {
+/**
+ * Capture a notable line into per-user memory. Local calls broadcast to the
+ * partner over the trust channel; remote (from ::saw) calls do not, to stop
+ * echo storms. Dedupe is a 60s window keyed by nick+text, so a line we saw
+ * ourselves PLUS a ::saw echo of the same line coalesces to one memory entry.
+ *
+ * @param {string} nick    speaker (as-typed; stored lowercase)
+ * @param {string} text    the line
+ * @param {object} meta    { room?: string, source?: 'local'|'remote', t?: ms }
+ */
+function rememberLine(nick, text, meta) {
+    const { room, source, t } = meta || {};
     const n = String(nick).toLowerCase();
     if (!n) return;
     if (n === String(currentNick || '').toLowerCase()) return;   // never remember ourselves
-    if (isOneOfOurs && isOneOfOurs(nick)) return;                 // never remember other bots
-    const t = String(text || '').trim();
-    if (t.length < MEMORY_MIN_LEN) return;
+    if (typeof isOneOfOurs === 'function' && isOneOfOurs(nick)) return;   // never remember other bots
+    const txt = String(text || '').trim();
+    if (txt.length < MEMORY_MIN_LEN) return;
     // Skip commands and URL-only lines — they are not personal "about them".
-    if (/^(!!|\$|\.)[a-z]/i.test(t)) return;
-    if (/^https?:\/\/\S+$/.test(t)) return;
+    if (/^(!!|\$|\.)[a-z]/i.test(txt)) return;
+    if (/^https?:\/\/\S+$/.test(txt)) return;
+
+    // Dedupe: a line we captured locally and then saw come back as a partner
+    // ::saw is the same memory, not two. 60s window is comfortably longer than
+    // worst-case round-trip through the pacer.
+    const key = `${n}|${txt.slice(0, 80).toLowerCase()}`;
+    const now = Date.now();
+    if (now - (sawRecently.get(key) || 0) < 60000) return;
+    sawRecently.set(key, now);
+    if (sawRecently.size > 500) {
+        // Light prune on growth; cheap O(n) once in a while.
+        for (const [k, ts] of sawRecently) {
+            if (now - ts > 300000) sawRecently.delete(k);
+        }
+    }
+
     const arr = userMemory.get(n) || [];
-    arr.push({ t: Date.now(), text: t.slice(0, 200) });
+    // Room is remembered for diagnostics only; the prompt does NOT reveal it,
+    // so the bot does not announce "I heard you in #desilivechat.com".
+    arr.push({ t: t || now, text: txt.slice(0, 200), room: room || '#batcave' });
     while (arr.length > MEMORY_MAX_PER_USER) arr.shift();
     userMemory.set(n, arr);
+
+    // Share with the partner so both bots have the same view even if one was
+    // briefly disconnected while the other saw the line. Local only — a remote
+    // call is already somebody else's broadcast.
+    if (source !== 'remote') {
+        trustSend('saw', { n, m: txt.slice(0, 200), r: room || '#batcave', t: t || now });
+    }
+}
+
+/**
+ * Hourly: drop entries past TTL, drop users with no entries left, prune the
+ * dedupe map. Keeps RAM bounded on a long-running process. No owner command
+ * for this on purpose — Vikram reserved purge to the bot itself.
+ */
+function pruneMemory() {
+    const now = Date.now();
+    let users = 0, lines = 0;
+    for (const [n, arr] of userMemory) {
+        const fresh = arr.filter((e) => now - e.t <= MEMORY_TTL_MS);
+        if (fresh.length === 0) userMemory.delete(n);
+        else if (fresh.length !== arr.length) { userMemory.set(n, fresh); users += 1; lines += (arr.length - fresh.length); }
+    }
+    for (const [k, ts] of sawRecently) {
+        if (now - ts > 300000) sawRecently.delete(k);
+    }
+    if (lines > 0) log('INFO', `memory prune: dropped ${lines} old lines across ${users} users (kept ${userMemory.size} users)`);
 }
 
 function memoryForPrompt(nick) {
@@ -2974,7 +3033,7 @@ function memoryForPrompt(nick) {
         const ago = mins < 60 ? `${mins}m` : mins < 1440 ? `${Math.floor(mins / 60)}h` : `${Math.floor(mins / 1440)}d`;
         return `  - [${ago} ago] ${e.text}`;
     });
-    return `\nWhat ${nick} has recently said in #batcave (you remember):\n${lines.join('\n')}`;
+    return `\nWhat ${nick} has recently said (you remember them from this and nearby rooms):\n${lines.join('\n')}`;
 }
 
 // Inter-bot comms over #batcave-trust. Lines prefixed "::" are machine
@@ -2997,8 +3056,19 @@ function handleTrustLine(from, text) {
         // Self-echo: our own hb comes back; ignore it.
         if (String(data.n || '').toLowerCase() === String(currentNick || '').toLowerCase()) return;
         partnerLastSeen = Date.now();
+        return;
     }
-    // Reserved verbs for later cross-sync phases: ::saw ::act ::mem
+    if (verb === 'saw') {
+        // Partner saw a line in a room both bots are in. Merge into our local
+        // memory with source=remote so we do NOT re-broadcast and loop.
+        // Dedupe inside rememberLine coalesces this with our own capture.
+        if (data.n && data.m) {
+            try { rememberLine(data.n, data.m, { room: data.r || '#batcave', source: 'remote', t: Number(data.t) || Date.now() }); }
+            catch (e) { /* never break the trust path */ }
+        }
+        return;
+    }
+    // Reserved for later: ::act (moderation taken), ::mem (full-sync pulls)
 }
 
 function partnerIsSilent() {
@@ -3014,6 +3084,12 @@ function startTrustTeamwork() {
     };
     setTimeout(beat, 15000);                      // first heartbeat 15s after start
     trustHbTimer = setInterval(beat, TRUST_HB_MS);
+    // Memory GC: hourly. Idempotent; .unref so a stuck timer never holds
+    // the process from exiting.
+    if (!memoryGcTimer) {
+        memoryGcTimer = setInterval(pruneMemory, 60 * 60 * 1000);
+        memoryGcTimer.unref?.();
+    }
 }
 
 const shazamUsed = new Map();          // nick(lower) -> when
@@ -7332,6 +7408,13 @@ function handleLine(line) {
     // never moderate. Only listen for our own channel being advertised, which
     // is how the last raid was assembled before any of it reached home.
     if (command === 'PRIVMSG' && nick && /^#/.test(tgt || '') && !isOurChannel(tgt)) {
+        // Phase 2.5: capture memory from recruit rooms too, tagged by room. If
+        // this person later walks into #batcave, the bot already knows what
+        // they talked about. The ROOM is a stored tag, NOT shown in the
+        // prompt — the bot can reference the content, not the venue.
+        if (!isReplay(tags)) {
+            try { rememberLine(nick, msg, { room: tgt }); } catch (e) { /* never break watch */ }
+        }
         const heard = watch.hear(tgt, nick, msg, {
             trusted: isTrusted(nick) || isAdmin(nick) || isOwner(nick)
                 || nick.toLowerCase() === currentNick.toLowerCase(),
@@ -7389,11 +7472,11 @@ function handleLine(line) {
         // typed on Saturday.
         rememberSaid2(tgt, nick, msg);
         // Phase 3: per-user memory, used in AI replies so "how's that injury?"
-        // can be answered from what they said days ago in THIS room. Only
-        // #batcave; recruit rooms are not scanned for memory on purpose.
-        if (chanKey(tgt) === chanKey(config.channels[0] || '#batcave')) {
-            try { rememberLine(nick, msg); } catch (e) { /* never break the chat path */ }
-        }
+        // can be answered from what they said days ago. Capture from every room
+        // this bot is in (home + emoji room + games), tagged by that room.
+        // The prompt does NOT reveal the room, so a reference reads as
+        // remembered content, not "I heard you in room X".
+        try { rememberLine(nick, msg, { room: tgt }); } catch (e) { /* never break the chat path */ }
         if (ignored.has(nick.toLowerCase())) return;          // !!ignore
 
         if (msg.startsWith('!!')) { handleCommand(tgt, nick, msg); return; }

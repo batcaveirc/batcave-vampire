@@ -53,7 +53,9 @@ c('trustSend is defined', /function trustSend\(/.test(src));
 c('handleTrustLine is defined', /function handleTrustLine\(/.test(src));
 c('startTrustTeamwork is defined', /function startTrustTeamwork\(/.test(src));
 c('rememberLine is CALLED from the home-room PRIVMSG path',
-  /rememberLine\(nick, msg\)/.test(src));
+  /rememberLine\(nick, msg,\s*\{ room: tgt \}\)/.test(src));
+c('rememberLine is also CALLED from the recruit-room PRIVMSG path (cross-room memory)',
+  src.split(/rememberLine\(nick, msg,\s*\{ room: tgt \}\)/).length >= 3);
 c('memoryForPrompt is CALLED from getAIResponse',
   /memoryForPrompt\(who\)/.test(src));
 c('trust-channel PRIVMSGs are short-circuited BEFORE isOurChannel',
@@ -91,18 +93,21 @@ const script = `
     const MEMORY_MIN_LEN = Number(process.env.MEMORY_MIN_LEN);
     const PARTNER_SILENT_MS = 60000;
     const userMemory = new Map();
+    const sawRecently = new Map();           // dedupe for rememberLine
     let currentNick = 'DarkCloud';
     let partnerLastSeen = 0;
     const isOneOfOurs = (n) => /^(darkcloud|nosferatu|andromeda)$/i.test(n);
     const sent = [];
     const send = (line) => sent.push(line);
+    const log = () => {};                     // pruneMemory logs; stub it
     const TRUST_CHANNEL = '#batcave-trust';
     ${slice('rememberLine')}
     ${slice('memoryForPrompt')}
     ${slice('trustSend')}
     ${slice('handleTrustLine')}
-    ({ rememberLine, memoryForPrompt, trustSend, handleTrustLine,
-       state: { userMemory, sent, getPartnerLastSeen: () => partnerLastSeen } });
+    ${slice('pruneMemory')}
+    ({ rememberLine, memoryForPrompt, trustSend, handleTrustLine, pruneMemory,
+       state: { userMemory, sawRecently, sent, getPartnerLastSeen: () => partnerLastSeen } });
 `;
 const api = vm.runInNewContext(script, { process, Map, Set, Date, JSON, console });
 
@@ -185,6 +190,42 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     api.handleTrustLine('Vikram', ':: this is not a valid machine line');
     api.handleTrustLine('Andromeda', '::hb {not valid json');
     c('human chatter ignored', api.state.getPartnerLastSeen() === before);
+
+    // ─── ::saw merge: partner saw a line, merge into local memory
+    console.log('\n— ::saw merges partner observation (no re-broadcast) —');
+    api.state.userMemory.clear();
+    api.state.sent.length = 0;
+    api.handleTrustLine('Andromeda',
+      '::saw {"n":"shweta0","m":"my knee is better today, thanks","r":"#batcave","t":1}');
+    let g = api.state.userMemory.get('shweta0') || [];
+    c('remote ::saw stored in local memory', g.length === 1, `got ${g.length}`);
+    c('room tagged (for diagnostics)', g[0] && g[0].room === '#batcave');
+    c('remote ::saw does NOT re-broadcast (loop guard)',
+      !api.state.sent.some((l) => l.includes('::saw ')),
+      api.state.sent.join('\n'));
+
+    console.log('\n— dedupe: local line + its ::saw echo coalesce —');
+    api.state.userMemory.clear();
+    api.state.sent.length = 0;
+    api.rememberLine('priya', 'the restaurant on 5th street was lovely');
+    api.handleTrustLine('Andromeda',
+      '::saw {"n":"priya","m":"the restaurant on 5th street was lovely","r":"#batcave","t":1}');
+    g = api.state.userMemory.get('priya') || [];
+    c('one entry, not two (deduped by nick+text)', g.length === 1, `got ${g.length}`);
+
+    console.log('\n— cross-room: room tag stored, prompt hides room —');
+    api.state.userMemory.clear();
+    api.rememberLine('rinki', 'I think I will skip dinner tonight actually', { room: '#chatindian' });
+    g = api.state.userMemory.get('rinki') || [];
+    c('cross-room line stored', g.length === 1);
+    c('room tag preserved', g[0] && g[0].room === '#chatindian');
+    // Prompt only draws from OLDER lines, so add two more then check.
+    api.rememberLine('rinki', 'yesterday was long, might sleep in', { room: '#chatindian' });
+    api.rememberLine('rinki', 'ok heading out for a bit, bbl', { room: '#batcave' });
+    const prompt = api.memoryForPrompt('rinki');
+    c('recall is non-empty with older lines', prompt.length > 0);
+    c('recall does NOT reveal the room — model gets content only',
+      !prompt.includes('#chatindian') && !prompt.includes('#batcave'), prompt);
 
     console.log(fails ? `\n${fails} FAILED` : '\nALL PASS');
     process.exit(fails ? 1 : 0);

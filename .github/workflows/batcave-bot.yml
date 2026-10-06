@@ -379,6 +379,10 @@ jobs:
           # Double-quoted on purpose: without it YAML's parser trips on the '#'
           # characters inside the Actions expression and refuses the workflow.
           RECRUIT_CHANNELS: "${{ secrets.RECRUIT_CHANNELS || '#allindiachat.com,#chatsansar,#chatindian,#chatfellas,#desilivechat.com,#friendschatroom.net,#pakindiachat.com,#Chat.org.in,#mixchat,#chatkaro' }}"
+          # Phase 4: one random extra room picked WEEKLY from a safelist. The
+          # pool is YOUR vetted rooms, never /list; dormant until you set the
+          # secret. Dedupes against RECRUIT_CHANNELS automatically.
+          RECRUIT_RANDOM_POOL: "${{ secrets.RECRUIT_RANDOM_POOL }}"
           # Which half of a room this bot invites: feminine | other | all.
           # 'all' while only one bot recruits — otherwise ~90% of every
           # source room is unreachable and it reports 'nobody eligible'.
