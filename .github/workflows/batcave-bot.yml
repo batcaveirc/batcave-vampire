@@ -375,7 +375,9 @@ jobs:
           # Phase 4: owner's full recruit set. The secret still wins; this is
           # the fallback for when it is unset. These are rooms the owner is
           # also in — the bot is a guest, invites only, and never speaks.
-          RECRUIT_CHANNELS: ${{ secrets.RECRUIT_CHANNELS || '#allindiachat.com,#chatsansar,#chatindian,#chatfellas,#desilivechat.com,#friendschatroom.net,#pakindiachat.com,#Chat.org.in,#mixchat,#chatkaro' }}
+          # Double-quoted on purpose: without it YAML's parser trips on the '#'
+          # characters inside the Actions expression and refuses the workflow.
+          RECRUIT_CHANNELS: "${{ secrets.RECRUIT_CHANNELS || '#allindiachat.com,#chatsansar,#chatindian,#chatfellas,#desilivechat.com,#friendschatroom.net,#pakindiachat.com,#Chat.org.in,#mixchat,#chatkaro' }}"
           # Which half of a room this bot invites: feminine | other | all.
           # 'all' while only one bot recruits — otherwise ~90% of every
           # source room is unreachable and it reports 'nobody eligible'.
