@@ -302,6 +302,16 @@ class Recruiter {
         }
         this.enabled = this.channels.length > 0
             && /^(1|true|yes|on)$/i.test(process.env.RECRUIT_ON || 'on');
+        // Rooms we've been told to skip, by name. Owner knob so a bad room
+        // can be removed without rewriting the full RECRUIT_CHANNELS list.
+        this.excluded = new Set((process.env.RECRUIT_EXCLUDE_ROOMS || '')
+            .split(',').map((c) => c.trim().toLowerCase()).filter(Boolean));
+        // Rooms where our JOIN was refused with 474 (banned). We stop retrying
+        // for banBackoffMs instead of hammering every 5 minutes forever.
+        // chanLower -> {at ms, reason}
+        this.banned = new Map();
+        this.banBackoffMs = Math.max(60 * 60 * 1000,
+            Number(process.env.RECRUIT_BAN_BACKOFF_MS) || 24 * 60 * 60 * 1000);
         this.hints = DEFAULT_HINTS.concat(
             (process.env.FEMININE_HINTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean));
         this.target = (process.env.RECRUIT_TARGET || 'feminine').toLowerCase();
@@ -476,9 +486,10 @@ class Recruiter {
         const gapMs = Math.max(3000, opts.gapMs || ALL_GAP_MS);
         const cap = Math.max(1, opts.cap || ALL_CAP);
         // Snapshot everyone eligible right now (all genders), de-duped.
+        // usableChannels skips banned/excluded rooms so we don't waste a scan.
         const pending = [];
         const seen = new Set();
-        for (const chan of this.channels) {
+        for (const chan of this.usableChannels()) {
             for (const who of this.eligible(chan, { allTargets: true })) {
                 const k = who.toLowerCase();
                 if (seen.has(k)) continue;
@@ -513,14 +524,63 @@ class Recruiter {
     }
 
     /**
+     * Called by action-bot on 474 "Cannot join (banned)" numeric for a recruit
+     * room. Returns true if newly banned, false if already noted — so action-
+     * bot can emit a single owner notice without flooding.
+     */
+    markBanned(chan, reason = '474') {
+        const k = String(chan || '').toLowerCase();
+        if (!k) return false;
+        if (this.banned.has(k)) return false;
+        this.banned.set(k, { at: Date.now(), reason, chan });
+        return true;
+    }
+
+    isBanned(chan) {
+        const k = String(chan || '').toLowerCase();
+        const e = this.banned.get(k);
+        if (!e) return false;
+        if (Date.now() - e.at > this.banBackoffMs) {
+            this.banned.delete(k);
+            return false;
+        }
+        return true;
+    }
+
+    isExcluded(chan) {
+        return this.excluded.has(String(chan || '').toLowerCase());
+    }
+
+    /** Channels we should actually be joining / recruiting from right now.
+     * Skips rooms we're currently banned from AND rooms the owner excluded.
+     * Everywhere in the recruiter that iterates `this.channels` should iterate
+     * this instead; only explain() enumerates ALL channels so it can report
+     * banned/excluded status back to the owner. */
+    usableChannels() {
+        return this.channels.filter((c) => !this.isBanned(c) && !this.isExcluded(c));
+    }
+
+    /**
      * Why nothing happened. "Nobody eligible" is true and useless — it cannot
      * distinguish "I am not in that room", "I cannot see its member list",
      * "everyone there is an operator" and "no nickname matched". Each needs a
-     * different fix, so each gets counted.
+     * different fix, so each gets counted. Banned and excluded rooms get their
+     * own status line so the owner stops hunting for a non-existent fix.
      */
     explain() {
         const lines = [];
         for (const chan of this.channels) {
+            if (this.isExcluded(chan)) {
+                lines.push(`${chan}: EXCLUDED by RECRUIT_EXCLUDE_ROOMS — not recruiting from here.`);
+                continue;
+            }
+            if (this.isBanned(chan)) {
+                const e = this.banned.get(chan.toLowerCase());
+                const hoursLeft = Math.max(0, Math.round((this.banBackoffMs - (Date.now() - e.at)) / 3600000));
+                lines.push(`${chan}: BANNED (${e.reason}) — backoff ${hoursLeft}h left. `
+                    + `Lift with /mode ${chan} -b <mask> and the bot retries next sweep.`);
+                continue;
+            }
             const all = this.deps.membersOf(chan);
             if (!all.length) {
                 lines.push(`${chan}: NOT IN THE ROOM — cannot see anyone. `
@@ -573,7 +633,9 @@ class Recruiter {
      */
     inviteOne() {
         if (!this.enabled) return null;
-        const order = this.channels.slice().sort(() => Math.random() - 0.5);
+        // usableChannels() skips banned/excluded rooms, so we don't burn an
+        // iteration on a room we can't even enter.
+        const order = this.usableChannels().slice().sort(() => Math.random() - 0.5);
         for (const chan of order) {
             const who = this.eligible(chan);
             if (!who.length) continue;
@@ -612,7 +674,9 @@ class Recruiter {
 
     announce() {
         if (!this.enabled) return null;
-        const chan = pick(this.channels);
+        const usable = this.usableChannels();
+        if (!usable.length) return null;
+        const chan = pick(usable);
         this.bot.say(chan, '\x0304🦇\x03 The BatCave stirs at '
             + `\x02${this.deps.homeChannel}\x02 — the door is open, the night is long, `
             + 'and the company is strange. All welcome.');

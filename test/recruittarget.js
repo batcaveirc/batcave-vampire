@@ -134,5 +134,41 @@ console.log('\n— !!recruit all invites EVERY gender, but still never the unwel
     invited.length <= 10, `${invited.length} sent at once — should be <= one batch`);
 }
 
+console.log('\n— banned rooms (474) are skipped, exclusions too —');
+// The RecvQ dance isn't the only wasted traffic: if a room 474s us, the old
+// code retried JOIN every 5 min forever. Mark it, skip it, back off.
+{
+  delete require.cache[require.resolve(path)];
+  process.env.RECRUIT_TARGET = 'all';
+  process.env.RECRUIT_EXCLUDE_ROOMS = '#chatindian';
+  const { Recruiter } = require(path);
+  const r = new Recruiter({ send(){}, say(){}, nick:'D' },
+    { membersOf: () => room, prefixOf:()=>'', homeChannel:'#home' });
+  r.channels = ['#allindiachat.com', '#chatindian', '#banned_room'];
+  r.enabled = true;
+
+  c('channels starts with all three', r.channels.length === 3);
+  c('usableChannels drops the EXCLUDED one', !r.usableChannels().includes('#chatindian'));
+  c('usableChannels keeps non-excluded', r.usableChannels().includes('#allindiachat.com'));
+
+  r.markBanned('#banned_room', '474');
+  c('after markBanned, isBanned true', r.isBanned('#banned_room'));
+  c('usableChannels drops the BANNED one', !r.usableChannels().includes('#banned_room'));
+  c('markBanned returns false on 2nd call (dedupe)', !r.markBanned('#banned_room', '474'));
+
+  // explain() names the status
+  const expl = r.explain();
+  c('explain() reports the excluded room by name',
+    expl.some(l => l.includes('#chatindian') && /EXCLUDED/.test(l)), expl.join(' | '));
+  c('explain() reports the banned room with backoff hours',
+    expl.some(l => l.includes('#banned_room') && /BANNED/.test(l)), expl.join(' | '));
+
+  // The exclude set is lowercased so '#ChatIndian' is the same as '#chatindian'
+  c('exclude matching is case-insensitive', r.isExcluded('#ChatIndian'));
+
+  // delete to not leak into other tests
+  delete process.env.RECRUIT_EXCLUDE_ROOMS;
+}
+
 console.log(fails?`\n${fails} FAILED`:'\nALL PASS');
 process.exit(fails?1:0);

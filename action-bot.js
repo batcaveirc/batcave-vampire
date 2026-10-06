@@ -6652,7 +6652,10 @@ function handleLine(line) {
             // no-op at the server, and we only send it when we cannot see
             // ourselves in the member list.
             const joinRecruitRooms = () => {
-                for (const c of recruiter.channels) {
+                // usableChannels skips rooms we are banned from (474 noted)
+                // AND rooms the owner excluded via RECRUIT_EXCLUDE_ROOMS, so
+                // we stop retrying every 5 min on a known-dead door.
+                for (const c of recruiter.usableChannels()) {
                     const here = members.get(chanKey(c)) || new Set();
                     const inIt = [...here].some((m) => m.toLowerCase() === currentNick.toLowerCase());
                     if (!inIt) { send(`JOIN ${c}`); send(`NAMES ${c}`); }
@@ -6667,7 +6670,7 @@ function handleLine(line) {
             // observed and arrivals can be missed. NAMES is one round trip and
             // replaces the whole list, so the drift cannot accumulate.
             setInterval(() => {
-                for (const c of recruiter.channels) send(`NAMES ${c}`);
+                for (const c of recruiter.usableChannels()) send(`NAMES ${c}`);
             }, 600000);
             joinRecruitRooms();
             setInterval(joinRecruitRooms, 300000);   // every 5 minutes
@@ -6775,6 +6778,26 @@ function handleLine(line) {
     //
     // Once per channel per attempt, with a retry after. Asking in a loop when
     // ChanServ is going to refuse is a flood, not persistence.
+    // Recruit-channel ban: 474 "Cannot join (banned)" for a room in the
+    // recruiter's list. Mark it banned so joinRecruitRooms stops hammering
+    // every 5 min, and so !!recruit explain() reports it accurately. Once
+    // per entry — a flapping ban would otherwise spam the owner.
+    if (command === '474' && params[1] && !isOurChannel(params[1])
+            && recruiter && recruiter.channels.some((c) => chanKey(c) === chanKey(params[1]))) {
+        if (recruiter.markBanned(params[1], '474')) {
+            log('WARN', `${params[1]}: refused us (474) — recruit-room banned, backing off.`);
+            try {
+                const home = (config.channels[0] || '').toLowerCase();
+                const here = members.get(chanKey(home)) || new Set();
+                for (const n of here) {
+                    if (isOwner(n)) notice(n, `\x0304[RECRUIT BAN]\x03 ${params[1]} refused the bot (474). `
+                        + `Skipping — backoff ${Math.round(recruiter.banBackoffMs / 3600000)}h.`);
+                }
+            } catch (e) { /* owner-notice is best effort */ }
+        }
+        return;
+    }
+
     if (['473', '474', '475'].includes(command) && params[1] && isOurChannel(params[1])) {
         const chan = params[1];
         const key = chanKey(chan);
