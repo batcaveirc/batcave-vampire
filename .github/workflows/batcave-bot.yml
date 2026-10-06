@@ -180,6 +180,10 @@ jobs:
           # backstop keeps working). GITHUB_TOKEN cannot trigger new runs.
           # GITHUB_REPOSITORY is already set automatically by Actions.
           GH_PAT: ${{ secrets.GH_PAT }}
+          # Phase 2+3 teamwork. Channel the bots talk machine-to-machine in,
+          # plus the heartbeat interval. Default is fine for most rooms.
+          TRUST_CHANNEL: ${{ secrets.TRUST_CHANNEL || '#batcave-trust' }}
+          TRUST_HB_MS: ${{ secrets.TRUST_HB_MS || '180000' }}
           AI_MAX_PER_DAY: ${{ secrets.AI_MAX_PER_DAY || '600' }}
           AI_MAX_PER_MIN: ${{ secrets.AI_MAX_PER_MIN || '12' }}
           SENTIENT_ON: ${{ secrets.SENTIENT_ON || 'on' }}
@@ -368,7 +372,10 @@ jobs:
           # ── Recruiting ───────────────────────────────────────────────────
           # Channels the OWNER runs, that Dracula may invite from. Empty = the
           # whole feature is off. Only list rooms you hold ops in.
-          RECRUIT_CHANNELS: ${{ secrets.RECRUIT_CHANNELS }}
+          # Phase 4: owner's full recruit set. The secret still wins; this is
+          # the fallback for when it is unset. These are rooms the owner is
+          # also in — the bot is a guest, invites only, and never speaks.
+          RECRUIT_CHANNELS: ${{ secrets.RECRUIT_CHANNELS || '#allindiachat.com,#chatsansar,#chatindian,#chatfellas,#desilivechat.com,#friendschatroom.net,#pakindiachat.com,#Chat.org.in,#mixchat,#chatkaro' }}
           # Which half of a room this bot invites: feminine | other | all.
           # 'all' while only one bot recruits — otherwise ~90% of every
           # source room is unreachable and it reports 'nobody eligible'.

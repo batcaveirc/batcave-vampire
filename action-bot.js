@@ -2925,6 +2925,97 @@ function rememberSaid2(chan, nick, msg) {
     recentSaid.set(ch, log2);
 }
 
+// ── Phase 2+3: per-user memory of #batcave + trust-channel teamwork ────────
+// Each bot keeps its own view: last MEMORY_MAX lines per user, dropped after
+// MEMORY_TTL, filtered to notable (long-enough, non-command) lines. Fed into
+// the AI prompt so a reply can reference what the user said days ago in the
+// SAME room. #batcave only — not cross-room, by design.
+const TRUST_CHANNEL = String(process.env.TRUST_CHANNEL || '#batcave-trust').trim();
+const TRUST_HB_MS = Math.max(60000, Number(process.env.TRUST_HB_MS) || 180000);
+const PARTNER_SILENT_MS = Math.max(TRUST_HB_MS * 2, 6 * 60 * 1000);
+const MEMORY_MAX_PER_USER = Math.max(3, Number(process.env.MEMORY_MAX_PER_USER) || 10);
+const MEMORY_TTL_MS = Math.max(3600 * 1000, Number(process.env.MEMORY_TTL_MS) || 7 * 24 * 60 * 60 * 1000);
+const MEMORY_MIN_LEN = Math.max(5, Number(process.env.MEMORY_MIN_LEN) || 15);
+const userMemory = new Map();          // nick(lower) -> [{t, text}]
+let partnerLastSeen = 0;
+let trustHbTimer = null;
+
+function rememberLine(nick, text) {
+    const n = String(nick).toLowerCase();
+    if (!n) return;
+    if (n === String(currentNick || '').toLowerCase()) return;   // never remember ourselves
+    if (isOneOfOurs && isOneOfOurs(nick)) return;                 // never remember other bots
+    const t = String(text || '').trim();
+    if (t.length < MEMORY_MIN_LEN) return;
+    // Skip commands and URL-only lines — they are not personal "about them".
+    if (/^(!!|\$|\.)[a-z]/i.test(t)) return;
+    if (/^https?:\/\/\S+$/.test(t)) return;
+    const arr = userMemory.get(n) || [];
+    arr.push({ t: Date.now(), text: t.slice(0, 200) });
+    while (arr.length > MEMORY_MAX_PER_USER) arr.shift();
+    userMemory.set(n, arr);
+}
+
+function memoryForPrompt(nick) {
+    const n = String(nick).toLowerCase();
+    const arr = userMemory.get(n) || [];
+    const now = Date.now();
+    const fresh = arr.filter((e) => now - e.t <= MEMORY_TTL_MS);
+    if (fresh.length !== arr.length) {
+        if (fresh.length) userMemory.set(n, fresh);
+        else userMemory.delete(n);
+    }
+    // Drop the very last line (the one we are responding to) — the model
+    // already sees it as the user turn; a memory listing is for OLDER context.
+    const older = fresh.slice(0, -1).slice(-6);
+    if (!older.length) return '';
+    const lines = older.map((e) => {
+        const mins = Math.max(0, Math.floor((now - e.t) / 60000));
+        const ago = mins < 60 ? `${mins}m` : mins < 1440 ? `${Math.floor(mins / 60)}h` : `${Math.floor(mins / 1440)}d`;
+        return `  - [${ago} ago] ${e.text}`;
+    });
+    return `\nWhat ${nick} has recently said in #batcave (you remember):\n${lines.join('\n')}`;
+}
+
+// Inter-bot comms over #batcave-trust. Lines prefixed "::" are machine
+// messages, parsed by this handler; everything else is a human in the trust
+// channel and is ignored on purpose (the channel is for people, too).
+function trustSend(verb, data) {
+    if (!TRUST_CHANNEL) return;
+    try { send(`PRIVMSG ${TRUST_CHANNEL} :::${verb} ${JSON.stringify(data)}`); } catch (e) { /* best-effort */ }
+}
+
+function handleTrustLine(from, text) {
+    const line = String(text || '');
+    if (!line.startsWith('::')) return;                 // human chatter — ignore
+    const m = line.match(/^::(\w+)\s*(.*)$/);
+    if (!m) return;
+    const verb = m[1];
+    let data = {};
+    try { data = JSON.parse(m[2] || '{}'); } catch (e) { return; }
+    if (verb === 'hb') {
+        // Self-echo: our own hb comes back; ignore it.
+        if (String(data.n || '').toLowerCase() === String(currentNick || '').toLowerCase()) return;
+        partnerLastSeen = Date.now();
+    }
+    // Reserved verbs for later cross-sync phases: ::saw ::act ::mem
+}
+
+function partnerIsSilent() {
+    return partnerLastSeen > 0 && Date.now() - partnerLastSeen > PARTNER_SILENT_MS;
+}
+
+function startTrustTeamwork() {
+    if (trustHbTimer) return;
+    if (!TRUST_CHANNEL) return;
+    try { send(`JOIN ${TRUST_CHANNEL}`); } catch (e) { /* noop */ }
+    const beat = () => {
+        try { trustSend('hb', { n: currentNick, t: Date.now() }); } catch (e) { /* noop */ }
+    };
+    setTimeout(beat, 15000);                      // first heartbeat 15s after start
+    trustHbTimer = setInterval(beat, TRUST_HB_MS);
+}
+
 const shazamUsed = new Map();          // nick(lower) -> when
 const shazamTried = new Map();         // nick(lower) -> refused attempts
 function shazam(chan, nick) {
@@ -4205,6 +4296,12 @@ async function getAIResponse(prompt, who, chan) {
     if (seen) {
         messages.push({ role: 'system', content: `Recent lines in the room:\n${seen}` });
     }
+    // Phase 3: inject what this speaker has said in #batcave recently, so the
+    // bot can reference it ("how's that injury?") — same-room-only, by design.
+    try {
+        const mem = memoryForPrompt(who);
+        if (mem) messages.push({ role: 'system', content: mem });
+    } catch (e) { /* memory must never block an answer */ }
     // Drop our OWN name if the line opens by addressing us ("DarkCloud: wlcm"),
     // so the model answers the SPEAKER, not itself. Live bug: Lucifer typed
     // "DarkCloud: wlcm" and Dracula replied "Shukriya, DarkCloud" — it thanked
@@ -6353,6 +6450,10 @@ function handleLine(line) {
             // times out on our own traffic. It reported "ChanServ is not
             // answering" when ChanServ was answering fine.
             setTimeout(() => verifyServices(), 20000);
+            // Phase 2: teamwork channel. Join after the burst has cleared so
+            // the heartbeat does not fight for pacer budget with the opening
+            // moves. 25s is comfortably past the voice sweep.
+            setTimeout(() => { try { startTrustTeamwork(); } catch (e) { log('ERR', `trust: ${e.message}`); } }, 25000);
             // Re-sweep periodically. A single missed JOIN used to mean somebody
             // sat voiceless indefinitely; now the worst case is a couple of
             // minutes. Cheap: the prefix check makes it a no-op for anyone who
@@ -7261,6 +7362,16 @@ function handleLine(line) {
         return;
     }
 
+    // Trust-channel inter-bot comms. Handled BEFORE isOurChannel() so it never
+    // enters moderation/reputation/game paths; the trust channel is for bots and
+    // for human admins managing flags, nothing more.
+    if (command === 'PRIVMSG' && nick && TRUST_CHANNEL
+            && String(tgt || '').toLowerCase() === TRUST_CHANNEL.toLowerCase()) {
+        if (isReplay(tags)) return;                      // +H replay — ignore
+        handleTrustLine(nick, msg);
+        return;
+    }
+
     if (command === 'PRIVMSG' && isOurChannel(tgt) && nick) {
         if (isReplay(tags)) return;                       // +H backlog, not live
         seenUsers[nick.toLowerCase()] = Date.now();
@@ -7277,6 +7388,12 @@ function handleLine(line) {
         // current timestamp, shazam would remove somebody for a line they
         // typed on Saturday.
         rememberSaid2(tgt, nick, msg);
+        // Phase 3: per-user memory, used in AI replies so "how's that injury?"
+        // can be answered from what they said days ago in THIS room. Only
+        // #batcave; recruit rooms are not scanned for memory on purpose.
+        if (chanKey(tgt) === chanKey(config.channels[0] || '#batcave')) {
+            try { rememberLine(nick, msg); } catch (e) { /* never break the chat path */ }
+        }
         if (ignored.has(nick.toLowerCase())) return;          // !!ignore
 
         if (msg.startsWith('!!')) { handleCommand(tgt, nick, msg); return; }
