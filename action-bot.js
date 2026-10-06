@@ -3113,6 +3113,7 @@ function startTrustTeamwork() {
     };
     setTimeout(beat, 15000);                      // first heartbeat 15s after start
     trustHbTimer = setInterval(beat, TRUST_HB_MS);
+    trustHbTimer.unref?.();                       // never hold shutdown open
     // Memory GC: hourly. Idempotent; .unref so a stuck timer never holds
     // the process from exiting.
     if (!memoryGcTimer) {
@@ -7660,6 +7661,26 @@ async function shutdown(sig) {
 }
 process.on('SIGTERM', () => { shutdown('SIGTERM'); });
 process.on('SIGINT', () => { shutdown('SIGINT'); });
+
+// --- Protective shield: never let a single bad path crash the whole bot ----
+//
+// Several newly-added code paths (dispatchSuccessor, trust channel I/O, memory
+// prune, inter-bot ::saw merge) use .then() without .catch(). An unhandled
+// rejection OR an uncaught sync throw in those paths would crash the Node
+// process, which is a worse outcome than any single feature misbehaving. We
+// log loudly so the owner can see it in Actions logs, and keep running.
+// Exception: an OOM or similar truly-fatal error will still exit — that is
+// correct behaviour.
+process.on('unhandledRejection', (reason, promise) => {
+    const msg = reason && (reason.stack || reason.message || String(reason));
+    log('ERR', `★ unhandledRejection — ${String(msg).slice(0, 500)}`);
+});
+process.on('uncaughtException', (err) => {
+    const msg = err && (err.stack || err.message || String(err));
+    log('ERR', `★ uncaughtException — ${String(msg).slice(0, 500)}`);
+    // Keep running: an outbound write that threw mid-flight does NOT justify
+    // killing the whole bot in front of the room.
+});
 
 // --- Start + health watchdog ---
 // Checking socket.writable is NOT enough. A half-open TCP connection (NAT

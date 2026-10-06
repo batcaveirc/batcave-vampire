@@ -66,6 +66,17 @@ c('self-restart dispatcher is wired to shutdown()',
   /await dispatchSuccessor\(sig\)/.test(src));
 c('self-restart dispatcher is wired to the blocked-IP exit path',
   /await dispatchSuccessor\(.blocked-IP.\)/.test(src));
+// Protective shield: these are the lines that stand between "a bad path
+// throws" and "the whole bot crashes". They were absent before 2026-10-06.
+c('unhandledRejection handler is registered',
+  /process\.on\(['"]unhandledRejection['"]/.test(src));
+c('uncaughtException handler is registered',
+  /process\.on\(['"]uncaughtException['"]/.test(src));
+c('neither handler calls process.exit (keeps the bot running)',
+  !/unhandledRejection[\s\S]{0,400}process\.exit/.test(src)
+  && !/uncaughtException[\s\S]{0,400}process\.exit/.test(src));
+c('trust heartbeat timer is .unref()\'d (so shutdown is not blocked)',
+  /trustHbTimer\.unref/.test(src));
 
 // Pure-function tests: hoist the helpers out of the module source into an
 // isolated sandbox. We only need the constants and the functions themselves
