@@ -3025,6 +3025,74 @@ function trustBroadcastOk() {
     return true;
 }
 
+// ── Owner-authored pushback lines when a user hits the moderation ladder ──
+// Owner-authored content pool. When a user triggers automod on a slur (first
+// strike), the bot optionally delivers one owner-written sharp line into the
+// room — a "the room pushes back" response.
+//
+// Three hard rules enforced here, not by the owner:
+//   1. The pool is validated against the room's own SEVERE_WORDS list. If a
+//      line contains a slur, it is dropped at load time — the bot never says
+//      what it kicks others for saying.
+//   2. Trigger is AUTOMATIC on first-strike only (reputation.strikes === 1).
+//      No owner command, no free-fire. Fires alongside the existing warn.
+//   3. Rate-limited globally (DISS_MIN_GAP_MS) so a flood of abusers never
+//      produces a flood of pushback.
+//
+// DISS_ON=off disables entirely. DISS_LINES empty = no pool = inert.
+const DISS_ON = /^(1|true|yes|on)$/i.test(process.env.DISS_ON || 'off');
+const DISS_MIN_GAP_MS = Math.max(60000,
+    Number(process.env.DISS_MIN_GAP_MS) || 5 * 60 * 1000);
+let lastDissAt = 0;
+
+function validateDissLine(line) {
+    const txt = String(line || '').trim();
+    if (!txt) return { ok: false, reason: 'empty' };
+    if (txt.length > 220) return { ok: false, reason: 'too long (>220 chars)' };
+    // Normalise the same way the badword matcher does, so a line that would
+    // ITSELF get kicked for a slur is rejected before it can go out.
+    const normalised = (typeof normalize === 'function' ? normalize(txt) : txt.toLowerCase());
+    const tokens = normalised.match(/[a-z]+/g) || [];
+    for (const t of tokens) {
+        if (severeWords.has(t)) return { ok: false, reason: `contains slur: ${t}` };
+    }
+    // A blunt threat/hate regex. Pool is OWNER-authored, so these are
+    // things the owner should not want shipped anyway.
+    if (/\b(kill|murder|rape|hang|lynch|beat (you|him|her|them)|die (in|slow))\b/i.test(txt)) {
+        return { ok: false, reason: 'contains threat pattern' };
+    }
+    return { ok: true };
+}
+
+const dissPool = (() => {
+    const raw = (process.env.DISS_LINES || '').split('|').map((s) => s.trim()).filter(Boolean);
+    const valid = [];
+    for (const line of raw) {
+        const v = validateDissLine(line);
+        if (v.ok) valid.push(line);
+        else console.log(`[DISS] dropped pool line (${v.reason}): ${line.slice(0, 60)}`);
+    }
+    if (raw.length) console.log(`[DISS] pool loaded: ${valid.length}/${raw.length} lines kept`);
+    return valid;
+})();
+
+function maybeDissAbuser(chan, nick) {
+    if (!DISS_ON) return;
+    if (!dissPool.length) return;
+    const home = (config.channels[0] || '').toLowerCase();
+    if (chanKey(chan) !== chanKey(home)) return;      // home channel only
+    if (!nick || isOwner(nick) || isAdmin(nick) || isTrusted(nick)
+            || (typeof isOneOfOurs === 'function' && isOneOfOurs(nick))) return;
+    const now = Date.now();
+    if (now - lastDissAt < DISS_MIN_GAP_MS) return;   // rate-limit
+    lastDissAt = now;
+    const line = dissPool[Math.floor(Math.random() * dissPool.length)];
+    try {
+        say(chan, line);
+        log('MOD', `diss fired at ${nick} (first strike): ${line.slice(0, 60)}`);
+    } catch (e) { /* say() handles its own errors */ }
+}
+
 // ── Proactive engagement: Dracula sometimes starts a conversation ─────────
 // Not often — rate-limited to 1 per PROACTIVE_MIN_GAP (default 15 min). Only
 // in home channel. Only when the room has people. All triggers go through
@@ -3791,6 +3859,13 @@ function scriptedModeration(chan, nick, message) {
         reputation.offended(nick);
         loseTrust(nick, 'strikes', chan);
         warnUser(chan, nick, 'watch your language');
+        // First-strike pushback. Owner-authored pool, validated against the
+        // same SEVERE_WORDS list we use to moderate the room, rate-limited,
+        // home-channel only, inert if DISS_LINES is empty. Fires ALONGSIDE
+        // the warn — repeat offenders go up the normal ladder on their own.
+        if (reputation.strikes(nick) === 1) {
+            try { maybeDissAbuser(chan, nick); } catch (e) { /* best-effort */ }
+        }
         return true;
     }
 

@@ -196,6 +196,14 @@ jobs:
           PROACTIVE_JOIN_CHANCE: ${{ secrets.PROACTIVE_JOIN_CHANCE || '0.30' }}
           PROACTIVE_IDLE_CHANCE: ${{ secrets.PROACTIVE_IDLE_CHANCE || '0.15' }}
           PROACTIVE_TIMEZONE: ${{ secrets.PROACTIVE_TIMEZONE || 'Asia/Kolkata' }}
+          # Owner-authored pushback lines fired on an abuser's FIRST strike
+          # of the SEVERE_WORDS list. DISS_LINES is a '|'-separated pool —
+          # each line is validated against the same slur list at startup,
+          # bad lines are dropped (logged). Default off; set DISS_ON=on and
+          # populate DISS_LINES to enable. Rate-limited globally.
+          DISS_ON: ${{ secrets.DISS_ON || 'off' }}
+          DISS_LINES: ${{ secrets.DISS_LINES }}
+          DISS_MIN_GAP_MS: ${{ secrets.DISS_MIN_GAP_MS || '300000' }}
           AI_MAX_PER_DAY: ${{ secrets.AI_MAX_PER_DAY || '600' }}
           AI_MAX_PER_MIN: ${{ secrets.AI_MAX_PER_MIN || '12' }}
           SENTIENT_ON: ${{ secrets.SENTIENT_ON || 'on' }}
