@@ -355,6 +355,11 @@ jobs:
           # is kicked — in all of those the useful thing is to be findable under
           # the name the room knows.
           NICK_ROTATE: ${{ secrets.NICK_ROTATE || '' }}
+          # Connect-time nick variation: each run starts under a random pool
+          # name instead of IRC_NICK; the 5-min first rotation is also
+          # skipped. In recruit rooms this reads as a different bot joining
+          # each run, NOT a visible "X is now known as Y" rename.
+          NICK_PICK_AT_CONNECT: ${{ secrets.NICK_PICK_AT_CONNECT || 'off' }}
           NICK_POOL: ${{ secrets.NICK_POOL || '' }}
           NICK_ROTATE_MIN: ${{ secrets.NICK_ROTATE_MIN || '240' }}
           NICK_MAX_PER_HOUR: ${{ secrets.NICK_MAX_PER_HOUR || '1' }}

@@ -809,6 +809,29 @@ const DEFAULT_NAMES = [
 ];
 const NICK_POOL = listRaw(process.env.NICK_POOL);
 const nameBank = () => (NICK_POOL.length ? NICK_POOL : DEFAULT_NAMES);
+
+// Connect-time nick variation. When on, each new RUN starts under a random
+// pool name instead of IRC_NICK, and the 5-min-after-connect first rotation
+// is skipped (we are already on a varied name). This is the honest answer
+// to "I don't want the room seeing mid-run renames": the recruit rooms see
+// a different nick JOIN each run, not a visible "X is now known as Y" line
+// — no deception, just honest per-run variation. The owner can still see
+// which run is which via Actions logs; everyone else sees different bots
+// at different times.
+const NICK_PICK_AT_CONNECT = /^(1|true|yes|on)$/i.test(
+    process.env.NICK_PICK_AT_CONNECT || 'off');
+if (NICK_PICK_AT_CONNECT && NICK_ROTATE && nameBank().length > 1) {
+    const pool = nameBank();
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    // Reassign config.nick + currentNick now, BEFORE connect, so the first
+    // NICK the server sees is already the varied one. There is no visible
+    // rename later unless mid-run rotation is also on (which is still an
+    // owner choice via NICK_ROTATE_MIN).
+    console.log(`[INFO] Connect-time nick variation: starting as "${pick}" instead of "${config.nick}"`);
+    config.nick = pick;
+    currentNick = pick;
+    wantedNick = pick;
+}
 // Longest nick the network will take. InspIRCd's default is 30; going over it
 // gets the NICK rejected, which would look exactly like the name being taken.
 const NICK_MAXLEN = Math.max(9, parseInt(process.env.NICK_MAXLEN || '30', 10));
@@ -6440,7 +6463,11 @@ function startNickRotation() {
     // interval the bot sat on its base nick for 4h — and since the run often
     // restarts before then, it looked like it never rotated at all. Change off
     // the base early, then keep the ~4h cadence.
-    setTimeout(rotateNick, 5 * 60000);
+    //
+    // SKIP the 5-min first rotation when NICK_PICK_AT_CONNECT is on — the
+    // bot already connected under a varied pool name, so another rename at
+    // 5 min is exactly the visible mid-run change the owner wanted to avoid.
+    if (!NICK_PICK_AT_CONNECT) setTimeout(rotateNick, 5 * 60000);
     setInterval(rotateNick, NICK_EVERY_MS);
 }
 
