@@ -8044,7 +8044,16 @@ setInterval(() => {
     if (down > DOWN_TOO_LONG_MS) {
         log('ERR', `No working connection for ${Math.round(down / 60000)}m. Exiting so the `
             + 'queued run takes the slot instead of waiting behind a bot that is not there.');
-        process.exit(1);
+        // Hand off BEFORE exit so GitHub's throttled cron doesn't leave the
+        // room bot-less for hours (observed live 2026-10-07: this exact
+        // branch fired and nothing restarted for 4+ hours). GH_PAT must be
+        // set for the dispatch to actually create a new run — otherwise this
+        // just no-ops and we fall back to the cron.
+        (async () => {
+            try { await dispatchSuccessor('no-connection-12m'); } catch (e) { /* best-effort */ }
+            process.exit(1);
+        })();
+        return;
     }
 }, 30000);
 
@@ -8052,7 +8061,11 @@ setTimeout(() => {
     if (!everRegistered) {
         log('ERR', 'Five minutes without ever registering. Exiting so the queued '
             + 'run can take the slot rather than waiting six hours behind a dead one.');
-        process.exit(1);
+        (async () => {
+            try { await dispatchSuccessor('no-registration-5m'); } catch (e) { /* best-effort */ }
+            process.exit(1);
+        })();
+        return;
     }
 }, 5 * 60000);
 
