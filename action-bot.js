@@ -3011,18 +3011,11 @@ function rememberLine(nick, text, meta) {
     while (arr.length > MEMORY_MAX_PER_USER) arr.shift();
     userMemory.set(n, arr);
 
-    // Share with the partner — but ONLY for the home channel. In busy recruit
-    // rooms, broadcasting every notable line to #batcave-trust amplifies 10
-    // rooms' chat traffic onto one channel, which blows the send pacer and
-    // the SERVER flood-kills us with "RecvQ exceeded" (the live incident on
-    // 2026-10-06 right after the initial ::saw ship). Home-channel sync is
-    // where it matters anyway: that is the one room BOTH bots are in and talk
-    // to the user from. Recruit-room memory stays local, which is fine — this
-    // bot captures it itself and recalls it when the user later walks into
-    // #batcave. Also rate-limited as a safety net.
-    if (source !== 'remote' && isHomeChannelRoom(room) && trustBroadcastOk()) {
-        trustSend('saw', { n, m: txt.slice(0, 200), r: room || '#batcave', t: t || now });
-    }
+    // Dracula does NOT broadcast ::saw from any room. Both bots are in
+    // #batcave, so home-channel captures reach Luna directly — the ::saw
+    // was pure noise on #batcave-trust (owner-set shrink 2026-10-07).
+    // Dracula ONLY RECEIVES ::saw (from Luna's shadow rooms, where Dracula
+    // can't be present); that's handled in handleTrustLine, not here.
 }
 
 // Home-channel membership check. config.channels is the comma-split list from
@@ -7808,8 +7801,13 @@ function handleLine(line) {
         seenUsers[nick.toLowerCase()] = Date.now();
         // Standing follows behaviour. Counting happens for everyone; the
         // promotion check only does anything once they are past the bar.
+        // askRegistration + gainTrust touch state the room sees (ChanServ
+        // FLAGS + a user NOTICE), so they ONLY fire for home channels —
+        // !!join'd rooms are silent observers and must not be the lever that
+        // promotes a stranger into the home's trust list.
         reputation.spoke(nick);
-        if (reputation.messages(nick) >= Number(process.env.TRUST_EARN_MESSAGES || 40)) {
+        if (homeChannels.has(chanKey(tgt))
+                && reputation.messages(nick) >= Number(process.env.TRUST_EARN_MESSAGES || 40)) {
             askRegistration(nick);
             gainTrust(nick, tgt);
         }
@@ -7827,7 +7825,27 @@ function handleLine(line) {
         try { rememberLine(nick, msg, { room: tgt }); } catch (e) { /* never break the chat path */ }
         if (ignored.has(nick.toLowerCase())) return;          // !!ignore
 
-        if (msg.startsWith('!!')) { handleCommand(tgt, nick, msg); return; }
+        // Owner-set 2026-10-07: !!join'd rooms are watchers, not speakers.
+        // The bot sits there to track membership + capture memory + run OWNER
+        // commands, but it does NOT auto-speak (no AI reply, no fun, no mod,
+        // no feud mediation, no answerWhoIs). The original IRC_CHANNEL rooms
+        // (homeChannels) are the only places those automated speech paths
+        // fire. Prevents the "bot joins and immediately starts typing" that
+        // the owner called out.
+        const isSpeakerHere = homeChannels.has(chanKey(tgt));
+
+        if (msg.startsWith('!!')) {
+            // In home: anyone can type a command (per-command admin gate inside).
+            // In a !!join'd room: only the OWNER's commands run; everyone else
+            // is ignored. Keeps a non-home room from being used as a lever to
+            // make the bot speak.
+            if (isSpeakerHere || isOwner(nick)) handleCommand(tgt, nick, msg);
+            return;
+        }
+
+        // Everything below is autonomous speech / moderation. In a !!join'd
+        // room the bot is a silent observer, so we return here.
+        if (!isSpeakerHere) return;
         // A bare-number guess in the games room, consumed before the chat
         // ladder so a guess is not screened as if it were conversation.
         if (games.onMessage(nick, tgt, msg)) return;

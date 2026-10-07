@@ -300,24 +300,22 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     c('recall does NOT reveal the room — model gets content only',
       !prompt.includes('#chatindian') && !prompt.includes('#batcave'), prompt);
 
-    console.log('\n— home-channel capture DOES broadcast ::saw —');
+    console.log('\n— Dracula no longer broadcasts ::saw from any room (owner shrink 2026-10-07) —');
+    // Owner shrink: Dracula and Luna are both in #batcave, so home-channel
+    // ::saw was redundant noise on #batcave-trust. Dracula is never in
+    // shadow rooms (that is Luna's job), so Dracula now broadcasts ::saw
+    // from nowhere. It RECEIVES ::saw (from Luna's shadow rooms); that is
+    // the one path that keeps the trust channel useful.
     api.state.userMemory.clear();
     api.state.sent.length = 0;
     api.rememberLine('priya', 'the dinner was delicious tonight', { room: '#batcave' });
-    const sawFromHome = api.state.sent.filter((l) => l.includes('::saw '));
-    c('home-channel ::saw IS broadcast', sawFromHome.length === 1,
-      api.state.sent.join('\n'));
-
-    console.log('\n— rate-limit: >20 ::saw in 60s drops the excess —');
-    api.state.userMemory.clear();
-    api.state.sent.length = 0;
-    api.state.sawRecently.clear();                       // let fresh lines through dedupe
-    api.state.getBroadcastHistory().length = 0;          // start the token bucket from empty
-    for (let i = 0; i < 30; i++) {
-        api.rememberLine('speaker' + i, 'line number ' + i + ' with enough chars', { room: '#batcave' });
-    }
-    const sawBroadcasts = api.state.sent.filter((l) => l.includes('::saw ')).length;
-    c('at most 20 ::saw broadcasts in a burst', sawBroadcasts === 20, 'broadcast ' + sawBroadcasts);
+    let sawFromHome = api.state.sent.filter((l) => l.includes('::saw '));
+    c('home-channel capture does NOT broadcast ::saw (redundant with direct visibility)',
+      sawFromHome.length === 0, api.state.sent.join('\n'));
+    // The trustBroadcastOk() helper stays in the code as a safety net in
+    // case a future feature re-enables broadcasts. Confirm it still exists.
+    c('trustBroadcastOk() rate-limiter still defined (safety net for future verbs)',
+      typeof api.trustBroadcastOk === 'function');
 
     console.log(fails ? ('\n' + fails + ' FAILED') : '\nALL PASS');
     process.exit(fails ? 1 : 0);
