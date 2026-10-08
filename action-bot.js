@@ -223,7 +223,13 @@ let findState = null;              // an in-flight !!find <host>, collecting WHO
 const lastYt = new Map();          // chanKey -> last !!yt ms (light anti-spam)
 function rememberHost(nick, userHost) {
     if (!nick || !userHost) return;
-    const host = String(userHost).split('@').pop();
+    // Lower-case the host at storage so !!find (which lower-cases its query)
+    // can match. IRC servers emit hostnames with mixed case — HybridIRC
+    // specifically ends every cloaked address in ".IP" (uppercase). Without
+    // this, `!!find lu5.qq5.149.45.IP` and `!!find lu5.qq5.149.45.ip` both
+    // missed `jiya18f` even though the bot had seen them speak 11 min
+    // earlier (owner caught this live 2026-10-07).
+    const host = String(userHost).split('@').pop().toLowerCase();
     if (!host) return;
     watch.rememberHost(nick, host);
     const set = nicksOnHost.get(host) || new Set();
