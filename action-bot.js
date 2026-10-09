@@ -113,8 +113,13 @@ const config = {
     // Second fallback: OpenRouter — one key for a shelf of free models, dormant
     // until a key is set. (GitHub Models was wired here too, but GitHub RETIRED
     // the entire Models service on 2026-07-30, so it is no longer an option.)
-    openrouterKey: process.env.OPENROUTER_API_KEY || '',
-    openrouterModel: process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free',
+    // Pollinations.ai: OpenAI-compatible, keyless or free pk_ key. Replaces
+    // the retired OpenRouter path (2026-10-08). Keyless works for low volume;
+    // a POLLINATIONS_API_KEY raises the 1-req-per-IP-per-hour cap.
+    pollinationsKey: process.env.POLLINATIONS_API_KEY || '',
+    pollinationsModel: process.env.POLLINATIONS_MODEL || 'openai',
+    pollinationsImageModel: process.env.POLLINATIONS_IMAGE_MODEL || 'flux',
+    pollinationsVoice: process.env.POLLINATIONS_VOICE || 'alloy',
     linkFilter: onOff(process.env.LINK_FILTER),
     warnLimit: parseInt(process.env.WARN_LIMIT || '3', 10),            // whitelisted
     warnLimitRegistered: parseInt(process.env.WARN_LIMIT_REGISTERED || '1', 10),
@@ -3159,7 +3164,7 @@ const proactiveReferenced = new Map();  // nick(lower) -> last-callback ms (1h c
 function proactiveBudgetOk() {
     if (!PROACTIVE_ON) return false;
     if (Date.now() - lastProactiveAt < PROACTIVE_MIN_GAP_MS) return false;
-    if (!config.groqKey && !config.geminiKey && !config.openrouterKey) return false;
+    if (!config.groqKey && !config.geminiKey && !config.pollinationsKey) return false;
     // Leave headroom for moderation + reactive chat.
     if (typeof aiBudgetNum === 'function' && aiBudgetNum() <= 30) return false;
     return true;
@@ -4043,8 +4048,14 @@ function needsRoomToThink(model) { return /gpt-oss|qwen3|reason/i.test(model || 
 // nothing" were both true at once.
 const REASONING_EFFORT = process.env.GROQ_REASONING_EFFORT || 'low';
 
-async function groqChat(body) {
+// --- Random-rotation AI dispatcher (owner request 2026-10-08) --------------
+// Previously a strict Groq -> Gemini -> OpenRouter fallback chain. Now each
+// call picks a RANDOM order through the configured providers so quota is
+// spread rather than drained. The function name stays groqChat() because
+// dozens of call sites use it; the behaviour inside is now provider-agnostic.
+async function _groqCall(body) {
     const keys = [config.groqKey, config.groqKey2].filter(Boolean);
+    if (!keys.length) throw new Error('groq not configured');
     const models = [...new Set([body.model || config.groqModel, config.groqModelFallback])];
     let lastErr = null;
     for (const model of models) {
@@ -4062,82 +4073,83 @@ async function groqChat(body) {
                         ...(needsRoomToThink(model) ? { reasoning_effort: REASONING_EFFORT } : {}),
                     }),
                 });
-                // Both mean "try the other key", but they are NOT the same
-                // problem and reporting them identically sent the owner hunting
-                // for a bad key when the account had simply run out of quota.
-                //
-                // Worth knowing when the alert fires: Groq meters per ACCOUNT,
-                // not per key. A second key from the same account shares the
-                // same allowance, so two keys 429-ing together is the expected
-                // shape of "the daily limit is gone", not two broken keys.
                 if (res.status === 401 || res.status === 403) {
-                    lastErr = new Error(`key rejected (${res.status}) — bad or revoked key`);
+                    lastErr = new Error(`groq key rejected (${res.status})`);
                     if (keys.length > 1) continue;
                 }
                 if (res.status === 429) {
-                    lastErr = new Error('rate limited (429) — account quota, not a bad key');
+                    lastErr = new Error('groq rate limited (429) — account quota');
                     if (keys.length > 1) continue;
                 }
-                // 400/404 usually means the model is gone or renamed → next model
                 if (res.status === 400 || res.status === 404) {
-                    lastErr = new Error(`model "${model}" rejected (${res.status})`);
-                    log('AI', `Model "${model}" refused (${res.status}) — trying the fallback.`);
+                    lastErr = new Error(`groq model "${model}" rejected (${res.status})`);
                     break;
                 }
-                if (!res.ok) { lastErr = new Error(`HTTP ${res.status}`); continue; }
-                if (model !== models[0]) log('AI', `Serving from fallback model "${model}".`);
+                if (!res.ok) { lastErr = new Error(`groq HTTP ${res.status}`); continue; }
                 return await res.json();
             } catch (e) { lastErr = e; }
         }
     }
-    // Groq is spent or broken. Try the other meter before giving up: a 429 here
-    // means the ACCOUNT's day is gone, and no amount of retrying Groq fixes that.
-    if (config.geminiKey) {
-        try {
-            const out = await geminiChat(body, config.geminiKey, config.geminiModel);
-            if (out) {
-                if (!geminiNoted) { geminiNoted = true; log('AI', `Groq unavailable (${lastErr && lastErr.message}) — serving from Gemini.`); }
-                return out;
-            }
-        } catch (e) { lastErr = e; }
-    }
-    // Third tank: OpenRouter. One key, a shelf of free models — tried only after
-    // the first two are exhausted, so it costs nothing until it is needed.
-    if (config.openrouterKey) {
-        try {
-            const out = await openrouterChat(body);
-            if (out) {
-                if (!orNoted) { orNoted = true; log('AI', `Groq+Gemini unavailable (${lastErr && lastErr.message}) — serving from OpenRouter.`); }
-                return out;
-            }
-        } catch (e) { lastErr = e; }
-    }
     if (lastErr) throw lastErr;
-    return null;
+    throw new Error('groq silent');
 }
 
-// OpenRouter speaks the OpenAI schema exactly, so unlike Gemini it needs no
-// translation — the same body goes out and the same {choices:[{message}]} comes
-// back. The two extra headers are how OpenRouter attributes traffic; optional,
-// and they carry no secret.
-async function openrouterChat(body) {
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+async function _geminiCall(body) {
+    if (!config.geminiKey) throw new Error('gemini not configured');
+    const out = await geminiChat(body, config.geminiKey, config.geminiModel);
+    if (!out) throw new Error('gemini silent');
+    return out;
+}
+
+// Pollinations.ai — OpenAI-compatible, keyless or with a free pk_ key. Replaces
+// OpenRouter (retired 2026-10-08). Also powers the !!image and !!voice commands
+// via different endpoints on the same project.
+async function _pollinationsCall(body) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (config.pollinationsKey) headers.Authorization = `Bearer ${config.pollinationsKey}`;
+    const res = await fetch('https://gen.pollinations.ai/v1/chat/completions', {
         method: 'POST',
-        headers: {
-            Authorization: `Bearer ${config.openrouterKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://github.com/batcaveirc/batcave-vampire',
-            'X-Title': 'BatCave Vampire',
-        },
+        headers,
         body: JSON.stringify({
-            model: config.openrouterModel,
+            model: config.pollinationsModel,
             temperature: body.temperature,
             max_tokens: body.max_tokens,
             messages: body.messages,
         }),
     });
-    if (!res.ok) throw new Error(`openrouter HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`pollinations HTTP ${res.status}`);
     return await res.json();
+}
+
+async function groqChat(body) {
+    // Build the eligible provider list for this call. Pollinations is always
+    // in the pool (keyless works); the others need keys.
+    const providers = [];
+    if (config.groqKey || config.groqKey2) providers.push(['groq', _groqCall]);
+    if (config.geminiKey)                  providers.push(['gemini', _geminiCall]);
+    providers.push(['pollinations', _pollinationsCall]);
+    // Fisher-Yates shuffle for a random rotation order per call.
+    for (let i = providers.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [providers[i], providers[j]] = [providers[j], providers[i]];
+    }
+    let lastErr = null;
+    const tried = [];
+    for (const [name, fn] of providers) {
+        tried.push(name);
+        try {
+            const out = await fn(body);
+            if (out) {
+                if (tried.length > 1) log('AI', `Served from ${name} (tried: ${tried.join('->')}).`);
+                return out;
+            }
+        } catch (e) {
+            lastErr = e;
+            log('AI', `${name} failed: ${e.message}`);
+        }
+    }
+    if (lastErr) throw lastErr;
+    return null;
 }
 
 // Whitespace/punctuation-insensitive form, for checking the model quoted
@@ -4663,7 +4675,7 @@ function factsForPrompt(prompt, chan, asker) {
 
 // --- Witty AI reply (for mentions when sentient mode is off) ---
 async function getAIResponse(prompt, who, chan) {
-    if (!config.groqKey && !config.geminiKey && !config.openrouterKey) return null;
+    if (!config.groqKey && !config.geminiKey && !config.pollinationsKey) return null;
     // Feature #25: per-room AI toggle. Silence in disabled rooms before any
     // budget is spent, so the toggle feels instant.
     if (aiDisabledRooms.has(chanKey(chan || ''))) return null;
@@ -5587,6 +5599,31 @@ function handleCommand(chan, nick, message) {
             reply( `Watching: ${config.channels.map((c) => `${c}${opped.has(chanKey(c)) ? '(op)' : ''}`).join(', ')}`);
             break;
 
+        // !!image <prompt> / !!voice <text> — Pollinations media. Posts a URL
+        // the user's client can preview (image) or click to play (audio).
+        case 'image':
+        case 'img':
+        case 'picture': {
+            const p = args.join(' ').trim().slice(0, 380);
+            if (!p) { reply('Usage: !!image <prompt>'); break; }
+            const seed = Math.floor(Math.random() * 1e9);
+            const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(p)}`
+                + `?nologo=true&width=768&height=768&seed=${seed}&model=${encodeURIComponent(config.pollinationsImageModel || 'flux')}`;
+            say(chan, `${nick}: ${url}`);
+            break;
+        }
+        case 'voice':
+        case 'say':
+        case 'tts':
+        case 'speak': {
+            const t = args.join(' ').trim().slice(0, 380);
+            if (!t) { reply('Usage: !!voice <text>'); break; }
+            const url = `https://text.pollinations.ai/${encodeURIComponent(t)}`
+                + `?model=openai-audio&voice=${encodeURIComponent(config.pollinationsVoice || 'alloy')}`;
+            say(chan, `${nick}: ${url}`);
+            break;
+        }
+
         // Per-room AI toggle (feature #25). The owner wants !!join'd guest
         // rooms silent by default, with a per-room opt-in. Home rooms stay on
         // unless explicitly turned off. State persists across restarts.
@@ -5856,7 +5893,7 @@ function handleCommand(chan, nick, message) {
             // real status — internal plumbing a regular op has no business seeing,
             // and the owner asked that only they run it.
             if (!isOwner(nick)) { reply('Access denied — owner only.'); break; }
-            if (!config.groqKey && !config.geminiKey && !config.openrouterKey) { reply( 'No AI key configured — word filter only.'); break; }
+            if (!config.groqKey && !config.geminiKey && !config.pollinationsKey) { reply( 'No AI key configured — word filter only.'); break; }
             reply( 'Probing each AI provider directly…');
             (async () => {
                 const probe = [{ role: 'user', content: 'reply with one word: ok' }];
@@ -5906,7 +5943,7 @@ function handleCommand(chan, nick, message) {
                         } catch (_) { /* diagnostic only */ }
                     }
                 } else out.push('Gemini(no key)');
-                if (config.openrouterKey) {
+                if (config.pollinationsKey) {
                     const t = Date.now();
                     try {
                         const d = await openrouterChat({ temperature: 0, max_tokens: 16, messages: probe });
