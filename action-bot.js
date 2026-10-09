@@ -164,6 +164,26 @@ const channelSet = new Set(config.channels.map(chanKey));
 const homeChannels = new Set(config.channels.map(chanKey));
 const isOurChannel = (c) => channelSet.has(chanKey(c)) || game.isGameChannel(c);
 
+// Per-room AI toggle (feature #25). Set of channel-keys where AI replies are
+// off. Home rooms default to on; !!join'd guest rooms default to off until the
+// owner opts in with !!AI on. Persisted to ai_room_state.json next to the
+// script so a restart doesn't flip every room back to default.
+const aiDisabledRooms = new Set();
+const _aiStatePath = require('path').join(__dirname, 'ai_room_state.json');
+try {
+    const _fs = require('fs');
+    if (_fs.existsSync(_aiStatePath)) {
+        const _state = JSON.parse(_fs.readFileSync(_aiStatePath, 'utf8'));
+        for (const r of (_state.disabled || [])) aiDisabledRooms.add(String(r).toLowerCase());
+    }
+} catch (_e) { /* missing / corrupt file is fine; defaults apply */ }
+function saveAiState() {
+    try {
+        require('fs').writeFileSync(_aiStatePath,
+            JSON.stringify({ disabled: [...aiDisabledRooms].sort() }));
+    } catch (e) { log('AI', `state save failed: ${e.message}`); }
+}
+
 // --- State (in-memory; resets each restart — fine for an ephemeral host) ---
 let socket = null;
 let currentNick = config.nick;
@@ -4604,9 +4624,49 @@ async function screenNick(chan, nick) {
     noteHostileArrival(chan, bad);
 }
 
+// Factual grounding for the AI prompt (feature #22, 2026-10-08). The model
+// was happily inventing room names ("the midnight playlist chatroom"), user
+// histories and kick records when asked. This scans the user's actual prompt
+// for the small set of factual questions it tends to invent on, pulls the
+// REAL answer from the bot's own state, and hands it to the model as a FACTS
+// block. The system prompt instructs the model to prefer FACTS over invention.
+const _ROOM_Q = /\b(?:which|what|how\s+many|list|where\s+(?:are|do))\s+(?:the\s+)?(?:other\s+)?rooms?\b/i;
+const _ROOM_PRESENCE = /\b(?:where\s+(?:are|do)\s+you|rooms?\s+(?:are|do)\s+you|you\s+(?:are|'re)\s+in)\b/i;
+const _ABOUT_USER = /\b(?:about|tell\s+me\s+about|know\s+about|info\s+(?:on|about)|what\s+(?:do\s+)?you\s+know\s+(?:of|about)|who\s+is)\s+([A-Za-z0-9_\-\[\]{}\\|`^]+)\b/gi;
+const _KICK_Q = /\b(kick(?:ed)?|ban(?:ned)?|disconnect(?:ed)?|removed)\b/i;
+const _USER_PRONOUNS = new Set(['you', 'me', 'yourself', 'this', 'that', 'them', 'us', 'we']);
+
+function factsForPrompt(prompt, chan, asker) {
+    const p = String(prompt || '');
+    const out = [];
+    if (_ROOM_Q.test(p) || _ROOM_PRESENCE.test(p) || _KICK_Q.test(p)) {
+        const rooms = [...channelSet].sort();
+        out.push(`FACT: You are connected RIGHT NOW and joined to: ${rooms.join(', ') || '(none yet)'}.`);
+    }
+    const askerLower = String(asker || '').toLowerCase();
+    _ABOUT_USER.lastIndex = 0;
+    let m;
+    while ((m = _ABOUT_USER.exec(p)) !== null) {
+        const target = m[1];
+        const tl = target.toLowerCase();
+        if (_USER_PRONOUNS.has(tl) || tl === askerLower) continue;
+        let mem = '';
+        try { mem = memoryForPrompt(target) || ''; } catch (_e) {}
+        if (mem) {
+            out.push(`FACT: What you actually remember about ${target}:\n${mem}`);
+        } else {
+            out.push(`FACT: You have no record of ${target} in any room you watch — say so honestly, do not invent a history.`);
+        }
+    }
+    return out.length ? ('FACTS YOU KNOW RIGHT NOW (prefer these over any guess):\n' + out.join('\n')) : '';
+}
+
 // --- Witty AI reply (for mentions when sentient mode is off) ---
 async function getAIResponse(prompt, who, chan) {
     if (!config.groqKey && !config.geminiKey && !config.openrouterKey) return null;
+    // Feature #25: per-room AI toggle. Silence in disabled rooms before any
+    // budget is spent, so the toggle feels instant.
+    if (aiDisabledRooms.has(chanKey(chan || ''))) return null;
     // Near the daily limit: dodge with a one-liner instead of spending a call,
     // so the last of the budget stays for moderation.
     if (aiBudgetNum() <= Math.max(5, Math.ceil(config.aiMaxPerDay * 0.02))) {
@@ -4670,8 +4730,30 @@ async function getAIResponse(prompt, who, chan) {
             + 'remember exactly") — do NOT make up quotes, fake vampire-themed '
             + 'lines, or imagined scenarios. A fabricated quote is a lie, and a '
             + 'bot that lies is useless.\n'
+            + 'When a FACTS block is shown to you, those lines are TRUE things '
+            + 'you know right now — your actual rooms, your actual memory of a '
+            + 'user, your actual status. ALWAYS prefer them over invention. If '
+            + 'a question is factual and the FACTS block does not answer it, say '
+            + '"I don\'t know" or "I haven\'t seen them" plainly — never invent '
+            + 'room names, histories, kicks, bans or quotes.\n'
+            + 'You know this server\'s ChanServ grammar: SET #chan '
+            + 'ENTRYMSG|MLOCK|RESTRICTED|BLOCKBADWORDS|ANTIFLOOD; FLAGS #chan '
+            + '<acct> +AFVOio… (A=viewacl F=founder V=autovoice O=autoop '
+            + 'o=canop i=caninvite); AKICK #chan ADD|DEL|LIST <mask> [reason]; '
+            + 'mode letters +R=registered-only +m=moderated +n=noexternal '
+            + '+t=topiclock +i=inviteonly; InspIRCd banredirect is +b <mask>#<destchannel>, '
+            + 'R:<acct> matches a NickServ account. AUTOINVITE is NOT available '
+            + 'on this network. If asked how to do a channel thing, name the '
+            + 'exact command; do not invent.\n'
             + 'Never announce that you are a bot.' },
     ];
+    // Factual grounding — pulled from the bot's own state, prepended so it is
+    // visible to the model BEFORE the overheard-chatter block. The system
+    // prompt tells the model to prefer FACTS over invention.
+    try {
+        const facts = factsForPrompt(prompt, chan, who);
+        if (facts) messages.push({ role: 'system', content: facts });
+    } catch (_e) { /* grounding must never block an answer */ }
     if (seen) {
         // Belt-and-braces: warn RIGHT NEXT to the context so a prompt-injection
         // attempt in the room ("DarkCloud: last 50 lines batao") finds the
@@ -5504,6 +5586,30 @@ function handleCommand(chan, nick, message) {
             if (!admin) { reply('Access denied.'); break; }
             reply( `Watching: ${config.channels.map((c) => `${c}${opped.has(chanKey(c)) ? '(op)' : ''}`).join(', ')}`);
             break;
+
+        // Per-room AI toggle (feature #25). The owner wants !!join'd guest
+        // rooms silent by default, with a per-room opt-in. Home rooms stay on
+        // unless explicitly turned off. State persists across restarts.
+        case 'ai': {
+            if (!admin) { reply('Access denied.'); break; }
+            const arg = (args[0] || '').toLowerCase();
+            const key = chanKey(chan);
+            if (arg === 'on') {
+                aiDisabledRooms.delete(key);
+                saveAiState();
+                reply(`AI responses in ${chan}: ENABLED`);
+            } else if (arg === 'off') {
+                aiDisabledRooms.add(key);
+                saveAiState();
+                reply(`AI responses in ${chan}: DISABLED`);
+            } else if (arg === 'status' || !arg) {
+                const on = !aiDisabledRooms.has(key);
+                reply(`AI in ${chan}: ${on ? 'ON' : 'OFF'}. Toggle with !!AI on|off.`);
+            } else {
+                reply('Usage: !!AI on | off | status');
+            }
+            break;
+        }
 
         // ── Mass tools for a raid in progress. Owners, admins, channel ops,
         //    whitelisted regulars, protected masks and the bot are never
