@@ -866,11 +866,16 @@ const NICK_PICK_AT_CONNECT = /^(1|true|yes|on)$/i.test(
     process.env.NICK_PICK_AT_CONNECT || 'off');
 if (NICK_PICK_AT_CONNECT && NICK_ROTATE && nameBank().length > 1) {
     const pool = nameBank();
-    const pick = pool[Math.floor(Math.random() * pool.length)];
-    // Reassign config.nick + currentNick now, BEFORE connect, so the first
-    // NICK the server sees is already the varied one. There is no visible
-    // rename later unless mid-run rotation is also on (which is still an
-    // owner choice via NICK_ROTATE_MIN).
+    const base = pool[Math.floor(Math.random() * pool.length)];
+    // ALWAYS append random digits so our nick cannot collide with a real
+    // registered user who happens to own the pool name. Operator G-lined
+    // the bot on 2026-10-09 for trying to log in as "Mortis" (someone
+    // else's account) when the rotation picked that bare name and the
+    // NickServ auto-IDENTIFY path misread it as a wrong-password attempt.
+    // "Mortis47" has no owner; our IDENTIFY targets config.nsAccount, not
+    // the current nick, but the collision pattern alone is what tripped
+    // the ops. Numbered nicks never collide.
+    const pick = `${base}${2 + Math.floor(Math.random() * 98)}`;
     console.log(`[INFO] Connect-time nick variation: starting as "${pick}" instead of "${config.nick}"`);
     config.nick = pick;
     currentNick = pick;
@@ -6601,7 +6606,12 @@ function rotateNick() {
     if (Date.now() < lockedUntil) return false;
     if (pendingRotation) return false;                  // one in flight at a time
     if (!rotationAllowed()) return false;
-    const next = nextRotationName(false);
+    // Pass withNumber=true so EVERY rotation picks a numbered variant
+    // (e.g. "Mortis47" not bare "Mortis"). Same reason as the connect-time
+    // variation above: a bare pool name may already belong to a real
+    // registered user, and the collision pattern gets the bot G-lined even
+    // when our IDENTIFY targets the correct account.
+    const next = nextRotationName(true);
     if (!next) return false;
     pendingRotation = next;
     rotationNumbered = false;
