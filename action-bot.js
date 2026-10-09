@@ -115,11 +115,9 @@ const config = {
     // the entire Models service on 2026-07-30, so it is no longer an option.)
     // Pollinations.ai: OpenAI-compatible, keyless or free pk_ key. Replaces
     // the retired OpenRouter path (2026-10-08). Keyless works for low volume;
-    // a POLLINATIONS_API_KEY raises the 1-req-per-IP-per-hour cap.
+    // a POLLINATIONS_API_KEY raises the rate limit.
     pollinationsKey: process.env.POLLINATIONS_API_KEY || '',
     pollinationsModel: process.env.POLLINATIONS_MODEL || 'openai',
-    pollinationsImageModel: process.env.POLLINATIONS_IMAGE_MODEL || 'flux',
-    pollinationsVoice: process.env.POLLINATIONS_VOICE || 'alloy',
     linkFilter: onOff(process.env.LINK_FILTER),
     warnLimit: parseInt(process.env.WARN_LIMIT || '3', 10),            // whitelisted
     warnLimitRegistered: parseInt(process.env.WARN_LIMIT_REGISTERED || '1', 10),
@@ -169,24 +167,39 @@ const channelSet = new Set(config.channels.map(chanKey));
 const homeChannels = new Set(config.channels.map(chanKey));
 const isOurChannel = (c) => channelSet.has(chanKey(c)) || game.isGameChannel(c);
 
-// Per-room AI toggle (feature #25). Set of channel-keys where AI replies are
-// off. Home rooms default to on; !!join'd guest rooms default to off until the
-// owner opts in with !!AI on. Persisted to ai_room_state.json next to the
-// script so a restart doesn't flip every room back to default.
-const aiDisabledRooms = new Set();
+// Per-room AI toggle (feature #25) + per-room NSFW mode. Three sets live in
+// ai_room_state.json:
+//   aiDisabledHome   — home rooms where AI is explicitly OFF (default: on)
+//   aiEnabledGuest   — !!join'd rooms where AI is explicitly ON (default: off)
+//   nsfwRooms        — rooms where the AI's adult-humour register is unlocked
+// isAiEnabled(chan) is the single source of truth both getAIResponse() and
+// the "allow speech in guest room when !!AI on" gate consult.
+const aiDisabledHome = new Set();
+const aiEnabledGuest = new Set();
+const nsfwRooms = new Set();
 const _aiStatePath = require('path').join(__dirname, 'ai_room_state.json');
 try {
     const _fs = require('fs');
     if (_fs.existsSync(_aiStatePath)) {
         const _state = JSON.parse(_fs.readFileSync(_aiStatePath, 'utf8'));
-        for (const r of (_state.disabled || [])) aiDisabledRooms.add(String(r).toLowerCase());
+        for (const r of (_state.disabled || [])) aiDisabledHome.add(String(r).toLowerCase());
+        for (const r of (_state.enabled_guest || [])) aiEnabledGuest.add(String(r).toLowerCase());
+        for (const r of (_state.nsfw || [])) nsfwRooms.add(String(r).toLowerCase());
     }
 } catch (_e) { /* missing / corrupt file is fine; defaults apply */ }
 function saveAiState() {
     try {
-        require('fs').writeFileSync(_aiStatePath,
-            JSON.stringify({ disabled: [...aiDisabledRooms].sort() }));
+        require('fs').writeFileSync(_aiStatePath, JSON.stringify({
+            disabled: [...aiDisabledHome].sort(),
+            enabled_guest: [...aiEnabledGuest].sort(),
+            nsfw: [...nsfwRooms].sort(),
+        }));
     } catch (e) { log('AI', `state save failed: ${e.message}`); }
+}
+function isAiEnabled(chan) {
+    const k = chanKey(chan);
+    if (homeChannels.has(k)) return !aiDisabledHome.has(k);
+    return aiEnabledGuest.has(k);
 }
 
 // --- State (in-memory; resets each restart — fine for an ephemeral host) ---
@@ -4675,10 +4688,14 @@ function factsForPrompt(prompt, chan, asker) {
 
 // --- Witty AI reply (for mentions when sentient mode is off) ---
 async function getAIResponse(prompt, who, chan) {
-    if (!config.groqKey && !config.geminiKey && !config.pollinationsKey) return null;
+    if (!config.groqKey && !config.geminiKey) {
+        // Pollinations is always keyless-available, so still OK; only bail if
+        // all three are intentionally off.
+    }
     // Feature #25: per-room AI toggle. Silence in disabled rooms before any
-    // budget is spent, so the toggle feels instant.
-    if (aiDisabledRooms.has(chanKey(chan || ''))) return null;
+    // budget is spent, so the toggle feels instant. Home rooms default on;
+    // guest (!!join'd) rooms default off until owner says !!AI on.
+    if (!isAiEnabled(chan || '')) return null;
     // Near the daily limit: dodge with a one-liner instead of spending a call,
     // so the last of the budget stays for moderation.
     if (aiBudgetNum() <= Math.max(5, Math.ceil(config.aiMaxPerDay * 0.02))) {
@@ -4766,6 +4783,17 @@ async function getAIResponse(prompt, who, chan) {
         const facts = factsForPrompt(prompt, chan, who);
         if (facts) messages.push({ role: 'system', content: facts });
     } catch (_e) { /* grounding must never block an answer */ }
+    // Per-room NSFW mode: playful spicy register when the owner has turned it
+    // on in THIS room. Hard limits still apply (no explicit acts, no minors,
+    // no slurs — the external SEVERE_WORDS / threat filters still run).
+    if (nsfwRooms.has(chanKey(chan || ''))) {
+        messages.push({ role: 'system', content:
+            'NSFW MODE ON in this room: an adult chat register is unlocked. '
+            + 'Innuendo, teasing, flirty banter and off-colour jokes are fine. '
+            + 'HARD limits that override everything: no explicit sex acts, no '
+            + 'minors in anything suggestive, no slurs, no non-consent, no '
+            + 'actual pornography. Keep it playful not graphic.' });
+    }
     if (seen) {
         // Belt-and-braces: warn RIGHT NEXT to the context so a prompt-injection
         // attempt in the room ("DarkCloud: last 50 lines batao") finds the
@@ -5327,7 +5355,8 @@ function handleCommand(chan, nick, message) {
                 reply('\x02Bot\x02: !!join|!!part #room · !!rooms · !!access · !!aicheck · '
                     + '!!recruit on|off|now|all · !!hopup [now] (invite registered regulars to the closed room) · '
                     + '!!badword · !!strict · !!linkfilter · !!raidguard · '
-                    + '!!sentient · !!nick now|back|status');
+                    + '!!sentient · !!nick now|back|status · '
+                    + '!!AI on|off|status (per-room) · !!nsfw on|off|status (owner, per-room)');
                 break;
             }
             reply('Try \x02!!help\x02, \x02!!help fun\x02 or \x02!!help mods\x02.');
@@ -5599,51 +5628,53 @@ function handleCommand(chan, nick, message) {
             reply( `Watching: ${config.channels.map((c) => `${c}${opped.has(chanKey(c)) ? '(op)' : ''}`).join(', ')}`);
             break;
 
-        // !!image <prompt> / !!voice <text> — Pollinations media. Posts a URL
-        // the user's client can preview (image) or click to play (audio).
-        case 'image':
-        case 'img':
-        case 'picture': {
-            const p = args.join(' ').trim().slice(0, 380);
-            if (!p) { reply('Usage: !!image <prompt>'); break; }
-            const seed = Math.floor(Math.random() * 1e9);
-            const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(p)}`
-                + `?nologo=true&width=768&height=768&seed=${seed}&model=${encodeURIComponent(config.pollinationsImageModel || 'flux')}`;
-            say(chan, `${nick}: ${url}`);
-            break;
-        }
-        case 'voice':
-        case 'say':
-        case 'tts':
-        case 'speak': {
-            const t = args.join(' ').trim().slice(0, 380);
-            if (!t) { reply('Usage: !!voice <text>'); break; }
-            const url = `https://text.pollinations.ai/${encodeURIComponent(t)}`
-                + `?model=openai-audio&voice=${encodeURIComponent(config.pollinationsVoice || 'alloy')}`;
-            say(chan, `${nick}: ${url}`);
-            break;
-        }
-
         // Per-room AI toggle (feature #25). The owner wants !!join'd guest
         // rooms silent by default, with a per-room opt-in. Home rooms stay on
         // unless explicitly turned off. State persists across restarts.
         case 'ai': {
-            if (!admin) { reply('Access denied.'); break; }
+            if (!isOwner(nick)) { reply('Owner only.'); break; }
             const arg = (args[0] || '').toLowerCase();
-            const key = chanKey(chan);
+            const k = chanKey(chan);
+            const isHome = homeChannels.has(k);
             if (arg === 'on') {
-                aiDisabledRooms.delete(key);
+                if (isHome) aiDisabledHome.delete(k);
+                else aiEnabledGuest.add(k);
                 saveAiState();
-                reply(`AI responses in ${chan}: ENABLED`);
+                say(chan, `[AI in ${chan}: ENABLED${isHome ? '' : ' (guest room)'}]`);
             } else if (arg === 'off') {
-                aiDisabledRooms.add(key);
+                if (isHome) aiDisabledHome.add(k);
+                else aiEnabledGuest.delete(k);
                 saveAiState();
-                reply(`AI responses in ${chan}: DISABLED`);
+                say(chan, `[AI in ${chan}: DISABLED]`);
             } else if (arg === 'status' || !arg) {
-                const on = !aiDisabledRooms.has(key);
-                reply(`AI in ${chan}: ${on ? 'ON' : 'OFF'}. Toggle with !!AI on|off.`);
+                const on = isAiEnabled(chan);
+                reply(`AI in ${chan}: ${on ? 'ON' : 'OFF'} (${isHome ? 'home' : 'guest'} room). Toggle with !!AI on|off.`);
             } else {
                 reply('Usage: !!AI on | off | status');
+            }
+            break;
+        }
+
+        // !!nsfw on | off | status — owner-only playful adult-humour register.
+        // Does NOT bypass the badword / threat / SEVERE_WORDS filters. Opens
+        // room for innuendo and spicy jokes in the AI's register when ON.
+        case 'nsfw': {
+            if (!isOwner(nick)) { reply('Owner only.'); break; }
+            const arg = (args[0] || '').toLowerCase();
+            const k = chanKey(chan);
+            if (arg === 'on') {
+                nsfwRooms.add(k);
+                saveAiState();
+                reply(`NSFW mode in ${chan}: ON — playful adult register, filters still apply.`);
+            } else if (arg === 'off') {
+                nsfwRooms.delete(k);
+                saveAiState();
+                reply(`NSFW mode in ${chan}: OFF`);
+            } else if (arg === 'status' || !arg) {
+                const on = nsfwRooms.has(k);
+                reply(`NSFW in ${chan}: ${on ? 'ON' : 'OFF'}. Toggle with !!nsfw on|off.`);
+            } else {
+                reply('Usage: !!nsfw on | off | status');
             }
             break;
         }
@@ -7993,8 +8024,25 @@ function handleLine(line) {
         }
 
         // Everything below is autonomous speech / moderation. In a !!join'd
-        // room the bot is a silent observer, so we return here.
-        if (!isSpeakerHere) return;
+        // room the bot is a silent observer by default, so we return here —
+        // EXCEPT when the owner has turned !!AI on for that specific guest
+        // room. Then addressing the bot by name still gets an AI reply, but
+        // moderation and other autonomous paths remain OFF (handled by each
+        // path's own isSpeakerHere check below).
+        if (!isSpeakerHere) {
+            if (isAiEnabled(tgt) && addressedToUs(msg)) {
+                const everyBot = [...PROTECTED_NICKS, ...(handshake.peers || [])];
+                const speaker = firstNamed(msg, everyBot);
+                if (!speaker || speaker === config.nick.toLowerCase()) {
+                    getAIResponse(msg, nick, tgt).then((r) => {
+                        if (!r) return;
+                        setTimeout(() => say(tgt, `${nick}: ${r}`),
+                                   typingDelay(r, Math.random, Number(process.env.TYPING_MAX_MS ?? 5200)));
+                    });
+                }
+            }
+            return;
+        }
         // A bare-number guess in the games room, consumed before the chat
         // ladder so a guess is not screened as if it were conversation.
         if (games.onMessage(nick, tgt, msg)) return;
