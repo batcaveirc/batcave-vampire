@@ -7237,15 +7237,12 @@ function handleLine(line) {
     if (command === '474' && params[1] && !isOurChannel(params[1])
             && recruiter && recruiter.channels.some((c) => chanKey(c) === chanKey(params[1]))) {
         if (recruiter.markBanned(params[1], '474')) {
+            // Silent backoff (owner request 2026-10-09): markBanned keeps us
+            // from rejoining for 24h and !!recruit explain still reports
+            // banned rooms on demand, so an owner NOTICE every time a 474
+            // arrives was pure noise in the home channel. The WARN below
+            // stays — that's the bot's own log, not visible on IRC.
             log('WARN', `${params[1]}: refused us (474) — recruit-room banned, backing off.`);
-            try {
-                const home = (config.channels[0] || '').toLowerCase();
-                const here = members.get(chanKey(home)) || new Set();
-                for (const n of here) {
-                    if (isOwner(n)) notice(n, `\x0304[RECRUIT BAN]\x03 ${params[1]} refused the bot (474). `
-                        + `Skipping — backoff ${Math.round(recruiter.banBackoffMs / 3600000)}h.`);
-                }
-            } catch (e) { /* owner-notice is best effort */ }
         }
         return;
     }
