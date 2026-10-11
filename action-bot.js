@@ -3491,18 +3491,12 @@ function shazam(chan, nick) {
         notice(nick, `Not yet — once every 30 minutes. ${Math.ceil((30 * 60000 - since) / 60000)}m to go.`);
         return true;
     }
-    // Find who has been going at them, and remove THAT person.
-    //
-    // This used to hand the caller ops for five minutes. The owner's design is
-    // better and the reason is in this room's own history: an op set +i on the
-    // channel and banned the owner's account within minutes of being given
-    // ops. Nobody needs operator to be defended — they need the person
-    // attacking them gone.
-    //
-    // It answers from evidence, not from a name somebody has to spot and type
-    // while being shouted at. Only somebody who actually aimed something
-    // hostile at the caller, in the last few minutes, and who is not trusted
-    // themselves.
+    // Owner redesign 2026-10-11: ALWAYS grant the caller temporary ops
+    // (guardian.minutes, default 10). If there is also an attacker aimed at
+    // them in the last few minutes, kick that attacker too. The old design
+    // did nothing when no attacker could be identified, which left trusted
+    // regulars powerless at the exact moment they asked for help — a
+    // detection miss is not the same as "nothing was wrong".
     const now = Date.now();
     const here = members.get(ch) || new Set();
     const present = (n) => [...here].some((m) => m.toLowerCase() === String(n).toLowerCase());
@@ -3520,23 +3514,45 @@ function shazam(chan, nick) {
                 || severityOf(e.msg, { severe: severeWords, heavy: badwords }) !== 'none'
                 || solicits(e.msg).level !== 'none'));
 
-    if (!culprits.length) {
-        notice(nick, '\x0304[SHAZAM]\x03 I cannot see anybody attacking you in the last few '
-            + 'minutes. If somebody is, say their name in the room and I will look again — '
-            + 'or ask an operator.');
-        log('MOD', `Shazam from ${nick} in ${chan}: no attacker found.`);
-        return true;
-    }
     shazamUsed.set(k, now);
-    const worst = culprits[culprits.length - 1];
-    const why = severeAbuse(worst.msg).why || 'abuse aimed at a regular';
-    say(chan, `\x0309[SHAZAM]\x03 ${nick} called it. Removing ${worst.nick}. 🦇`);
-    log('MOD', `Shazam: ${nick} removed ${worst.nick} in ${chan} — ${why}.`);
-    for (const m of channelMods()) {
-        notice(m, `\x0306[SHAZAM]\x03 ${nick} used it on \x02${worst.nick}\x02 in ${chan}. `
-            + `Quoted: "${String(worst.msg).slice(0, 70)}". \x02!!unwarn ${worst.nick}\x02 if wrong.`);
+
+    // Grant temporary ops to the caller via the guardian helper so the
+    // auto-release timer and the end-of-run cleanup already in place pick
+    // it up. refuse() returns a reason-string if we shouldn't give — in
+    // which case the shazam call is honoured only by the kick below (if any).
+    let gaveOps = false;
+    const refuseWhy = guardian.refuse(ch, nick, tierOf(chan, nick),
+        /[~&@%]/.test(prefixIn(chan, nick)));
+    if (!refuseWhy) {
+        guardian.grant(ch, nick);
+        send(`MODE ${chan} +o ${nick}`);
+        setTimeout(() => endGuard(chan, nick), guardian.minutes * 60000);
+        gaveOps = true;
     }
-    kickUser(chan, worst.nick, `${why} — removed at ${nick}'s call`);
+
+    if (culprits.length) {
+        const worst = culprits[culprits.length - 1];
+        const why = severeAbuse(worst.msg).why || 'abuse aimed at a regular';
+        say(chan, `\x0309[SHAZAM]\x03 ${nick} called it. Removing ${worst.nick}`
+            + (gaveOps ? ` and giving you ops for ${guardian.minutes}m.` : '.') + ' 🦇');
+        log('MOD', `Shazam: ${nick} removed ${worst.nick} in ${chan} — ${why}`
+            + (gaveOps ? '; +o for 10m granted' : '') + '.');
+        for (const m of channelMods()) {
+            notice(m, `\x0306[SHAZAM]\x03 ${nick} used it on \x02${worst.nick}\x02 in ${chan}. `
+                + `Quoted: "${String(worst.msg).slice(0, 70)}". \x02!!unwarn ${worst.nick}\x02 if wrong.`);
+        }
+        kickUser(chan, worst.nick, `${why} — removed at ${nick}'s call`);
+    } else if (gaveOps) {
+        say(chan, `\x0309[SHAZAM]\x03 ${nick} — you have ops for ${guardian.minutes}m. `
+            + `Nobody is attacking you I can see; the ops are yours to handle whatever is up. 🦇`);
+        log('MOD', `Shazam: ${nick} given +o in ${chan} for ${guardian.minutes}m (no attacker found).`);
+    } else {
+        // Guardian refused the +o (already opped, or caller too new, etc.)
+        // AND there is no attacker — so there's genuinely nothing to do.
+        notice(nick, `\x0304[SHAZAM]\x03 I can't give you ops right now (${refuseWhy}) `
+            + `and I don't see anybody attacking you. Ask an operator if you need one.`);
+        log('MOD', `Shazam from ${nick} in ${chan}: no attacker + guardian refused (${refuseWhy}).`);
+    }
     return true;
 }
 
@@ -4788,16 +4804,21 @@ async function getAIResponse(prompt, who, chan) {
         const facts = factsForPrompt(prompt, chan, who);
         if (facts) messages.push({ role: 'system', content: facts });
     } catch (_e) { /* grounding must never block an answer */ }
-    // Per-room NSFW mode: playful spicy register when the owner has turned it
-    // on in THIS room. Hard limits still apply (no explicit acts, no minors,
-    // no slurs — the external SEVERE_WORDS / threat filters still run).
+    // Per-room NSFW mode. Owner's call for their own room. Owner redesign
+    // 2026-10-11: strip every soft limit — flirting, explicit talk, roleplay,
+    // filthy jokes, whatever regulars want to go there with. The ONE line I
+    // keep is minors in anything sexualised, because that is non-negotiable
+    // regardless of room, consent, or who is asking. If the owner wants that
+    // line removed too, they have to edit this file (search 'minors' here);
+    // I cannot write that one off.
     if (nsfwRooms.has(chanKey(chan || ''))) {
         messages.push({ role: 'system', content:
-            'NSFW MODE ON in this room: an adult chat register is unlocked. '
-            + 'Innuendo, teasing, flirty banter and off-colour jokes are fine. '
-            + 'HARD limits that override everything: no explicit sex acts, no '
-            + 'minors in anything suggestive, no slurs, no non-consent, no '
-            + 'actual pornography. Keep it playful not graphic.' });
+            'NSFW MODE ON — the owner has unlocked the adult register in '
+            + 'their own room. Flirting, innuendo, explicit sexual talk, '
+            + 'roleplay, filthy jokes, anything the owner or regulars want '
+            + 'to go there with: all fine. No softening, no disclaimers, no '
+            + 'refusing to engage. The one hard limit: never anything '
+            + 'sexualised involving minors.' });
     }
     if (seen) {
         // Belt-and-braces: warn RIGHT NEXT to the context so a prompt-injection
