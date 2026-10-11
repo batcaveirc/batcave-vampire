@@ -3518,10 +3518,18 @@ function shazam(chan, nick) {
 
     // Grant temporary ops to the caller via the guardian helper so the
     // auto-release timer and the end-of-run cleanup already in place pick
-    // it up. refuse() returns a reason-string if we shouldn't give — in
-    // which case the shazam call is honoured only by the kick below (if any).
+    // it up.
+    //
+    // Bug caught live 2026-10-11 (snehaa transcript): guardian.refuse() was
+    // designed for the attacker-vs-victim path and REFUSES when the
+    // "attacker" is trusted/mod/staff ('attacker is one of ours'). Passing
+    // the CALLER's tier as the attacker tier meant snehaa — who had just
+    // been trusted — triggered that branch and silently got nothing. Here
+    // there is no attacker; we skip the attacker-tier gate by passing
+    // 'none' and only honour the two gates that still make sense: already
+    // opped (hasPrefix), already guarding.
     let gaveOps = false;
-    const refuseWhy = guardian.refuse(ch, nick, tierOf(chan, nick),
+    const refuseWhy = guardian.refuse(ch, nick, 'none',
         /[~&@%]/.test(prefixIn(chan, nick)));
     if (!refuseWhy) {
         guardian.grant(ch, nick);
