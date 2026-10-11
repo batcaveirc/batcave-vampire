@@ -5370,7 +5370,20 @@ function handleCommand(chan, nick, message) {
                 break;
             }
             if (topic === 'mods') {
-                if (!admin) { reply('That half is for operators.'); break; }
+                if (!admin) {
+                    // Belt-and-braces for a stale prefixOf: force a WHO
+                    // refresh of this channel so the next retry sees the
+                    // current @ / % state. Owner reported 2026-10-11 that
+                    // rubie, who was opped, got denied here — most likely
+                    // because the +o MODE arrived before we were tracking
+                    // her or during a split. One retry after this ought
+                    // to work for anyone who IS actually an op.
+                    try { send(`WHO ${chan} %cuhnar,152`); } catch (_e) {}
+                    reply('That half is for operators. '
+                        + '(If you ARE one, try again in a few seconds — '
+                        + 'I may have been out of sync with the room.)');
+                    break;
+                }
                 reply('\x02Just say it\x02: \x02Dracula kick <nick>\x02 — also ban, unban, mute, '
                     + 'unmute, voice, devoice, warn. Plain English, no !!, reason optional.');
                 reply('\x02People\x02: !!info <nick> · !!find <host> (who else is on a host) · '
