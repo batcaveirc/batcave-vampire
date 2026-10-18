@@ -25,7 +25,12 @@ console.log('— it hands out NO ops at all —');
 // The owner's later design is better and this room's history is the argument:
 // an op set +i on the channel and banned the owner's account within minutes of
 // being handed ops. Nobody needs operator to be defended.
-c('the caller is never opped', !/send\(`MODE \$\{chan\} \+o \$\{nick\}`\)/.test(src));
+// CHANGED ON PURPOSE 2026-10-11 (commit a401e42), owner's redesign: "shazam
+// should make the trusted user mod ... if noone is attacking they still get
+// modship for 10 mins". So the caller IS opped now — through guardian, which
+// times it out — and the no-attacker reply says ops were given instead of
+// 'I cannot see anybody attacking you'.
+c('the caller is opped for 10 minutes', /send\(`MODE \$\{chan\} \+o \$\{nick\}`\)/.test(src));
 c('the attacker is removed instead', src.includes("removed at ${nick}'s call"));
 c('there is still a cooldown', /30 \* 60000/.test(src));
 

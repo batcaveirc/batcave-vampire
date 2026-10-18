@@ -122,11 +122,16 @@ server.listen(0, '127.0.0.1', () => {
         // back of it to avoid any conflicts" is what happens when that name is
         // TAKEN. So a plain rotation must now produce a genuinely different
         // name, with no digits at all.
+        // CHANGED ON PURPOSE 2026-10-09. An operator G-lined the bot for
+        // wearing "Mortis" — a bare pool name owned by a real registered user —
+        // while sending NickServ IDENTIFY. The owner's fix: "add numbers to the
+        // nick name". So the NAME must still be genuinely different (a pool
+        // name, not its own), and it now always carries digits.
         c('it asked for a different name, not its own with a number',
-          /^[A-Za-z]+$/.test(first) && !/^Dracula/i.test(first),
+          /^[A-Za-z]+\d+$/.test(first) && !/^Dracula/i.test(first),
           `asked for: ${JSON.stringify(first)}`);
-        c('and the name has no number on it — nothing was in conflict',
-          !/\d/.test(first), `asked for: ${JSON.stringify(first)} — numbering is for conflicts only`);
+        c('and it always carries digits, so it is nobody\'s registered nick',
+          /\d$/.test(first), `asked for: ${JSON.stringify(first)}`);
         c('not the underscore the registration path would have used',
           !/_/.test(first), `asked for: ${JSON.stringify(first)}`);
         await waitFor(() => wearing === first);

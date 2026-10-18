@@ -174,10 +174,14 @@ jobs:
           BOT_NICKS: ${{ secrets.BOT_NICKS || 'Almond' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL || 'gemini-flash-latest' }}
-          # Second fallback: OpenRouter, dormant until a key is set. (GitHub
-          # Models was wired here too, but GitHub retired that service 2026-07-30.)
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free' }}
+          # Third provider: Pollinations. Keyless requests from GitHub's runners
+          # are refused (401), so it stays out of the rotation until a free key
+          # from enter.pollinations.ai is set here. (OpenRouter retired 2026-10-08.)
+          POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_API_KEY }}
+          POLLINATIONS_MODEL: ${{ secrets.POLLINATIONS_MODEL || 'openai' }}
+          # Per-person AI allowance; the owner is exempt. Over it: one joke, then quiet.
+          AI_USER_PER_10M: ${{ secrets.AI_USER_PER_10M || '5' }}
+          AI_USER_PER_DAY: ${{ secrets.AI_USER_PER_DAY || '25' }}
           # Phase 1 self-restart. PAT with 'workflow' scope; empty = no-op (cron
           # backstop keeps working). GITHUB_TOKEN cannot trigger new runs.
           # GITHUB_REPOSITORY is already set automatically by Actions.

@@ -47,6 +47,12 @@ async function geminiChat(body, key, model) {
             generationConfig: {
                 temperature: body.temperature ?? 0,
                 maxOutputTokens: body.max_tokens || 200,
+                // gemini-flash-latest THINKS by default and the hidden thinking
+                // is charged to maxOutputTokens. Measured 2026-10-18: 53 of 60
+                // tokens went to thinking and the visible reply was "What they
+                // are". That is every half-sentence answer the room saw
+                // ("2026 hasn't"). Budget 0 = all tokens go to the answer.
+                thinkingConfig: { thinkingBudget: 0 },
             },
             // The bot's own filters decide what is abuse. Google's would refuse
             // to CLASSIFY the very messages we need classified — asking "is this
@@ -66,10 +72,14 @@ async function geminiChat(body, key, model) {
         throw e;
     }
     const data = await res.json();
-    const text = (data?.candidates?.[0]?.content?.parts || [])
+    const cand = data?.candidates?.[0] || {};
+    const text = (cand.content?.parts || [])
         .map((p) => p.text || '').join('').trim();
     if (!text) return null;
-    return { choices: [{ message: { content: text } }] };
+    // Report a cut-off the way OpenAI does, so callers can trim to a whole
+    // sentence instead of posting half of one.
+    const finish = cand.finishReason === 'MAX_TOKENS' ? 'length' : 'stop';
+    return { choices: [{ message: { content: text }, finish_reason: finish }] };
 }
 
 module.exports = { geminiChat };

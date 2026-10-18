@@ -73,7 +73,9 @@ server.listen(0, '127.0.0.1', () => {
               /sourceRoom = recruiter\.channels\.some/.test(src),
               'the isOurChannel guard dropped every new arrival');
             c('and the list is re-read periodically',
-              /for \(const c of recruiter\.channels\) send\(`NAMES/.test(src),
+              // CHANGED ON PURPOSE (474 backoff): the resync now skips rooms
+              // that banned us, so it walks usableChannels(), not channels.
+              /for \(const c of recruiter\.(?:channels|usableChannels\(\))\) send\(`NAMES/.test(src),
               'without it the count only ever decays');
             c('but a source room is still never acted in',
               /A source room is only ever watched, never acted in/.test(src));

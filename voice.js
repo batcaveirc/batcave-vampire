@@ -143,4 +143,90 @@ function isRepeat(text, ourLines) {
     });
 }
 
-module.exports = { transcript, needsName, typingDelay, deRobot, isRepeat };
+// ── Shaping a reply for the room (2026-10-18) ─────────────────────────────
+// Three things reached the room that never should have, all from the owner's
+// transcript: a model's own planning note ("(Dracula IRC bot) answer concisely
+// without evading"), answers cut off mid-word ("2026 hasn't"), and long pastes
+// split across lines until the half that arrived made no sense.
+
+const WITTY_DECLINES = Object.freeze([
+    "that's a scroll, not a chat line. ask me the short version 🦇",
+    'code? I bite necks, not keyboards. GitHub is down the hall.',
+    'four hundred years old and I still refuse to paste essays into a chatroom.',
+    "that needs a library, not a vampire. one-line questions, one-line answers.",
+    'I could write all that, but the room would turn to dust waiting.',
+    'too long for a chat window, too short for my patience. narrow it down?',
+]);
+
+/** Somebody asking for code or a long document. Answered with a quip, no AI call. */
+function asksForLong(text) {
+    const t = String(text || '');
+    // A request to PRODUCE something long — "what is html" is a fair question.
+    return /\b(write|give|make|create|build|generate|send|paste|show|code)\b[^.?!]{0,40}\b(code|html|css|javascript|typescript|python|sql|bash|regex|script|program|website|webpage|web page|app|function|essay|article|tutorial|report)\b/i.test(t)
+        || /\b(source code|full code|step[- ]by[- ]step)\b/i.test(t)
+        || /\b(html|css|javascript|typescript|python|sql|bash)\s+(code|script|page|file)\b/i.test(t);
+}
+
+/** The model narrating its instructions instead of answering. */
+function looksLikeLeak(text) {
+    const t = String(text || '');
+    if (/^\s*\((?=[^)]*\b(bot|assistant|irc|ai|model|system)\b)[^)]{0,80}\)/i.test(t)) return true;
+    return LEAK_PHRASES.test(t);
+}
+// Plain phrases, built as a string, so test/linker.js does not read
+// "the user (asked" inside a regex as a call to user().
+const LEAK_PHRASES = new RegExp('\\b(?:' + [
+    'answer concisely', 'without evading', 'system prompt', 'my instructions',
+    'the user asked', 'the user wants', 'the user is asking',
+    'we need to answer', 'we need to respond', 'we need to reply',
+    'i should answer', 'i should respond', 'i should reply',
+    'as an ai\\b', 'language model',
+].join('|') + ')', 'i');
+
+/** Code, markup or a programme listing — never pasted into the room. */
+function hasCode(text) {
+    return /```|<\/?(html|head|body|div|span|script|style|ul|li|table|form)\b[^>]*>|^\s*(def |function |class |import |const |let |var |#include|public static)/im
+        .test(String(text || ''));
+}
+
+/** Longest prefix of `t`, at most `max` chars, that ends on a full sentence. */
+function trimToSentence(t, max) {
+    const s = String(t || '').slice(0, max);
+    let end = -1;
+    const re = /[.!?।…](?=\s|$|["'”’)\]])/g;
+    let m;
+    while ((m = re.exec(s)) !== null) end = m.index;
+    return end >= 0 ? s.slice(0, end + 1).trim() : '';
+}
+
+/**
+ * Turn a raw model reply into something fit for the room, or null.
+ * `why` says what happened: '' (clean), 'trimmed', 'code', 'long', or a reason
+ * it was discarded ('empty', 'leak', 'cut') — the caller may ask once more.
+ */
+function finalizeReply(raw, finish, opts = {}) {
+    const rnd = opts.rnd || Math.random;
+    const max = opts.max || 420;
+    const decline = () => WITTY_DECLINES[Math.floor(rnd() * WITTY_DECLINES.length)];
+    const src = String(raw || '').trim();
+    if (!src) return { text: null, why: 'empty' };
+    if (looksLikeLeak(src)) return { text: null, why: 'leak' };
+    if (hasCode(src)) return { text: decline(), why: 'code' };
+    let t = deRobot(src, rnd);
+    if (finish === 'length') {
+        const cut = trimToSentence(t, t.length);
+        if (!cut || cut.length < 15) return { text: null, why: 'cut' };
+        t = cut;
+    }
+    if (t.length > max) {
+        const cut = trimToSentence(t, max);
+        if (cut && cut.length >= 60) return { text: cut, why: 'trimmed' };
+        return { text: decline(), why: 'long' };
+    }
+    return { text: t, why: '' };
+}
+
+module.exports = {
+    transcript, needsName, typingDelay, deRobot, isRepeat,
+    finalizeReply, asksForLong, looksLikeLeak, hasCode, trimToSentence, WITTY_DECLINES,
+};

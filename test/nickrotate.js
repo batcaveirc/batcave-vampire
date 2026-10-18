@@ -138,15 +138,20 @@ server.listen(0, '127.0.0.1', () => {
 
         say('!!nick now');
         await waitFor('first NICK', () => nickLines.length >= 1);
-        c('it asks for a pool name plain, before numbering anything',
-          POOL.includes(nickLines[0]), `asked for: ${JSON.stringify(nickLines)}`);
+        // CHANGED ON PURPOSE 2026-10-09: a bare pool name ("Mortis") belonged to
+        // a registered user and got the bot G-lined. Every rotation now carries
+        // digits, so the first ask is a pool name WITH a number.
+        const base0 = (nickLines[0] || '').replace(/\d+$/, '');
+        c('it asks for a pool name with digits, never the bare registered-looking name',
+          POOL.includes(base0) && /\d+$/.test(nickLines[0] || ''), `asked for: ${JSON.stringify(nickLines)}`);
 
         // Told it was taken, it must put a NUMBER on the end — the owner's
         // design — and must NOT fall into the registration path, which appends
         // an underscore and would rename the bot for nothing.
         await waitFor('numbered retry', () => nickLines.length >= 2);
-        c('a taken name comes back with a number on the end',
-          new RegExp(`^${nickLines[0]}\\d+$`).test(nickLines[1] || ''),
+        // Taken → the same pool name with a DIFFERENT number (was: digits appended).
+        c('a taken name comes back renumbered',
+          new RegExp(`^${base0}\\d+$`).test(nickLines[1] || '') && nickLines[1] !== nickLines[0],
           `asked for: ${JSON.stringify(nickLines)}`);
         c('and never Dracula_', !nickLines.some((x) => /_$/.test(x)),
           `post-registration NICKs: ${JSON.stringify(nickLines)}`);
