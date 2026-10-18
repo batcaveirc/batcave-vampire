@@ -2855,6 +2855,10 @@ function actionKey(chan, nick, action) { return `${chanKey(chan)}|${nick.toLower
 // With that, a second offence a minute later reads as a first offence and the
 // ladder never climbs.
 const aiWarned = new Map();
+// nick -> when a moderator overturned the bot's mute of them. The model leaves
+// that person alone for AI_OVERRULE_MS; the word list still applies.
+const aiOverruled = new Map();
+const AI_OVERRULE_MS = 12 * 3600000;
 const AI_WARN_MEMORY_MS = 30 * 60000;
 function aiWarnedRecently(nick) {
     const at = aiWarned.get(nick.toLowerCase()) || 0;
@@ -2996,6 +3000,22 @@ const SHAZAM_MINUTES = Number(process.env.SHAZAM_MINUTES || 5);
 // The last few minutes of each room, so "who is attacking me" can be answered
 // from evidence rather than from a name somebody has to spot and type.
 const recentSaid = new Map();          // chan -> [{at, nick, msg}]
+
+/**
+ * Is `nick` answering an owner or admin right now? True when the last line
+ * before theirs, within two minutes, was staff's. Staff in the conversation
+ * can judge it; the model sees one line of it.
+ */
+function inExchangeWithStaff(chan, nick, now = Date.now()) {
+    const k = String(nick || '').toLowerCase();
+    const recent = (recentSaid.get(chanKey(chan)) || []).filter((e) => now - e.at < 2 * 60000);
+    for (let i = recent.length - 1; i >= 0; i--) {
+        const who = String(recent[i].nick || '');
+        if (who.toLowerCase() === k) continue;
+        return isAdmin(who);
+    }
+    return false;
+}
 function rememberSaid2(chan, nick, msg) {
     const ch = chanKey(chan);
     const now = Date.now();
@@ -4316,6 +4336,13 @@ function quoteIsSomebodysName(quote) {
 async function sentientModeration(chan, nick, message) {
     if (isExempt(nick, chan) || moderationOff(chan) || !config.groqKey || message.length < 4) return;
     if (!aiRateOk()) return;                        // busy → scripted filter still covers it
+    const overruledAt = aiOverruled.get(nick.toLowerCase());
+    if (overruledAt && Date.now() - overruledAt < AI_OVERRULE_MS) return;
+    if (inExchangeWithStaff(chan, nick)) {
+        // An owner or admin is talking WITH them right now. They can see the
+        // whole exchange and the model sees one line of it.
+        return;
+    }
     try {
         const data = await groqChat(({
                 model: config.groqModel, temperature: 0, max_tokens: 80,
@@ -4348,6 +4375,10 @@ async function sentientModeration(chan, nick, message) {
                         + '":P" or "lol" — those mark a joke. Examples that are all "none": '
                         + '"bully you have the right to be desperate here :D", "tu pagal hai yaar", '
                         + '"shut up lol".\n'
+                        + 'A general remark or opinion about a group with no slur in it — '
+                        + '"women are all about pain", "men never listen", "Delhi people are loud" — '
+                        + 'is conversation, often about the speaker\'s own group: "none". So is '
+                        + 'flirting and playful back-and-forth between two people.\n'
                         + 'Reply with ONLY compact JSON: {"action":"none|warn|kick|ban",'
                         + '"confident":true|false,"quote":"the exact words from the message that are '
                         + 'abusive","reason":"few words"}. '
@@ -4477,6 +4508,16 @@ async function sentientModeration(chan, nick, message) {
         //   - the room's own affectionate hostility is never an offence
         //   - a threat or harassment is DIRECTED. If the model cannot point at
         //     somebody in the room, what it is reading is very likely idiom.
+        // Gate 4b, enforced. The comment above described it for weeks; no code
+        // did it. A verdict ABOUT A GROUP with no slur in the quote is somebody's
+        // opinion: "women are all about pain", said by a woman flirting with
+        // the owner, cost her her voice.
+        if (/generali[sz]|stereotyp|group|opinion|hateful statement|sexis|misogyn|misandr/i
+                .test(String(verdict.reason || ''))
+            && !flatten(verdict.quote || '').split(' ').some((w) => severeWords.has(w) || badwords.has(w))) {
+            log('AI', `Ignoring ${action} on ${nick}: "${verdict.reason}" about a group, no slur — an opinion.`);
+            return;
+        }
         if (isBanter(message)) {
             log('AI', `Ignoring ${action} on ${nick}: reads as this room's banter.`);
             return;
@@ -7538,7 +7579,14 @@ function handleLine(line) {
                     const skey = `${chanKey(tgt)}|${who.toLowerCase()}`;
                     if (serving.has(skey)) {
                         serving.delete(skey);
-                        log('MOD', `${nick} voiced ${who} in ${tgt} — devoice cleared, they outrank the timer.`);
+                        // The moderator just said the bot was WRONG. Clear the
+                        // strike it cost them and keep the model off them for a
+                        // while, or the same reading of the same person happens
+                        // again ten minutes later (Megha, 2026-10-18).
+                        warns.delete(who.toLowerCase());
+                        aiOverruled.set(who.toLowerCase(), Date.now());
+                        log('MOD', `${nick} voiced ${who} in ${tgt} — devoice cleared, they outrank the timer; `
+                            + `AI moderation off for ${who} for ${AI_OVERRULE_MS / 3600000}h.`);
                     }
                     // A moderator deciding somebody is fine is the whole point of
                     // holding them back instead of removing them: they are here to
