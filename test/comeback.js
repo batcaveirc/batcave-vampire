@@ -103,7 +103,10 @@ server.listen(0, '127.0.0.1', () => {
 
     setTimeout(() => {
         const all = sent.join('\n');
-        const tries = (all.match(/^JOIN #batcave/gm) || []).length;
+        // Exact room, not a prefix: the bot also JOINs its own bus channel
+        // (#batcave-bus) once teamwork starts, and a prefix match counted that
+        // as a knock on this door.
+        const tries = (all.match(/^JOIN #batcave(?:\s|$)/gm) || []).length;
         c('it keeps knocking while it is shut out',
           tries >= 4, `${tries} join attempts — live it made exactly one and gave up`);
         c('and is back inside once the ban is lifted',

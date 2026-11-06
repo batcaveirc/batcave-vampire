@@ -52,6 +52,16 @@ c('memoryForPrompt is defined', /function memoryForPrompt\(/.test(src));
 c('trustSend is defined', /function trustSend\(/.test(src));
 c('handleTrustLine is defined', /function handleTrustLine\(/.test(src));
 c('startTrustTeamwork is defined', /function startTrustTeamwork\(/.test(src));
+// The bus, and the two properties that keep it from stepping on real work:
+// its own room, and a lane that only moves when nothing else is waiting.
+c('bus chatter leaves on the idle lane', /sendIdle\(`PRIVMSG \$\{chan\}/.test(src));
+c('the idle lane drains only when nothing else is queued',
+  /!outUrgent\.length && !outQueue\.length && outIdle\.length/.test(src));
+c('heartbeat only fires when nothing else was said this window',
+  /Date\.now\(\) - lastBusOutAt < TRUST_HB_MS/.test(src));
+c('bus defaults to its own room (trust channels stays flags-only)',
+  /TRUST_BUS_CHANNEL \?\? '#batcave-bus'/.test(src));
+c('a removal is journaled to the partner', /trustSend\('act', \{ n: nick/.test(src));
 c('rememberLine is CALLED from the home-room PRIVMSG path',
   /rememberLine\(nick, msg,\s*\{ room: tgt \}\)/.test(src));
 c('rememberLine is also CALLED from the recruit-room PRIVMSG path (cross-room memory)',
@@ -160,6 +170,12 @@ const script = `
     const send = (line) => sent.push(line);
     const log = () => {};                     // pruneMemory logs; stub it
     const TRUST_CHANNEL = '#batcave-trust';
+    const TRUST_BUS_CHANNEL = '#batcave-bus';
+    let lastBusOutAt = 0;
+    const outIdle = [];
+    const sendIdle = (line) => { outIdle.push(line); sent.push(line); };
+    const peerActions = new Map();
+    const PEER_ACT_TTL_MS = 30 * 60 * 1000;
     // In production, config.channels is the IRC_CHANNEL list — home + emoji.
     // In the sandbox we hard-code the pair so isHomeChannelRoom works.
     const config = { channels: ['#batcave', '#\u{1F171}\u{1F170}\u{1F164}\u{1F163}\u{1F170}\u{1F185}\u{1F164}'] };
@@ -167,12 +183,17 @@ const script = `
     ${slice('isHomeChannelRoom')}
     ${slice('trustBroadcastOk')}
     ${slice('memoryForPrompt')}
+    ${slice('busChannel')}
+    ${slice('notePeerAction')}
+    ${slice('peerActedWithin')}
     ${slice('trustSend')}
     ${slice('handleTrustLine')}
     ${slice('pruneMemory')}
     ({ rememberLine, memoryForPrompt, trustSend, handleTrustLine, pruneMemory,
-       isHomeChannelRoom, trustBroadcastOk,
-       state: { userMemory, sawRecently, sent, getPartnerLastSeen: () => partnerLastSeen,
+       isHomeChannelRoom, trustBroadcastOk, peerActedWithin,
+       state: { userMemory, sawRecently, sent, peerActions,
+                getPartnerLastSeen: () => partnerLastSeen,
+                resetPartnerSeen: () => { partnerLastSeen = 0; },
                 getBroadcastHistory: () => TRUST_BROADCAST_HISTORY } });
 `;
 const api = vm.runInNewContext(script, { process, Map, Set, Date, JSON, console });
@@ -245,8 +266,11 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
     api.state.sent.length = 0;
     api.trustSend('hb', { n: 'DarkCloud', t: 1759000000 });
-    const sent = api.state.sent.filter((l) => l.startsWith('PRIVMSG #batcave-trust'));
+    const sent = api.state.sent.filter((l) => l.startsWith('PRIVMSG #batcave-bus'));
     c('_trust_send writes exactly one line', sent.length === 1, api.state.sent.join('\n'));
+    c('and never into the trust channel itself',
+      !api.state.sent.some((l) => l.startsWith('PRIVMSG #batcave-trust')),
+      api.state.sent.join('\n'));
     c('prefix is ::hb so bots filter it', sent[0].includes('::hb '));
     c('JSON is compact (no spaces)', !/" "/.test(sent[0]) && !/, /.test(sent[0]), sent[0]);
 
@@ -256,6 +280,24 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     api.handleTrustLine('Vikram', ':: this is not a valid machine line');
     api.handleTrustLine('Andromeda', '::hb {not valid json');
     c('human chatter ignored', api.state.getPartnerLastSeen() === before);
+
+    console.log('\n— liveness: the SENDER counts, and any verb proves it —');
+    api.state.resetPartnerSeen();
+    api.handleTrustLine('Andromeda',
+      '::act {"n":"troll42","a":"kick","c":"#batcave","t":1}');
+    c('a ::act line is proof of life, not just ::hb', api.state.getPartnerLastSeen() > 0);
+    c('the partner action is recorded', api.peerActedWithin('troll42') === true);
+    c('one incident, one record (nick keyed lowercase)',
+      api.state.peerActions.has('troll42') && api.state.peerActions.size === 1
+        && !api.state.peerActions.has('TROLL42'));
+    api.state.resetPartnerSeen();
+    api.handleTrustLine('Andromeda',
+      '::saw {"n":"priya","m":"hello there friend","r":"#batcave","t":1}');
+    c('so is ::saw — a busy partner is not a dead partner',
+      api.state.getPartnerLastSeen() > 0);
+    api.state.resetPartnerSeen();
+    api.handleTrustLine('DarkCloud', '::hb {"n":"DarkCloud","t":9}');
+    c('our own echo is not proof of the partner', api.state.getPartnerLastSeen() === 0);
 
     // ─── ::saw merge: partner saw a line, merge into local memory
     console.log('\n— ::saw merges partner observation (no re-broadcast) —');

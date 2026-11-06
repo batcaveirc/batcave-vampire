@@ -77,6 +77,9 @@ class Shoot {
         this.isOurs = opts.isOurs || (() => false);
         this.mayMod = opts.mayMod || (() => false);
         this.kick = opts.kick || (() => {});
+        // Did the OTHER bot already action this person? Two bots punishing one
+        // incident reads as the room ganging up, not as a game.
+        this.peerActed = opts.peerActed || null;
         this.noticeTo = opts.notice || ((nick, m) => this.bot.notice(nick, m));
 
         this.round = null;          // { chan, target, by, at, until }
@@ -191,6 +194,9 @@ class Shoot {
             // — which is how this pool came back empty in its own test.
             const lastKick = this.kicked.get(k);
             if (lastKick && now - lastKick < KICKED_TTL_MS) return false;
+            // The partner removed them for something else minutes ago. Picking
+            // them again is the same person paying twice for one evening.
+            try { if (this.peerActed && this.peerActed(n)) return false; } catch (e) { /* never block the pool */ }
             return true;
         });
     }

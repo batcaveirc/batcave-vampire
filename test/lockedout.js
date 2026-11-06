@@ -69,8 +69,8 @@ server.listen(0, '127.0.0.1', () => {
           /^PRIVMSG ChanServ :INVITE #batcave$/m.test(all),
           sent.filter((l) => /ChanServ/.test(l)).join(' | ') || '(never asked — it just sat outside)');
         c('and tries the join again afterwards',
-          (all.match(/^JOIN #batcave/gm) || []).length >= 2,
-          `${(all.match(/^JOIN #batcave/gm) || []).length} join attempts`);
+          (all.match(/^JOIN #batcave(?:\s|$)/gm) || []).length >= 2,
+          `${(all.match(/^JOIN #batcave(?:\s|$)/gm) || []).length} join attempts`);
         c('ending up inside', /Joined #batcave/.test(out),
           out.split('\n').filter((l) => /batcave/i.test(l)).slice(-2).join(' | '));
         c('it says it was locked out, rather than failing quietly',

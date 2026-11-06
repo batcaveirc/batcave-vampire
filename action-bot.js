@@ -1218,6 +1218,8 @@ const shoot = new Shoot(bot, {
     isOurs: (nick) => isOneOfOurs(nick),
     mayMod: (nick, chan) => isOwner(nick) || isAdmin(nick) || isChannelMod(chan, nick),
     kick: (chan, nick, reason) => kickUser(chan, nick, reason),
+    // The partner already removed somebody tonight: one incident, one removal.
+    peerActed: (nick) => peerActedWithin(nick, 30 * 60 * 1000),
 });
 // The game holds no timers of its own: this sweep expires the target, brings the
 // next one up and pays out a pending removal when its grace window has passed.
@@ -1381,6 +1383,10 @@ const outQueue = [];
 // Actions somebody is waiting on. Drained before outQueue, and never subject to
 // the answers-first promotion that kept stepping over them.
 const outUrgent = [];
+// Lowest priority in the whole process: what the two bots tell EACH OTHER.
+// Declared with the other queues so the refill below can drain it; filled by
+// sendIdle() further down.
+const outIdle = [];
 let urgentRun = 0;                 // consecutive urgent lines, for fairness
 let lastQueueGripe = 0;
 let lastDropGripe = 0;
@@ -1407,6 +1413,8 @@ function registerFloodComplaint(line) {
         log('WARN', `Dropped ${outQueue.length} queued bulk line(s) — the server already said we talk too much.`);
         outQueue.length = 0;
     }
+    // Bus traffic is the first thing to lose when we are already in trouble.
+    outIdle.length = 0;
     log('WARN', `Flood complaint #${floodComplaints}: ${String(line).slice(0, 140)} — pace x${refillMultiplier(floodComplaints)} `
         + `for ${Math.round(penaltyMs(floodComplaints) / 60000)} min, reconnect backoff `
         + `${Math.round(reconnectDelayMs(floodComplaints) / 1000)}s. Staying up: a kill is not a reason to exit.`);
@@ -1417,6 +1425,15 @@ setInterval(() => {
     while ((outUrgent.length || outQueue.length) && tokens > 0) {
         tokens -= 1;
         const line = takeNextLine();
+        if (socket && socket.writable) { socket.write(line + '\r\n'); lastTxAt = Date.now(); }
+    }
+    // Coordination traffic only when NOTHING else is waiting, one line per
+    // refill. A heartbeat must never occupy the slot a game's INVITE or a
+    // moderator's answer needed, and it has no deadline worth queue-jumping
+    // for: it exists to fill a silence, so it can wait for one.
+    if (tokens > 0 && !outUrgent.length && !outQueue.length && outIdle.length) {
+        const line = outIdle.shift();
+        tokens -= 1;
         if (socket && socket.writable) { socket.write(line + '\r\n'); lastTxAt = Date.now(); }
     }
     // Nothing waits forever.
@@ -1526,6 +1543,24 @@ function send(data) {
         log('ERR', 'Outbound queue is FULL (400) — dropping lines. '
             + 'Everything the bot says is being lost until it drains.');
     }
+}
+
+/**
+ * Bookkeeping for the partner bot: `::hb`, `::saw`, `::act`.
+ *
+ * The slowest lane in the process by construction. These lines used to go
+ * straight out of send(), which put them in the same queue as a game's invites
+ * and a moderator's replies — so a heartbeat could sit in front of an INVITE,
+ * and a burst of ::saw delayed somebody's answer. Nothing here is for a person
+ * in a room, so nothing here may make a person wait.
+ */
+function sendIdle(data) {
+    if (!socket || !socket.writable) return;
+    if (tokens > 0 && !outUrgent.length && !outQueue.length && !outIdle.length) {
+        tokens -= 1; socket.write(data + '\r\n'); lastTxAt = Date.now(); return;
+    }
+    if (outIdle.length >= 30) outIdle.shift();   // a status line, not a log
+    outIdle.push(data);
 }
 
 /**
@@ -3073,6 +3108,14 @@ function rememberSaid2(chan, nick, msg) {
 // the AI prompt so a reply can reference what the user said days ago in the
 // SAME room. #batcave only — not cross-room, by design.
 const TRUST_CHANNEL = String(process.env.TRUST_CHANNEL || '#batcave-trust').trim();
+// Where the two bots TALK TO EACH OTHER, which is deliberately not the room
+// whose ChanServ access list is the trust database. That channel is durable
+// storage — flags, !!trust, and the people who edit them — and a heartbeat
+// every three minutes kept landing in the middle of it. This room holds
+// nothing; losing it costs nothing.
+//
+// Set TRUST_BUS_CHANNEL empty to put the chatter back in the trust channel.
+const TRUST_BUS_CHANNEL = String(process.env.TRUST_BUS_CHANNEL ?? '#batcave-bus').trim();
 const TRUST_HB_MS = Math.max(60000, Number(process.env.TRUST_HB_MS) || 180000);
 const PARTNER_SILENT_MS = Math.max(TRUST_HB_MS * 2, 6 * 60 * 1000);
 const MEMORY_MAX_PER_USER = Math.max(3, Number(process.env.MEMORY_MAX_PER_USER) || 10);
@@ -3086,6 +3129,12 @@ const sawRecently = new Map();         // key `${n}|${textSlice}` -> ms
 let partnerLastSeen = 0;
 let trustHbTimer = null;
 let memoryGcTimer = null;
+let lastBusOutAt = 0;                  // when we last told the partner anything
+// The moderation journal, as the PARTNER sees it. Filled from ::act (see
+// notePeerAction) so one incident produces one record rather than two bots
+// each punishing somebody for it.
+const peerActions = new Map();         // nick(lower) -> { at, act, chan }
+const PEER_ACT_TTL_MS = 30 * 60 * 1000;
 
 /**
  * Capture a notable line into per-user memory. Local calls broadcast to the
@@ -3471,12 +3520,45 @@ function memoryForPrompt(nick) {
     return `\nWhat ${nick} has recently said (you remember them from this and nearby rooms):\n${lines.join('\n')}`;
 }
 
-// Inter-bot comms over #batcave-trust. Lines prefixed "::" are machine
-// messages, parsed by this handler; everything else is a human in the trust
-// channel and is ignored on purpose (the channel is for people, too).
+// Inter-bot comms. Lines prefixed "::" are machine messages, parsed by this
+// handler; everything else in the bus is a human and is ignored on purpose.
+//
+// The bus is a channel rather than a NOTICE to the partner because both bots
+// ROTATE their nicks: a configured room is the only stable rendezvous. It is
+// not the trust channel because that room is the FLAGS database.
+function busChannel() {
+    if (!TRUST_CHANNEL) return '';                 // teamwork is off entirely
+    return TRUST_BUS_CHANNEL || TRUST_CHANNEL;
+}
+
+/** Record what the partner did, so one incident yields one record. */
+function notePeerAction(nick, act, chan) {
+    const k = String(nick || '').toLowerCase();
+    if (!k) return;
+    // Local clock on purpose: the partner's timestamp is only used for the
+    // journal line. Recency has to be measured against OUR clock or a clock
+    // skew makes every peer action look a day old (or a day in the future).
+    peerActions.set(k, { at: Date.now(), act: String(act || '').slice(0, 24), chan: String(chan || '') });
+    log('MOD', `[PEER] partner ${act || 'acted'} on ${nick}`
+        + `${chan ? ` in ${chan}` : ''} — recorded, not repeated.`);
+    if (peerActions.size > 500) {
+        const now = Date.now();
+        for (const [key, v] of peerActions) if (now - v.at > PEER_ACT_TTL_MS) peerActions.delete(key);
+    }
+}
+
+/** Did the partner already action this person? Used to avoid punishing twice. */
+function peerActedWithin(nick, ms) {
+    const rec = peerActions.get(String(nick || '').toLowerCase());
+    if (!rec) return false;
+    return Date.now() - rec.at < (ms || PEER_ACT_TTL_MS);
+}
+
 function trustSend(verb, data) {
-    if (!TRUST_CHANNEL) return;
-    try { send(`PRIVMSG ${TRUST_CHANNEL} :::${verb} ${JSON.stringify(data)}`); } catch (e) { /* best-effort */ }
+    const chan = busChannel();
+    if (!chan) return;
+    lastBusOutAt = Date.now();
+    try { sendIdle(`PRIVMSG ${chan} :::${verb} ${JSON.stringify(data)}`); } catch (e) { /* best-effort */ }
 }
 
 function handleTrustLine(from, text) {
@@ -3487,12 +3569,16 @@ function handleTrustLine(from, text) {
     const verb = m[1];
     let data = {};
     try { data = JSON.parse(m[2] || '{}'); } catch (e) { return; }
-    if (verb === 'hb') {
-        // Self-echo: our own hb comes back; ignore it.
-        if (String(data.n || '').toLowerCase() === String(currentNick || '').toLowerCase()) return;
+    // Proof of life is the SENDER, and it is ANY verb — not just ::hb. A bot in
+    // the middle of a game or a forty-line invite burst can have its heartbeat
+    // queued behind real work; reading that as "the partner died" was the
+    // false alarm this fixes.
+    const mine = String(currentNick || '').toLowerCase();
+    const claimed = verb === 'hb' ? String(data.n || '').toLowerCase() : '';
+    if (from && String(from).toLowerCase() !== mine && claimed !== mine) {
         partnerLastSeen = Date.now();
-        return;
     }
+    if (verb === 'hb') return;                          // liveness only
     if (verb === 'saw') {
         // Partner saw a line in a room both bots are in. Merge into our local
         // memory with source=remote so we do NOT re-broadcast and loop.
@@ -3503,7 +3589,11 @@ function handleTrustLine(from, text) {
         }
         return;
     }
-    // Reserved for later: ::act (moderation taken), ::mem (full-sync pulls)
+    if (verb === 'act') {
+        notePeerAction(data.n, data.a || 'act', data.c);
+        return;
+    }
+    // Reserved for later: ::mem (full-sync pulls)
 }
 
 function partnerIsSilent() {
@@ -3514,7 +3604,15 @@ function startTrustTeamwork() {
     if (trustHbTimer) return;
     if (!TRUST_CHANNEL) return;
     try { send(`JOIN ${TRUST_CHANNEL}`); } catch (e) { /* noop */ }
+    const bus = busChannel();
+    if (bus && bus !== TRUST_CHANNEL) {
+        try { send(`JOIN ${bus}`); } catch (e) { /* noop */ }
+    }
+    // Event-driven, not a metronome: if we have told the partner anything this
+    // window, that silence is already broken and a heartbeat would be noise.
+    // A bot that is busy answering people therefore sends NONE.
     const beat = () => {
+        if (Date.now() - lastBusOutAt < TRUST_HB_MS) return;
         try { trustSend('hb', { n: currentNick, t: Date.now() }); } catch (e) { /* noop */ }
     };
     setTimeout(beat, 15000);                      // first heartbeat 15s after start
@@ -3731,6 +3829,10 @@ function kickUser(chan, nick, reason, fromAI = false) {
     //
     // The notices still go out, just no longer ahead of the thing they describe.
     sendFirst(`KICK ${chan} ${nick} :${reason}`);
+    // Tell the partner, so the two bots keep one record of one removal instead
+    // of two removals of one person. Lowest priority on the wire: it queues
+    // behind everything a person is waiting on.
+    try { trustSend('act', { n: nick, a: 'kick', c: chan, t: Date.now() }); } catch (e) { /* noop */ }
     verdictNotice(nick, reason, 'You have been removed. You can rejoin.');
     retortBefore(chan, nick, reason, fromAI);
     // "Banished" is what a BAN is. Saying it for a kick told the room somebody
