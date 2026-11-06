@@ -11,6 +11,8 @@ ephemeral host (GitHub Actions, a small VM, or a phone). No Discord bridge, no d
 - Utility: `!ping !uptime !seen !time !rules !help`.
 - Moderation: bad-word filter (warn → kick at 3), plus admin `!say !kick !ban !warn !warnings !topic`.
 - Natural-language admin: mention the bot with "mute the room", "op Nick", "kick Nick", "set topic …".
+- Idle company: when the room goes quiet with people in it, notices ONE quiet regular by name (never a generic "anyone here?").
+- `!!shoot`: a nick goes up as the target, the room types **shoot**, and a miss costs somebody a minute out of the channel.
 - Handles `SIGTERM` for a clean quit when the host stops the job.
 
 ## Deploy on GitHub Actions (free)
@@ -56,6 +58,33 @@ The `Tests` workflow runs `check` and `test:parallel` on every push and pull
 request. Suites that open sockets bind to localhost only. A failing suite may
 be starved rather than broken on a loaded machine — `test/run.js` gives it one
 retry and says so when that is what happened.
+
+## Shooting game
+
+`!!shoot` puts a nick up as the target; typing **shoot** fires. The target drops
+or dodges, and a miss nominates one random person who is then removed for as
+long as it takes to rejoin, with "you lost a game you were not playing".
+
+Every removal goes through the same `kickUser()` path as `!!kick`, so it carries
+the ops check, the once-per-person guard and the parting notice. On top of that
+owners, admins, whitelisted regulars, protected masks and the bot fleet are never
+chosen, nobody is chosen twice in a day, and there are at most two removals an
+hour, six minutes apart.
+
+The mercy window is real: the victim is announced and `!!shoot spare <nick>`
+cancels it before it lands. `!!shootstats` prints the board and `!!endshoot`
+stops the game (moderators). `SHOOT_KICK_ON=off` keeps the game and drops the
+kick entirely — the right setting for a room where nobody agreed to be removed
+for a joke.
+
+| Secret | Default | |
+|---|---|---|
+| `SHOOT_ON` | `on` | the whole game |
+| `SHOOT_KICK_ON` | `on` | the removal on a miss |
+| `SHOOT_ROUND_SECS` | `20` | how long a target stays up |
+| `SHOOT_DODGE_CHANCE` | `0.35` | how often the target slips |
+| `SHOOT_KICK_GRACE_SECS` | `12` | window to spare somebody |
+| `SHOOT_KICK_PER_HOUR` | `2` | hard cap on removals |
 
 ## Security
 Secrets live only in GitHub Secrets (encrypted, injected at runtime) or your local env — never in

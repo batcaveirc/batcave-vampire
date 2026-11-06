@@ -443,4 +443,25 @@ jobs:
           FINDIT_DISCUSS_SECS: ${{ secrets.FINDIT_DISCUSS_SECS || '90' }}
           FINDIT_VOTE_SECS: ${{ secrets.FINDIT_VOTE_SECS || '45' }}
           FINDIT_GAME_CD_MIN: ${{ secrets.FINDIT_GAME_CD_MIN || '10' }}
+
+          # ── !!shoot ─────────────────────────────────────────────────────
+          # A nick goes up as the target, the room types "shoot", and a MISS
+          # nominates somebody at random to be removed for a minute. Every
+          # removal goes through kickUser(), so it carries the same op check and
+          # parting notice as !!kick, and staff / the whitelist / our own fleet
+          # are never chosen. SHOOT_KICK_ON=off keeps the game and drops the
+          # kick, for a room where nobody agreed to be removed for a joke.
+          SHOOT_ON: ${{ secrets.SHOOT_ON || 'on' }}
+          SHOOT_KICK_ON: ${{ secrets.SHOOT_KICK_ON || 'on' }}
+          SHOOT_ROUND_SECS: ${{ secrets.SHOOT_ROUND_SECS || '20' }}
+          SHOOT_COOLDOWN_MS: ${{ secrets.SHOOT_COOLDOWN_MS || '4000' }}
+          SHOOT_DODGE_CHANCE: ${{ secrets.SHOOT_DODGE_CHANCE || '0.35' }}
+          SHOOT_RESPAWN_SECS: ${{ secrets.SHOOT_RESPAWN_SECS || '8' }}
+          # The mercy window. A miss announces its victim and this is how long a
+          # moderator has to type !!shoot spare <nick> before it lands.
+          SHOOT_KICK_GRACE_SECS: ${{ secrets.SHOOT_KICK_GRACE_SECS || '12' }}
+          # Hard caps: a game that can remove somebody every round is a grudge
+          # with a scoreboard.
+          SHOOT_KICK_PER_HOUR: ${{ secrets.SHOOT_KICK_PER_HOUR || '2' }}
+          SHOOT_KICK_GAP_MIN: ${{ secrets.SHOOT_KICK_GAP_MIN || '6' }}
         run: node action-bot.js

@@ -3,6 +3,8 @@ const tls = require('tls');
 const { FindIt } = require('./findit');
 const { Fun } = require('./fun');
 const { Games } = require('./games');
+const { Shoot } = require('./shoot');
+const { isFloodComplaint, refillMultiplier, penaltyMs, reconnectDelayMs } = require('./floodguard');
 const { Recruiter } = require('./recruit');
 const { parseOrder, PROTECTED_NICKS } = require('./orders');
 const { Retort, shieldLine } = require('./retort');
@@ -1205,6 +1207,23 @@ let raidGuard = onOff(process.env.RAID_GUARD || 'on');
 const bot = { send, say, notice, get nick() { return currentNick; } };
 const game = new FindIt(bot);
 const games = new Games(bot);
+// !!shoot. The removal goes through kickUser() rather than a raw KICK, so a
+// game inherits the ops check, the once-per-person guard and the parting
+// notice. `eligible` is the extra gate on top: staff, the whitelist and our own
+// fleet can be aimed at but never chosen to lose.
+const shoot = new Shoot(bot, {
+    present: (chan) => [...(members.get(chanKey(chan)) || [])],
+    eligible: (nick) => !isOwner(nick) && !isAdmin(nick) && !isTrusted(nick)
+        && !isProtectedFromKick(nick) && !isOneOfOurs(nick),
+    isOurs: (nick) => isOneOfOurs(nick),
+    mayMod: (nick, chan) => isOwner(nick) || isAdmin(nick) || isChannelMod(chan, nick),
+    kick: (chan, nick, reason) => kickUser(chan, nick, reason),
+});
+// The game holds no timers of its own: this sweep expires the target, brings the
+// next one up and pays out a pending removal when its grace window has passed.
+setInterval(() => {
+    try { shoot.tick(); } catch (e) { log('INFO', `shoot tick failed: ${e.message}`); }
+}, 2000).unref?.();
 // Off with RETORT=off; on by default, because a room that sees an abuser
 // answered reads very differently from one that only sees a mod log line.
 // Recognising the standby without services. He has no NickServ account by
@@ -1370,8 +1389,31 @@ let lastUrgentGripe = 0;
 const BURST = 6;
 const REFILL_MS = 500;
 let tokens = BURST;
+// ── When the server says we flooded it ────────────────────────────────────
+// The bucket above makes a RecvQ kill unlikely. It does nothing about what
+// happens AFTER one, and that is the part that turned a single kill into a
+// crash loop: reconnect immediately, send the same burst, get killed again.
+// So a complaint slows the refill, drops the burst and stretches the reconnect.
+let floodComplaints = 0;
+let floodPenaltyUntil = 0;
+let refillTick = 0;
+const inFloodPenalty = () => Date.now() < floodPenaltyUntil;
+const floodMultiplier = () => (inFloodPenalty() ? refillMultiplier(floodComplaints) : 1);
+function registerFloodComplaint(line) {
+    floodComplaints += 1;
+    floodPenaltyUntil = Date.now() + penaltyMs(floodComplaints);
+    tokens = Math.min(tokens, 1);
+    if (outQueue.length > 20) {
+        log('WARN', `Dropped ${outQueue.length} queued bulk line(s) — the server already said we talk too much.`);
+        outQueue.length = 0;
+    }
+    log('WARN', `Flood complaint #${floodComplaints}: ${String(line).slice(0, 140)} — pace x${refillMultiplier(floodComplaints)} `
+        + `for ${Math.round(penaltyMs(floodComplaints) / 60000)} min, reconnect backoff `
+        + `${Math.round(reconnectDelayMs(floodComplaints) / 1000)}s. Staying up: a kill is not a reason to exit.`);
+}
 setInterval(() => {
-    if (tokens < BURST) tokens += 1;
+    refillTick += 1;
+    if (tokens < BURST && refillTick % floodMultiplier() === 0) tokens += 1;
     while ((outUrgent.length || outQueue.length) && tokens > 0) {
         tokens -= 1;
         const line = takeNextLine();
@@ -3327,6 +3369,38 @@ function maybeProactiveJoinCallback(nick, chan) {
     fireProactive(ctx, 'join-callback');
 }
 
+/**
+ * Who has been sitting here without saying anything?
+ *
+ * recentSaid already holds the last ten minutes of the room, so the answer is
+ * on hand: somebody PRESENT whose own last line is older than the idle window.
+ * Bots are never candidates — being asked how you are by a standby wearing a
+ * nick is the one thing the room would notice as machinery.
+ *
+ * Returns null when nobody qualifies. An empty answer must not become a
+ * generic line said at that person's expense.
+ */
+function quietestHere(chan, now = Date.now()) {
+    const ch = chanKey(chan);
+    const spokeAt = new Map();
+    for (const e of (recentSaid.get(ch) || [])) {
+        const n = String(e.nick || '').toLowerCase();
+        if (!n) continue;
+        if (!spokeAt.has(n) || e.at > spokeAt.get(n)) spokeAt.set(n, e.at);
+    }
+    let best = null;
+    for (const nick of (members.get(ch) || [])) {
+        const n = String(nick).toLowerCase();
+        if (n === String(currentNick).toLowerCase()) continue;
+        if (typeof isOneOfOurs === 'function' && isOneOfOurs(nick)) continue;
+        const last = spokeAt.get(n) || 0;
+        const quietMs = now - last;
+        if (quietMs < PROACTIVE_IDLE_MS) continue;   // they spoke recently
+        if (!best || quietMs > best.quietMs) best = { nick, quietMs, hasSpoken: last > 0 };
+    }
+    return best;
+}
+
 // Trigger B: the room has been quiet for a long time with people present.
 // Low-probability roll per sweep. Composes a "spark the room" prompt. The
 // time-of-day phrase is already baked into proactiveSystemPrompt().
@@ -3343,12 +3417,18 @@ function maybeProactiveIdleBreak() {
     const members_here = (members.get(key) || new Set()).size;
     if (members_here < PROACTIVE_IDLE_MIN_PRESENT) return;
     if (Math.random() > PROACTIVE_IDLE_CHANCE) return;
-    const mins = Math.round(idleMs / 60000);
-    const ctx = `The room has gone quiet — no one's said anything in ${mins} minutes, and there `
-        + `are ${members_here} people here. Drop ONE line to spark conversation: a thought, a `
-        + `question, an observation about the silence, or a tease. Something a regular would `
-        + `break the quiet with. Not a question to anyone specifically — the room.`;
-    fireProactive(ctx, 'idle-break');
+    const quiet = quietestHere(home);
+    if (!quiet) return;              // nobody to notice — stay quiet
+    const mins = Math.round(quiet.quietMs / 60000);
+    // Addressed to ONE person, not the room. "Anyone around?" to a room that has
+    // been silent for half an hour reads as a machine checking its connection;
+    // noticing a specific regular is what somebody actually in the room does.
+    const ctx = `The room has gone quiet — no one has said anything in ${mins} minutes, and there `
+        + `are ${members_here} people here. ${quiet.nick} has been sitting here the longest `
+        + `without a word. Say ONE line TO ${quiet.nick}: notice them, ask them something `
+        + `specific about them, or tease them gently — not a greeting ("hi ${quiet.nick}"), `
+        + `and not a question to the whole room.`;
+    fireProactive(ctx, 'idle-person');
 }
 
 /**
@@ -5452,6 +5532,9 @@ function handleCommand(chan, nick, message) {
     // The simple party games (numguess, …) live in the games room; findit is a
     // different, multi-room game and claims its commands first.
     if (games.handle(nick, chan, cmd, args)) return;
+    // The shooting game. After the party games, before fun: it shares no verb
+    // with either, and its answers belong in the room rather than in a notice.
+    if (shoot.handle(nick, chan, cmd, args)) return;
     // Fun comes after the game (a compartment's !!fix is not a joke) and before
     // moderation commands, which it shares no names with.
     if (fun.handle(nick, chan, cmd, args)) return;
@@ -5483,7 +5566,8 @@ function handleCommand(chan, nick, message) {
             const topic = (args[0] || '').toLowerCase();
             if (!topic) {
                 reply('\x02!!seen\x02 · \x02!!info\x02 · \x02!!rules\x02 · \x02!!status\x02 · '
-                    + '\x02!!findit\x02 · \x02!!numguess\x02 (game room). I answer here privately, never in the room.');
+                    + '\x02!!findit\x02 · \x02!!numguess\x02 · \x02!!shoot\x02 · \x02!!shootstats\x02 '
+                    + '(game room). I answer here privately, never in the room.');
                 reply('More: \x02!!help fun\x02 · \x02!!help mods\x02'
                     + (isTrusted(nick) || admin
                         ? ' — or say \x02shazam\x02 and I remove whoever is attacking you.' : '.'));
@@ -6659,7 +6743,17 @@ function connect() {
         if (outQueue.length > 20) {
             log('WARN', `Dropped ${outQueue.length} stale queued line(s) on disconnect — avoids a reconnect flood.`);
         }
-        outQueue.length = 0; outUrgent.length = 0; tokens = BURST;
+        outQueue.length = 0; outUrgent.length = 0;
+        // Reopening with a full burst is how a kill becomes a loop.
+        tokens = inFloodPenalty() ? 1 : BURST;
+        // A long, clean session is not a flood loop. Forgiving the escalation
+        // here means one bad evening does not leave the bot at a five-minute
+        // reconnect wait for the rest of its run.
+        if (Date.now() - connectTime > 10 * 60 * 1000 && floodComplaints) {
+            floodComplaints = 0;
+            floodPenaltyUntil = 0;
+            log('INFO', 'A clean ten-minute session — flood penalty cleared.');
+        }
         log('INFO', 'Connection closed.'); scheduleReconnect();
     });
 }
@@ -6892,7 +6986,10 @@ function scheduleReconnect() {
         return;
     }
 
-    const delay = Math.min(10000 * 2 ** (reconnectAttempts - 1), 300000); // 10s,20s,40s… cap 5m — avoids connection-flood bans
+    const backoff = Math.min(10000 * 2 ** (reconnectAttempts - 1), 300000); // 10s,20s,40s… cap 5m
+    // A flood kill gets the FLOOR, not the ceiling. Rejoining at once arrives at
+    // the same server with the same queue, which is how one kill became a loop.
+    const delay = floodComplaints ? Math.max(backoff, reconnectDelayMs(floodComplaints)) : backoff;
     log('INFO', `Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts}).`);
     reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
 }
@@ -6924,6 +7021,10 @@ function handleLine(line) {
     if (line.startsWith('PING')) { send('PONG' + line.slice(4)); return; }
     if (line.startsWith('ERROR') || /closing link|throttl|k-lin|g-lin|z-lin|banned|flood|too many|dnsbl|blacklist|access denied/i.test(line)) {
         log('SRV', line.slice(0, 200));   // capture WHY the server rejects us
+        // RecvQ is the server's buffer of what we SENT, so this specific reason
+        // is the one that must change our behaviour rather than be logged and
+        // forgotten.
+        if (isFloodComplaint(line)) registerFloodComplaint(line);
     }
 
     let prefix = '', command = '', params = [];
@@ -8225,6 +8326,10 @@ function handleLine(line) {
         }
         // A bare-number guess in the games room, consumed before the chat
         // ladder so a guess is not screened as if it were conversation.
+        // A bare "shoot" while a target is up in THIS room. Consumed before the
+        // guess check and the chat ladder, or the word would be screened as
+        // conversation and the target would never be hit.
+        if (shoot.onMessage(nick, tgt, msg)) return;
         if (games.onMessage(nick, tgt, msg)) return;
         // A plain-English order from someone who already holds authority.
         // Before the filters, because a moderator saying "Dracula ban troll42

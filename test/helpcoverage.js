@@ -19,6 +19,7 @@ const src = fs.readFileSync(path.join(root, 'action-bot.js'), 'utf8');
 const funSrc = fs.readFileSync(path.join(root, 'fun.js'), 'utf8');
 const gameSrc = fs.readFileSync(path.join(root, 'findit.js'), 'utf8');
 const gamesSrc = fs.readFileSync(path.join(root, 'games.js'), 'utf8');
+const shootSrc = fs.readFileSync(path.join(root, 'shoot.js'), 'utf8');
 
 // ── every command the bot answers ───────────────────────────────────────────
 const orderAt = src.indexOf('function handleOrder(');
@@ -35,6 +36,9 @@ const fromGame = new Set([...gameSrc.matchAll(/cmd === '([a-z0-9]+)'|case '([a-z
     .map((m) => m[1] || m[2]));
 // The simple party games (games.js) dispatch on `cmd === '...'` just like findit.
 const fromGames = new Set([...gamesSrc.matchAll(/cmd [=!]== '([a-z0-9]+)'/g)].map((m) => m[1]));
+// shoot.js dispatches on `cmd === '...'` too — a fourth surface, added here so
+// a game that exists but is advertised nowhere cannot ship again.
+const fromShoot = new Set([...shootSrc.matchAll(/cmd === '([a-z0-9]+)'/g)].map((m) => m[1]));
 
 // ── what !!help advertises ──────────────────────────────────────────────────
 const helpBody = src.slice(src.indexOf("case 'help': {"), src.indexOf("case 'seen': {"));
@@ -60,10 +64,11 @@ const UNLISTED = new Map([
     ['break', 'announced by the round in progress'],
     ['players', 'announced by the round in progress'],
     ['start', 'announced by the round in progress'],
+    ['endshoot', 'an operator stopping the shooting game; !!shoot end does the same and is advertised'],
 ]);
 
-const all = new Set([...fromSwitch, ...fromFun, ...fromGame, ...fromGames]);
-console.log(`— ${all.size} commands across ${[fromSwitch.size, fromFun.size, fromGame.size, fromGames.size].join(' + ')} surfaces —`);
+const all = new Set([...fromSwitch, ...fromFun, ...fromGame, ...fromGames, ...fromShoot]);
+console.log(`— ${all.size} commands across ${[fromSwitch.size, fromFun.size, fromGame.size, fromGames.size, fromShoot.size].join(' + ')} surfaces —`);
 
 const missing = [...all].filter((cmd) => !advertised.has(cmd) && !UNLISTED.has(cmd)).sort();
 c('every command the bot answers is in !!help',
@@ -93,6 +98,9 @@ console.log('\n— the three surfaces are all still there —');
 c('the main switch has commands', fromSwitch.size > 20, String(fromSwitch.size));
 c('fun.js still exposes its list', fromFun.size >= 10, String(fromFun.size));
 c('findit.js still exposes its list', fromGame.size >= 8, String(fromGame.size));
+c('shoot.js still exposes its list', fromShoot.size >= 3, String(fromShoot.size));
+c('the shooting game is advertised', advertised.has('shoot'),
+  'a game only findable by reading shoot.js is not discoverable by the room');
 c('FindIt itself is advertised', advertised.has('findit'),
   'the owner went looking for it and it was not there');
 
