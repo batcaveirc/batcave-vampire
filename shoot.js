@@ -59,6 +59,12 @@ const DODGE_LINES = [
 
 const pick = (arr, r) => arr[Math.min(arr.length - 1, Math.floor(r * arr.length))];
 
+// Not a person: a service asked to answer. The room types "shoot" at whatever
+// name is up, so a target pool that includes ChanBot is one roll away from
+// kicking the network's own bot for a game it was not in — and the loser pool
+// is worse, because nobody can be spared who is not in the room to ask.
+const SERVICE = /(?:bot|serv|service|services)\d*$/i;
+
 class Shoot {
     /**
      * @param {{send:Function, say:Function, notice:Function, nick:string}} bot
@@ -111,12 +117,19 @@ class Shoot {
         try { return !!this.isOurs(nick); } catch (e) { return false; }
     }
 
+    /** A nick a game may aim at: a person, not a service and not one of ours. */
+    isPerson(nick) {
+        const n = String(nick || '').trim();
+        if (!n || SERVICE.test(n)) return false;
+        return !this.ours(n);
+    }
+
     /** Somebody to put in the crosshairs: present, not us, not another bot. */
     pickTarget(chan) {
         const me = String(this.bot.nick || '').toLowerCase();
         const pool = (this.present(chan) || [])
             .filter((n) => n && String(n).toLowerCase() !== me)
-            .filter((n) => !this.ours(n));
+            .filter((n) => this.isPerson(n));
         if (!pool.length) return '';
         return pool[Math.min(pool.length - 1, Math.floor(this.random() * pool.length))];
     }
@@ -185,7 +198,7 @@ class Shoot {
         return (this.present(chan) || []).filter((n) => {
             const k = String(n || '').toLowerCase();
             if (!k || k === me) return false;
-            if (this.ours(n)) return false;
+            if (!this.isPerson(n)) return false;
             let ok = true;
             try { ok = !!this.eligible(n); } catch (e) { ok = false; }
             if (!ok) return false;
@@ -282,7 +295,19 @@ class Shoot {
         if (cmd === 'shoot') {
             const sub = String((args && args[0]) || '').toLowerCase();
             if (sub === 'spare') { this.spare(nick, chan, (args || [])[1]); return true; }
-            if (sub === 'end' || sub === 'stop') { this.stop(nick, chan); return true; }
+            // "off" is how every other switch in this bot is thrown, so it has
+            // to mean the same thing here. It used to fall through to fire()
+            // and OPEN A ROUND — the exact opposite of what was asked, said out
+            // loud in the room, which is how the owner met it.
+            if (sub === 'end' || sub === 'stop' || sub === 'off') { this.stop(nick, chan); return true; }
+            // Any other word is not a shot either. Firing on it turned a typo
+            // into a target going up in front of everybody; ask privately
+            // instead, which is what the rest of this game does.
+            if (sub) {
+                this.notice(nick, 'Shoot takes: \x02shoot\x02 (fire) · '
+                    + '\x02!!shoot spare <nick>\x02 · \x02!!shoot end\x02');
+                return true;
+            }
             this.fire(nick, chan);
             return true;
         }

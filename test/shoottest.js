@@ -198,6 +198,47 @@ console.log('\n— the target does not respawn forever in an empty room —');
       'the round never came back after a kill');
 }
 
+console.log('\n— "off" means off, and a stray word is not a shot —');
+{
+    const r = rig({ rolls: [0.99] });
+    r.game.handle('nora', '#batcave', 'shoot', []);
+    c('a round is up', !!r.game.round);
+    r.said.length = 0;
+    r.game.handle('vikram', '#batcave', 'shoot', ['off']);
+    c('!!shoot off ends the game instead of starting one', r.game.round === null,
+      `round is ${JSON.stringify(r.game.round)}`);
+    c('and says so in the room', r.said.some(([, m]) => /stopped/i.test(m)), JSON.stringify(r.said));
+}
+{
+    const r = rig({ rolls: [0.99] });
+    const before = r.game.stats.size;
+    r.game.handle('nora', '#batcave', 'shoot', ['wat']);
+    c('an unknown subcommand puts no target up', r.game.round === null);
+    c('and fires no shot', r.game.stats.size === before);
+    c('the person is told the real subcommands privately',
+      r.notices.some(([n, m]) => n === 'nora' && /spare/.test(m) && /end/.test(m)),
+      JSON.stringify(r.notices));
+    c('and the room hears nothing', r.said.length === 0, JSON.stringify(r.said));
+}
+
+console.log('\n— a service bot is not a player —');
+{
+    const r = rig({ present: ['Dracula', 'ChanBot', 'nora'], rolls: [0] });
+    r.game.handle('nora', '#batcave', 'shoot', []);
+    c('ChanBot is never the target', r.game.round.target === 'nora',
+      `picked ${r.game.round && r.game.round.target}`);
+}
+{
+    const r = rig({ present: ['Dracula', 'ChanBot', 'NickServ'], rolls: [0.99, 0, 0, 0] });
+    r.game.handle('nora', '#batcave', 'shoot', []);
+    r.game.handle('nora', '#batcave', 'shoot', []);      // a miss wants a victim
+    c('and is never the one who loses', r.game.pending === null,
+      `nominated ${r.game.pending && r.game.pending.victim}`);
+    r.advance(20_000);
+    r.game.tick();
+    c('so no service is ever kicked for a game', r.kicks.length === 0, JSON.stringify(r.kicks));
+}
+
 console.log('\n— switched off means switched off —');
 {
     const r = rig({ enabled: false });
