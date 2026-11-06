@@ -46,6 +46,17 @@ npm install
 IRC_NICK=Vampire IRC_CHANNEL='#batcave' NICKSERV_PASS=... OWNERS=yournick node action-bot.js
 ```
 
+## Tests
+```bash
+npm run check            # node --check action-bot.js
+npm run test:parallel    # all 94 suites, 8 at a time, ~4 minutes
+npm test                 # the same suites one after another (slow)
+```
+The `Tests` workflow runs `check` and `test:parallel` on every push and pull
+request. Suites that open sockets bind to localhost only. A failing suite may
+be starved rather than broken on a loaded machine — `test/run.js` gives it one
+retry and says so when that is what happened.
+
 ## Security
 Secrets live only in GitHub Secrets (encrypted, injected at runtime) or your local env — never in
 this code. This is an IRC-only build: it contains no Discord bridge and relays no private traffic.

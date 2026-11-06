@@ -1,0 +1,39 @@
+name: Tests
+
+# batcave-bot.yml deploys on push to main, so until now a push ran the code and
+# nothing else. The chain CLAUDE.md asks for before claiming done — `node
+# --check`, then the suites — was only ever typed by hand, which is the same
+# thing as only ever running once.
+#
+# test/parallel.sh runs all 94 suites eight at a time and finishes in about
+# four minutes. Each suite binds its own random port, so nothing collides.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# A second push makes the first run's answer irrelevant.
+concurrency:
+  group: tests-vampire
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Syntax check
+        run: npm run check
+      - name: Test suites
+        run: npm run test:parallel
