@@ -211,6 +211,8 @@ function isAiEnabled(chan) {
     if (homeChannels.has(k)) return !aiDisabledHome.has(k);
     return aiEnabledGuest.has(k);
 }
+// The room's answer when somebody turns on one of ours (clapback.js).
+const clapback = new (require('./clapback').Clapback)();
 
 // --- State (in-memory; resets each restart — fine for an ephemeral host) ---
 let socket = null;
@@ -4151,7 +4153,16 @@ function scriptedModeration(chan, nick, message) {
     // carrying several is a tirade, and treating it as "watch your language"
     // under-reacts badly — that is what happened to a threat-laden wall of abuse
     // which earned a kick when it warranted a ban.
-    const hits = distinctHits(badwords, message);
+    // An adult room is not warned for the language it was switched on FOR.
+    // Everything ABOVE this point still fires there — severe language, the
+    // relational-abuse patterns, threats — because those are an attack on a
+    // person, not a register. What changes is the ordinary profanity count:
+    // warning the room for saying "fuck" in the room marked 18+ is the bot
+    // arguing with its own setting, and three swears in one sentence is a
+    // tirade only in a room that pretends nobody swears. Links and shouting
+    // below stay policed in both. Off = the old behaviour, unchanged.
+    const adultRoom = nsfwRooms.has(chanKey(chan));
+    const hits = adultRoom ? [] : distinctHits(badwords, message);
     if (hits.length >= 3) {
         banUser(chan, nick, `sustained abuse (${hits.length} slurs in one message)`);
         return true;
@@ -6026,7 +6037,8 @@ function handleCommand(chan, nick, message) {
             if (arg === 'on') {
                 nsfwRooms.add(k);
                 saveAiState();
-                reply(`NSFW mode in ${chan}: ON — playful adult register, filters still apply.`);
+                reply(`NSFW mode in ${chan}: ON — adult register unlocked, and ordinary `
+                    + 'profanity is not policed here. Slurs and threats still are.');
             } else if (arg === 'off') {
                 nsfwRooms.delete(k);
                 saveAiState();
@@ -8404,6 +8416,29 @@ function handleLine(line) {
         // fire. Prevents the "bot joins and immediately starts typing" that
         // the owner called out.
         const isSpeakerHere = homeChannels.has(chanKey(tgt));
+
+        // ── Clapback: somebody is going at one of ours ───────────────────
+        // Before the command check (an attack is not a command) and before the
+        // moderation ladder, because the ROOM's answer should land first — the
+        // point is that a regular is defended in public, not processed quietly.
+        // Home rooms only: in a !!join'd room the bot is a silent observer, and
+        // speaking there is a banning offence on this network, not a defence.
+        // Severity decides the consequence, so "shut up" is answered and a
+        // threat is answered and removed; see clapback.js.
+        if (isSpeakerHere) {
+            try {
+                const hit = clapback.check(msg, nick, {
+                    isProtected: (n) => isOwner(n) || isAdmin(n) || isTrusted(n) || isOneOfOurs(n),
+                    nsfw: nsfwRooms.has(chanKey(tgt)),
+                    severe: severeWords,
+                });
+                if (hit) {
+                    say(tgt, hit.line);
+                    if (hit.tier >= 2) warnUser(tgt, nick, hit.reason);
+                    if (hit.tier >= 3) kickUser(tgt, nick, hit.reason);
+                }
+            } catch (e) { log('MOD', `clapback: ${e.message}`); }
+        }
 
         if (msg.startsWith('!!')) {
             // In home: anyone can type a command (per-command admin gate inside).
