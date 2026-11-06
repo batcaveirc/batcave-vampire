@@ -103,6 +103,15 @@ c('the shooting game is advertised', advertised.has('shoot'),
   'a game only findable by reading shoot.js is not discoverable by the room');
 c('FindIt itself is advertised', advertised.has('findit'),
   'the owner went looking for it and it was not there');
+// A name is not an instruction. The shooting game is played in the room, its
+// mercy window is a subcommand, and its stop command is a subcommand too — none
+// of which a person can guess from the word "!!shoot".
+c('and help says how to play it', /type \\x02shoot\\x02 to fire/.test(helpBody),
+  'a game whose only instruction is its own name is not playable');
+c('and how to call a loss off', /!!shoot spare/.test(helpBody),
+  'the spare window is announced in the room, but a moderator reads help first');
+c('and how to stop it', /!!shoot end/.test(helpBody),
+  'the UNLISTED entry for !!endshoot says this is advertised — so it has to be');
 
 console.log('\n— help stays readable —');
 // IRC drops a line past ~512 bytes and the bot chunks at 380, so a help line

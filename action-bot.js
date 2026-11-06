@@ -5668,8 +5668,8 @@ function handleCommand(chan, nick, message) {
             const topic = (args[0] || '').toLowerCase();
             if (!topic) {
                 reply('\x02!!seen\x02 · \x02!!info\x02 · \x02!!rules\x02 · \x02!!status\x02 · '
-                    + '\x02!!findit\x02 · \x02!!numguess\x02 · \x02!!shoot\x02 · \x02!!shootstats\x02 '
-                    + '(game room). I answer here privately, never in the room.');
+                    + '\x02!!findit\x02 · \x02!!numguess\x02 · \x02!!shoot\x02 (type \x02shoot\x02 to fire) · '
+                    + '\x02!!shootstats\x02. I answer here privately, never in the room.');
                 reply('More: \x02!!help fun\x02 · \x02!!help mods\x02'
                     + (isTrusted(nick) || admin
                         ? ' — or say \x02shazam\x02 and I remove whoever is attacking you.' : '.'));
@@ -5681,6 +5681,14 @@ function handleCommand(chan, nick, message) {
                     + '!!toast <nick> · !!hotseat <nick> · !!dadjoke · !!fact · !!wyr · '
                     + '!!truth · !!dare · !!pickup · !!compliment <nick> · !!howvampire <nick> · '
                     + '!!yt <search>');
+                // The shooting game is a fourth dispatch surface (shoot.js) and
+                // its subcommands are documented nowhere else. !!shoot end is the
+                // one helpcoverage.js says is advertised, and the mercy window
+                // only exists for people who can find out it does.
+                reply('\x02Games\x02: \x02!!findit\x02 · \x02!!numguess\x02 · \x02!!shoot\x02 — '
+                    + 'a target goes up and the room types \x02shoot\x02 to fire · '
+                    + '\x02!!shoot spare <nick>\x02 cancels a loss · \x02!!shoot end\x02 stops it · '
+                    + '\x02!!shootstats\x02 is the board.');
                 break;
             }
             if (topic === 'mods') {
