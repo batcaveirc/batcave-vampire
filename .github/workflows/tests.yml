@@ -30,9 +30,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: npm
-      - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+      # No lockfile in this repo, and no suite needs one: every test runs on
+      # node builtins alone (`grep -rl "require('irc-framework')" test/` is
+      # empty). `cache: npm` and `npm ci` both refuse to run without a lockfile,
+      # which is how the first CI run failed before it reached a single test.
       - name: Syntax check
         run: npm run check
       - name: Test suites
